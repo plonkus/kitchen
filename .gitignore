@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+dist/
+.venv/
+.worktrees/
+.*-task.md
+.*-review-task.md
+.*-fixes-task.md
+.gstack/
+docs/
