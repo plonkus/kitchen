@@ -371,7 +371,8 @@ def cmd_hire(args):
         sys.exit(f"{name} didn't show prompt within timeout.")
 
     if backend == "codex":
-        send_keys(session, name, role_path.read_text() + _ROLE_ACK_FOOTER)
+        send_keys(session, name, role_path.read_text() + _ROLE_ACK_FOOTER,
+                  backend=backend, log_dir=base / "cooks")
 
     print(f"{name} is on the station. Yes, chef!")
 
@@ -383,7 +384,8 @@ def cmd_ticket(args):
     name = args.cook
     message = args.message
 
-    send_keys(session, name, message)
+    backend = (read_status(base, name) or {}).get("backend")
+    send_keys(session, name, message, backend=backend, log_dir=base / "cooks")
 
     # Mark cook as working. Codex has no UserPromptSubmit-equivalent hook
     # event (Codex `notify` only fires on completion), so for Codex cooks
