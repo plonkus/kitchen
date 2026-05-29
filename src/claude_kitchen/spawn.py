@@ -37,11 +37,18 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
         os.environ["KITCHEN_NOTES"] = str(notes_dir(kitchen))
 
+    # --remote-control is sous-only (unconditional for v1, no opt-out).
+    # The prefix makes auto-generated RC session names identifiable per
+    # kitchen — e.g. `dashboard-abc123` instead of host-default `mbp-abc123`.
+    # Cooks (claude OR codex) do NOT get remote control: build_shell_cmd
+    # is untouched.
     claude_args = [
         "claude",
         "--dangerously-skip-permissions",
         "--dangerously-load-development-channels", "server:kitchen",
         "--mcp-config", str(state_dir / ".mcp.json"),
+        "--remote-control",
+        "--remote-control-session-name-prefix", kitchen,
     ]
     if resume_session_id:
         claude_args.extend(["--resume", resume_session_id])

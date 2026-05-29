@@ -98,6 +98,31 @@ class TestSpawnSous:
 
     @patch("claude_kitchen.spawn.os.chdir")
     @patch("claude_kitchen.spawn.os.execvp")
+    def test_remote_control_enabled_with_kitchen_prefix(
+        self, mock_exec, mock_chdir, tmp_path, monkeypatch,
+    ):
+        """Sous launches with --remote-control + prefix=<kitchen>. The pair
+        must appear as adjacent argv tokens — claude parses the flag value
+        positionally."""
+        for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y")
+        argv = mock_exec.call_args.args[1]
+        assert "--remote-control" in argv
+        i = argv.index("--remote-control-session-name-prefix")
+        assert argv[i + 1] == "risotto"
+
+    def test_cook_argv_has_no_remote_control(self):
+        """Cooks must NOT get --remote-control; the flag is sous-only."""
+        for backend in ("claude", "codex"):
+            cmd = build_shell_cmd(
+                backend=backend, name="eng", session="ck-r",
+                status_dir="/tmp/state",
+            )
+            assert "--remote-control" not in cmd, f"{backend} cook leaked RC flag"
+
+    @patch("claude_kitchen.spawn.os.chdir")
+    @patch("claude_kitchen.spawn.os.execvp")
     def test_exports_wiki_and_notes_env(self, mock_exec, mock_chdir, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.delenv("KITCHEN_WIKI", raising=False)
