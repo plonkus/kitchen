@@ -1,10 +1,25 @@
 """Tests for spawn logic."""
 import os
+import shlex
 from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock
 from claude_kitchen.spawn import build_shell_cmd, spawn_sous
+
+
+def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
+    """Reproduce what codex sees as argv after bash -lc parsing the shell
+    command produced by build_shell_cmd. The outer string is
+    `bash -lc '<inner>'`; bash -lc would parse <inner> through shell rules.
+    shlex.split with posix=True matches that parsing for our quoting shapes."""
+    outer = shlex.split(cmd)
+    assert outer[:2] == ["bash", "-lc"], f"unexpected outer shape: {outer[:2]}"
+    inner_tokens = shlex.split(outer[2])
+    # The inner is `export ...; exec codex <args...>`. Find `exec codex` and
+    # return what follows as codex's argv (program + args).
+    i = inner_tokens.index("exec")
+    return inner_tokens[i + 1:]
 
 
 class TestBuildShellCmd:
@@ -25,6 +40,53 @@ class TestBuildShellCmd:
         )
         assert "codex" in cmd
         assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+
+    def test_codex_cook_has_notify_override(self):
+        """Codex cook argv must contain `-c notify=["kitchen","hook-codex"]`
+        as two adjacent tokens, surviving the bash -lc shell-quoting layer.
+        Bypasses any global notify wrapper (SkyComputerUseClient et al.)."""
+        cmd = build_shell_cmd(
+            backend="codex", name="rev", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        argv = _codex_argv_from_shell_cmd(cmd)
+        assert argv[0] == "codex"
+        # Find -c notify=... in argv (there may be other -c flags too).
+        notify_seen = False
+        for i, tok in enumerate(argv):
+            if tok == "-c" and i + 1 < len(argv) and argv[i + 1].startswith("notify="):
+                assert argv[i + 1] == 'notify=["kitchen","hook-codex"]', (
+                    f"notify override value malformed: {argv[i+1]!r}"
+                )
+                notify_seen = True
+                break
+        assert notify_seen, f"-c notify=... not found in codex argv: {argv}"
+
+    def test_claude_cook_has_no_notify_override(self):
+        """Claude has no equivalent notify mechanism; the override is codex-only."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        assert "notify=" not in cmd, "notify override leaked to claude cook"
+
+    def test_codex_notify_override_coexists_with_effort(self):
+        """Effort flag and notify override must both make it through, in
+        the right argv shape (each behind its own -c)."""
+        cmd = build_shell_cmd(
+            backend="codex", name="rev", session="ck-r",
+            status_dir="/tmp/state", effort="high",
+        )
+        argv = _codex_argv_from_shell_cmd(cmd)
+        # Two -c flags expected, in order: model_reasoning_effort, notify
+        c_pairs = [
+            (argv[i], argv[i + 1])
+            for i in range(len(argv) - 1)
+            if argv[i] == "-c"
+        ]
+        keys = [pair[1].split("=", 1)[0] for pair in c_pairs]
+        assert "model_reasoning_effort" in keys
+        assert "notify" in keys
 
     def test_unknown_backend_raises(self):
         with pytest.raises(ValueError, match="Unknown backend"):

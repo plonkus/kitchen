@@ -64,6 +64,9 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
 # Codex:    low | medium | high | xhigh
 _CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "max": "xhigh"}
 
+# Per-launch notify override appended to every codex cook. TOML array literal.
+_CODEX_NOTIFY_OVERRIDE = 'notify=["kitchen","hook-codex"]'
+
 
 def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
                     effort: str = None, role_path: Path = None) -> str:
@@ -89,7 +92,15 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # happens via send_keys after wait_for_prompt (see cmd_hire).
         codex_effort = _CODEX_EFFORT.get(effort, effort) if effort else None
         effort_flag = f' -c model_reasoning_effort={q(codex_effort)}' if codex_effort else ""
-        return f'bash -lc {q(f"{env}; exec codex --dangerously-bypass-approvals-and-sandbox{effort_flag}")}'
+        # Per-launch notify override. Bypasses any global notify wrapper
+        # (e.g. the Codex Computer Use plugin's SkyComputerUseClient, which
+        # rewrites ~/.codex/config.toml's top-level notify to wrap kitchen
+        # in --previous-notify and then silently swallows the forward inside
+        # workspaces enrolled with Codex Desktop). Codex CLI reads notify
+        # from config at process start; -c overrides per-process without
+        # touching global state. Value is a TOML array literal.
+        notify_flag = f' -c {q(_CODEX_NOTIFY_OVERRIDE)}'
+        return f'bash -lc {q(f"{env}; exec codex --dangerously-bypass-approvals-and-sandbox{effort_flag}{notify_flag}")}'
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
