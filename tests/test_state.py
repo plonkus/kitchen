@@ -7,7 +7,7 @@ import pytest
 
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, wiki_dir, notes_dir,
+    project_slug, namespaced, wiki_dir, notes_dir,
 )
 
 
@@ -116,56 +116,56 @@ class TestProjectSlug:
     @patch("claude_kitchen.state.subprocess.run")
     def test_https_github(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("https://github.com/acme/widget.git")
-        assert project_slug(tmp_path) == "gh-acme-widget"
+        assert project_slug(tmp_path) == "widget"
 
     @patch("claude_kitchen.state.subprocess.run")
     def test_ssh_github(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("git@github.com:acme/widget.git")
-        assert project_slug(tmp_path) == "gh-acme-widget"
+        assert project_slug(tmp_path) == "widget"
 
     @patch("claude_kitchen.state.subprocess.run")
     def test_ssh_scheme_strips_userinfo(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("ssh://git@github.com/acme/widget.git")
-        assert project_slug(tmp_path) == "gh-acme-widget"
+        assert project_slug(tmp_path) == "widget"
 
     @patch("claude_kitchen.state.subprocess.run")
     def test_ssh_scheme_strips_userinfo_and_port(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("ssh://git@github.com:22/acme/widget.git")
-        assert project_slug(tmp_path) == "gh-acme-widget"
+        assert project_slug(tmp_path) == "widget"
 
     @patch("claude_kitchen.state.subprocess.run")
     def test_no_dot_git_suffix(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("https://github.com/acme/widget")
-        assert project_slug(tmp_path) == "gh-acme-widget"
+        assert project_slug(tmp_path) == "widget"
 
     @patch("claude_kitchen.state.subprocess.run")
-    def test_gitlab_subgroup_takes_last_two(self, mock_run, tmp_path):
+    def test_subgroup_takes_repo_basename(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("https://gitlab.com/acme/subgroup/widget")
-        assert project_slug(tmp_path) == "gl-subgroup-widget"
+        assert project_slug(tmp_path) == "widget"
 
     @patch("claude_kitchen.state.subprocess.run")
-    def test_cross_forge_non_collision(self, mock_run, tmp_path):
+    def test_cross_forge_collision_is_accepted(self, mock_run, tmp_path):
+        # Short slug drops forge/owner, so the same repo name on different
+        # forges collides by design — the user disambiguates with an explicit
+        # kitchen name. Documenting the collision, not guarding against it.
         mock_run.return_value = self._git_remote("https://github.com/x/y")
         gh = project_slug(tmp_path)
         mock_run.return_value = self._git_remote("https://gitlab.com/x/y")
         gl = project_slug(tmp_path)
-        assert gh != gl, "Same owner/repo on different forges must not collide"
-        assert gh == "gh-x-y" and gl == "gl-x-y"
+        assert gh == gl == "y"
 
     @patch("claude_kitchen.state.subprocess.run")
-    def test_unknown_host_uses_dotted_hostname(self, mock_run, tmp_path):
+    def test_unknown_host_uses_repo_basename(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("https://bitbucket.org/team/repo")
-        assert project_slug(tmp_path) == "bitbucket-org-team-repo"
+        assert project_slug(tmp_path) == "repo"
 
     @patch("claude_kitchen.state.subprocess.run")
-    def test_self_hosted_non_collision(self, mock_run, tmp_path):
+    def test_self_hosted_collision_is_accepted(self, mock_run, tmp_path):
         mock_run.return_value = self._git_remote("https://git.corp-a.example/x/y")
         a = project_slug(tmp_path)
         mock_run.return_value = self._git_remote("https://git.corp-b.example/x/y")
         b = project_slug(tmp_path)
-        assert a != b, "Self-hosted repos on different hosts must not collide"
-        assert a == "git-corp-a-example-x-y"
-        assert b == "git-corp-b-example-x-y"
+        assert a == b == "y"
 
     @patch("claude_kitchen.state.subprocess.run")
     def test_no_remote_falls_back_to_full_toplevel_path(self, mock_run, tmp_path):
@@ -193,6 +193,20 @@ class TestProjectSlug:
         mock_run.side_effect = [no_remote, not_a_repo]
         with pytest.raises(SystemExit, match="not a git repository"):
             project_slug(tmp_path)
+
+
+class TestNamespaced:
+    def _git_remote(self, url):
+        return MagicMock(returncode=0, stdout=url + "\n")
+
+    @patch("claude_kitchen.state.subprocess.run")
+    def test_scopes_name_by_project_slug(self, mock_run, tmp_path):
+        # The SAME requested name in two different projects yields two
+        # distinct namespaced kitchens — never a shared bare name.
+        mock_run.return_value = self._git_remote("git@github.com:acme/a.git")
+        assert namespaced(tmp_path, "foo") == "a-foo"
+        mock_run.return_value = self._git_remote("git@github.com:acme/b.git")
+        assert namespaced(tmp_path, "foo") == "b-foo"
 
 
 class TestWikiAndNotesDirs:

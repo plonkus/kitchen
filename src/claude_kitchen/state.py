@@ -70,20 +70,17 @@ def update_status(base: Path, name: str, **fields):
     write_status(base, name, current)
 
 
-_FORGE_PREFIXES = {"github.com": "gh", "gitlab.com": "gl"}
-
-
 def project_slug(project_path: Path) -> str:
     """Derive a project slug from `git config --get remote.origin.url`.
 
-    Returns "<forge>-<owner>-<repo>" — forge prefix prevents
-    cross-forge collisions (github.com/x/y vs gitlab.com/x/y). Unknown
-    hosts are canonicalized by replacing "." with "-" on the full
-    hostname, so self-hosted git.corp-a.example and git.corp-b.example
-    don't collide. When no remote is configured but the path is a git
-    repo, falls back to a slugification of the absolute repo toplevel
-    path (collision-proof across unrelated repos on one machine; loses
-    cross-machine identity). Fails loudly if the path is not a git repo.
+    Returns the bare repo name — the last path component of the remote,
+    sans `.git`. `git@github.com:plonkus/racksmith.git` -> `racksmith`.
+    Two unrelated repos that share a repo name collide; that's the user's
+    problem to disambiguate with an explicit `--kitchen` / kitchen name.
+    When no remote is configured but the path is a git repo, falls back to
+    a slugification of the absolute repo toplevel path (collision-proof
+    across unrelated repos on one machine; loses cross-machine identity).
+    Fails loudly if the path is not a git repo.
     """
     result = subprocess.run(
         ["git", "-C", str(project_path), "config", "--get", "remote.origin.url"],
@@ -96,25 +93,26 @@ def project_slug(project_path: Path) -> str:
         url = url[:-4]
 
     if ":" in url and "://" not in url:
-        host_part, _, path_part = url.partition(":")
-        host = host_part
+        _, _, path_part = url.partition(":")
     elif "://" in url:
-        rest = url.split("://", 1)[1]
-        host, _, path_part = rest.partition("/")
+        _, _, path_part = url.split("://", 1)[1].partition("/")
     else:
         sys.exit(f"Could not parse remote URL: {url}")
-
-    if "@" in host:
-        host = host.split("@", 1)[1]
-    if ":" in host:
-        host = host.split(":", 1)[0]
 
     parts = [p for p in path_part.split("/") if p]
     if len(parts) < 2:
         sys.exit(f"Could not derive owner/repo from remote URL: {url}")
 
-    forge = _FORGE_PREFIXES.get(host) or (host.replace(".", "-") if host else "x")
-    return f"{forge}-{parts[-2]}-{parts[-1]}"
+    return parts[-1]
+
+
+def namespaced(project: Path, requested: str) -> str:
+    """Kitchen name scoped by project slug: `<slug>-<requested>`.
+
+    The single source of truth for the namespaced-name formula, so the
+    open path and the lookup probe (resolve_kitchen) always agree.
+    """
+    return f"{project_slug(project)}-{requested}"
 
 
 def _slug_from_toplevel(project_path: Path) -> str:

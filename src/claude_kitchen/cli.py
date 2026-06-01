@@ -15,7 +15,7 @@ from claude_kitchen.tmux import (
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, wiki_dir, notes_dir,
+    project_slug, namespaced, wiki_dir, notes_dir,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous
@@ -68,11 +68,29 @@ def _seed(dir_path: Path, templates: dict[str, str]):
             f.write_text(body)
 
 
+def _cwd_project() -> Path | None:
+    """The git toplevel of cwd, or None when cwd isn't inside a git repo."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip())
+
+
 def resolve_kitchen(kitchen: str = None) -> str:
     """Resolve which kitchen to target. Returns bare name."""
     if kitchen:
         if kitchen == "projects":
             sys.exit("'projects' is a reserved kitchen name (used for the project wiki).")
+        # A bare name typed from inside a project root still resolves to its
+        # namespaced kitchen when no literal `ck-<kitchen>` session exists —
+        # so `kitchen close foo` reaches `ck-<slug>-foo`. If the bare session
+        # does exist (a legacy kitchen) we keep targeting it.
+        if not has_session(mc(kitchen)):
+            project = _cwd_project()
+            if project and has_session(mc(namespaced(project, kitchen))):
+                return namespaced(project, kitchen)
         return kitchen
     env = os.environ.get("AGENT_SESSION", "")
     if env:
@@ -252,13 +270,54 @@ def cmd_sweep(args):
         print("Swept 0 stale cooks.")
 
 
+def _legacy_bare_kitchen(requested: str, project: Path):
+    """Detect a pre-namespacing bare-name kitchen owned by this project.
+
+    Returns (name, base, kitchen_file) when a kitchen at the bare
+    `requested` name has both a live `ck-<requested>` session and a
+    state dir whose recorded `source` slugs to this project's slug —
+    i.e. it's this project's own legacy kitchen. Otherwise None.
+    """
+    base = state_dir(requested)
+    kitchen_file = base / "kitchen.json"
+    if not kitchen_file.exists() or not has_session(mc(requested)):
+        return None
+    try:
+        src = json.loads(kitchen_file.read_text()).get("source")
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not src or not Path(src).is_dir():
+        return None
+    if project_slug(Path(src)) != project_slug(project):
+        return None
+    return requested, base, kitchen_file
+
+
 def cmd_open(args):
     project = resolve_project(args.project)
-    name = args.name or project.name
-    session = mc(name)
+    requested = args.name or project.name
+    # Namespace the kitchen by project slug so kitchens for different projects
+    # never collide on tmux session / state dir / socket names — e.g.
+    # `kitchen open main` in two repos yields plow-main and racksmith-main,
+    # not a shared "main". The git branch/worktree keeps the bare `requested`
+    # name (it already lives inside the project's own repo).
+    name = namespaced(project, requested)
     base = state_dir(name)
-
     kitchen_file = base / "kitchen.json"
+
+    # Soft cutover: a kitchen created before namespacing lives at the bare
+    # `requested` name. If the namespaced form doesn't exist yet but a
+    # bare-form kitchen owned by this same project does, attach to it
+    # instead of forking a fresh namespaced kitchen alongside the live one.
+    legacy = not kitchen_file.exists() and _legacy_bare_kitchen(requested, project)
+    if legacy:
+        name, base, kitchen_file = legacy
+        print(
+            f"kitchen '{requested}' predates namespacing; consider close+reopen "
+            f"as '{namespaced(project, requested)}' to align with the new convention."
+        )
+
+    session = mc(name)
     resuming = kitchen_file.exists()
 
     sous_session_id = None
@@ -276,7 +335,11 @@ def cmd_open(args):
         kj = json.loads(kitchen_file.read_text())
         project = Path(kj.get("worktree", kj.get("source", str(project))))
         derived = project_slug(Path(kj["source"]))
-        if kj.get("slug") and kj["slug"] != derived:
+        # A legacy bare kitchen stores its old long-form slug; the slug
+        # format changed under it, so refresh rather than treating the
+        # format change as remote drift (detection already confirmed it's
+        # the same repo).
+        if not legacy and kj.get("slug") and kj["slug"] != derived:
             sys.exit(
                 f"Stored slug ({kj['slug']}) does not match current git remote "
                 f"({derived}). Run `kitchen close {name}` and reopen."
@@ -292,7 +355,7 @@ def cmd_open(args):
         kj = {"source": str(source), "slug": slug}
         if args.name:
             wt_path = Path(args.worktree_path) if args.worktree_path else None
-            project = create_worktree(project, name, wt_path)
+            project = create_worktree(project, requested, wt_path)
             kj["worktree"] = str(project)
 
         kitchen_file.write_text(json.dumps(kj) + "\n")

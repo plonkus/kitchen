@@ -674,14 +674,15 @@ class TestBrigadeAlignedOutput:
 
 
 class TestCmdOpen:
-    @patch("claude_kitchen.cli.project_slug", return_value="gh-acme-widget")
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
     @patch("claude_kitchen.cli.spawn_sous")
     @patch("claude_kitchen.cli.has_session", return_value=False)
     @patch("claude_kitchen.cli.tmux")
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/risotto"))
     @patch("claude_kitchen.cli.resolve_project")
-    def test_writes_mcp_config_and_execs(self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has, mock_spawn, mock_slug, tmp_path, monkeypatch):
+    def test_writes_mcp_config_and_execs(self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has, mock_spawn, mock_slug, mock_ns, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_resolve.return_value = Path("/tmp/myproject")
         mock_state.return_value = tmp_path
@@ -701,10 +702,11 @@ class TestCmdOpen:
         config = json.loads(mcp_config.read_text())
         assert "kitchen" in config["mcpServers"]
 
-        # spawn_sous called with kitchen name, state dir, prompt, and worktree path
+        # spawn_sous called with the namespaced kitchen name, state dir,
+        # prompt, and worktree path (worktree keeps the bare `requested` name)
         mock_spawn.assert_called_once()
         call_args = mock_spawn.call_args
-        assert call_args[0][0] == "risotto"
+        assert call_args[0][0] == "widget-risotto"
         assert call_args[0][1] == tmp_path
         assert call_args[0][3] == Path("/tmp/risotto")
 
@@ -800,13 +802,14 @@ class TestCmdOpenNoOriginRepo:
 
 
 class TestCmdOpenFailures:
-    @patch("claude_kitchen.cli.project_slug", return_value="gh-acme-widget")
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
     @patch("claude_kitchen.cli.has_session", return_value=False)
     @patch("claude_kitchen.cli.tmux")
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/risotto"))
     @patch("claude_kitchen.cli.resolve_project")
-    def test_exits_when_sous_chef_md_missing(self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has, mock_slug, tmp_path, monkeypatch):
+    def test_exits_when_sous_chef_md_missing(self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has, mock_slug, mock_ns, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_resolve.return_value = Path("/tmp/myproject")
         mock_state.return_value = tmp_path
@@ -822,20 +825,21 @@ class TestCmdOpenFailures:
 
 
 class TestCmdOpenWikiAndNotes:
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
     @patch("claude_kitchen.cli.spawn_sous")
     @patch("claude_kitchen.cli.has_session", return_value=False)
     @patch("claude_kitchen.cli.tmux")
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/risotto"))
     @patch("claude_kitchen.cli.resolve_project")
-    @patch("claude_kitchen.cli.project_slug", return_value="gh-acme-widget")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
     def test_creates_wiki_and_notes(
         self, mock_slug, mock_resolve, mock_wt, mock_state,
-        mock_tmux, mock_has, mock_spawn, tmp_path, monkeypatch,
+        mock_tmux, mock_has, mock_spawn, mock_ns, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_resolve.return_value = Path("/tmp/myproject")
-        mock_state.return_value = tmp_path / ".claude-kitchen" / "risotto"
+        mock_state.return_value = tmp_path / ".claude-kitchen" / "widget-risotto"
         mock_tmux.return_value = MagicMock(returncode=0)
 
         args = MagicMock()
@@ -846,32 +850,34 @@ class TestCmdOpenWikiAndNotes:
 
         cmd_open(args)
 
-        wiki = tmp_path / ".claude-kitchen" / "projects" / "gh-acme-widget" / "wiki"
-        notes = tmp_path / ".claude-kitchen" / "risotto" / "notes"
+        # Wiki keys off the project slug; notes off the (namespaced) kitchen name.
+        wiki = tmp_path / ".claude-kitchen" / "projects" / "widget" / "wiki"
+        notes = tmp_path / ".claude-kitchen" / "widget-risotto" / "notes"
         assert (wiki / "mistakes.md").exists()
         assert (wiki / "preferences.md").exists()
         assert (notes / "handoff.md").exists()
         assert (notes / "log.md").exists()
 
         kj = json.loads((mock_state.return_value / "kitchen.json").read_text())
-        assert kj["slug"] == "gh-acme-widget"
+        assert kj["slug"] == "widget"
 
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
     @patch("claude_kitchen.cli.spawn_sous")
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.tmux")
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.resolve_project")
-    @patch("claude_kitchen.cli.project_slug", return_value="gh-acme-widget")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
     def test_resume_reads_stored_slug(
         self, mock_slug, mock_resolve, mock_state,
-        mock_tmux, mock_has, mock_spawn, tmp_path, monkeypatch,
+        mock_tmux, mock_has, mock_spawn, mock_ns, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_resolve.return_value = Path("/tmp/myproject")
-        base = tmp_path / ".claude-kitchen" / "risotto"
+        base = tmp_path / ".claude-kitchen" / "widget-risotto"
         base.mkdir(parents=True)
         (base / "kitchen.json").write_text(json.dumps({
-            "source": "/tmp/myproject", "slug": "gh-acme-widget",
+            "source": "/tmp/myproject", "slug": "widget",
         }) + "\n")
         mock_state.return_value = base
         mock_tmux.return_value = MagicMock(returncode=0)
@@ -883,28 +889,29 @@ class TestCmdOpenWikiAndNotes:
         args.resume = False
 
         cmd_open(args)
-        assert (tmp_path / ".claude-kitchen" / "projects" / "gh-acme-widget" / "wiki" / "mistakes.md").exists()
+        assert (tmp_path / ".claude-kitchen" / "projects" / "widget" / "wiki" / "mistakes.md").exists()
         # The resuming branch rewrites kitchen.json with the re-derived slug.
         # Verify the rewrite actually happened and preserved the source field.
         kj = json.loads((base / "kitchen.json").read_text())
-        assert kj == {"source": "/tmp/myproject", "slug": "gh-acme-widget"}
+        assert kj == {"source": "/tmp/myproject", "slug": "widget"}
 
+    @patch("claude_kitchen.cli.namespaced", return_value="renamed-risotto")
     @patch("claude_kitchen.cli.spawn_sous")
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.tmux")
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.resolve_project")
-    @patch("claude_kitchen.cli.project_slug", return_value="gh-newowner-widget")
+    @patch("claude_kitchen.cli.project_slug", return_value="renamed")
     def test_drift_fails_loudly(
         self, mock_slug, mock_resolve, mock_state,
-        mock_tmux, mock_has, mock_spawn, tmp_path, monkeypatch,
+        mock_tmux, mock_has, mock_spawn, mock_ns, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_resolve.return_value = Path("/tmp/myproject")
-        base = tmp_path / ".claude-kitchen" / "risotto"
+        base = tmp_path / ".claude-kitchen" / "renamed-risotto"
         base.mkdir(parents=True)
         (base / "kitchen.json").write_text(json.dumps({
-            "source": "/tmp/myproject", "slug": "gh-acme-widget",
+            "source": "/tmp/myproject", "slug": "widget",
         }) + "\n")
         mock_state.return_value = base
         mock_tmux.return_value = MagicMock(returncode=0)
@@ -915,8 +922,92 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
 
-        with pytest.raises(SystemExit, match=r"Run `kitchen close risotto` and reopen\."):
+        with pytest.raises(SystemExit, match=r"Run `kitchen close renamed-risotto` and reopen\."):
             cmd_open(args)
+
+
+class TestCmdOpenSoftCutover:
+    """A pre-namespacing bare-name kitchen owned by this project is
+    re-attached (with a deprecation suggestion) instead of forked."""
+
+    @patch("claude_kitchen.cli.namespaced", return_value="proj-foo")
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.list_windows", return_value=[])
+    @patch("claude_kitchen.cli.tmux", return_value=MagicMock(returncode=0))
+    @patch("claude_kitchen.cli.project_slug", return_value="proj")
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_attaches_legacy_bare_kitchen(
+        self, mock_resolve, mock_slug, mock_tmux, mock_lw, mock_spawn, mock_ns,
+        tmp_path, monkeypatch, capsys,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        mock_resolve.return_value = proj
+
+        ns_base = tmp_path / ".claude-kitchen" / "proj-foo"      # namespaced: absent
+        bare_base = tmp_path / ".claude-kitchen" / "foo"          # legacy: present
+        bare_base.mkdir(parents=True)
+        (bare_base / "kitchen.json").write_text(json.dumps({
+            "source": str(proj), "slug": "old-long-slug",
+        }) + "\n")
+
+        def state_dir_for(name):
+            return {"proj-foo": ns_base, "foo": bare_base}[name]
+
+        # Only the legacy bare session is live; the namespaced one is not.
+        def has_session_for(session):
+            return session == "ck-foo"
+
+        args = MagicMock()
+        args.name = "foo"
+        args.project = str(proj)
+        args.worktree_path = None
+        args.resume = False
+
+        with patch("claude_kitchen.cli.state_dir", side_effect=state_dir_for), \
+             patch("claude_kitchen.cli.has_session", side_effect=has_session_for):
+            cmd_open(args)
+
+        out = capsys.readouterr().out
+        assert "predates namespacing" in out
+        assert "proj-foo" in out
+        # Attached to the legacy bare kitchen, not the namespaced fork.
+        assert mock_spawn.call_args[0][0] == "foo"
+        # No namespaced kitchen forked alongside it.
+        assert not (ns_base / "kitchen.json").exists()
+        # Legacy slug refreshed to the new short form (drift guard bypassed).
+        kj = json.loads((bare_base / "kitchen.json").read_text())
+        assert kj["slug"] == "proj"
+
+
+class TestResolveKitchenProbe:
+    @patch("claude_kitchen.cli.namespaced", return_value="proj-foo")
+    @patch("claude_kitchen.cli._cwd_project", return_value=Path("/proj"))
+    def test_probes_namespaced_when_bare_absent(self, mock_cwd, mock_ns):
+        # bare ck-foo missing, namespaced ck-proj-foo present → resolve to it.
+        def has_session_for(session):
+            return session == "ck-proj-foo"
+        with patch("claude_kitchen.cli.has_session", side_effect=has_session_for):
+            assert resolve_kitchen("foo") == "proj-foo"
+
+    @patch("claude_kitchen.cli.namespaced", return_value="proj-foo")
+    @patch("claude_kitchen.cli._cwd_project", return_value=Path("/proj"))
+    def test_prefers_live_bare_session(self, mock_cwd, mock_ns):
+        # A legacy bare session that's live keeps being targeted directly.
+        with patch("claude_kitchen.cli.has_session", return_value=True):
+            assert resolve_kitchen("foo") == "foo"
+
+    @patch("claude_kitchen.cli.namespaced", return_value="proj-foo")
+    @patch("claude_kitchen.cli._cwd_project", return_value=Path("/proj"))
+    def test_returns_bare_when_neither_exists(self, mock_cwd, mock_ns):
+        with patch("claude_kitchen.cli.has_session", return_value=False):
+            assert resolve_kitchen("foo") == "foo"
+
+    @patch("claude_kitchen.cli._cwd_project", return_value=None)
+    def test_no_probe_outside_project_root(self, mock_cwd):
+        with patch("claude_kitchen.cli.has_session", return_value=False):
+            assert resolve_kitchen("foo") == "foo"
 
 
 class TestCmdHireFailures:

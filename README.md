@@ -109,6 +109,19 @@ tmux attach -t ck-<kitchen-name>
 
 (When you omit `<name>`, the kitchen name is the repo directory's name.)
 
+The kitchen is automatically namespaced by the project's slug — the repo name,
+taken from the git remote (`git@github.com:plonkus/racksmith.git` → `racksmith`).
+`kitchen open main` becomes `racksmith-main`, so the same name in two different
+repos never collides on the tmux session, state dir, or channel socket. The
+`tmux attach -t` target above is `ck-<project-slug>-<name>`. (Two unrelated repos
+that share a name collide; disambiguate with an explicit kitchen name.)
+
+A kitchen opened before namespacing existed lives at the bare `<name>`. The first
+`kitchen open <name>` from its project root re-attaches it (with a one-line
+suggestion to close+reopen under the namespaced name) instead of forking a new
+kitchen; bare-name lookups (`kitchen close <name>`, etc.) keep resolving from
+inside the project root.
+
 ## Usage
 
 Once the kitchen is open, just talk to the sous chef. It knows how to hire cooks, send them work, and manage the workflow:
