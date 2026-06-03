@@ -152,6 +152,26 @@ SOUS_STATUS_FILE = "sous.json"
 # "waiting on you"; older than this it's just idle.
 _WAITING_WINDOW = timedelta(minutes=10)
 
+# A kitchen idle longer than this is "dormant": dropped from the per-kitchen
+# footer lines (summarized as one trailing count) and skipped by boot-time
+# transcript ingestion. Same threshold the spec uses for both.
+_DORMANT_WINDOW = timedelta(hours=24)
+
+
+def _transcript_slug(path: str) -> str:
+    """Claude Code's cwd → ~/.claude/projects/<slug>/ rule: every
+    non-alphanumeric character becomes '-' (per-character, no run-collapsing)."""
+    return re.sub(r"[^a-zA-Z0-9]", "-", path)
+
+
+def transcript_path_for(cwd: Optional[str], session_id: Optional[str]) -> Optional[Path]:
+    """Derive a sous's Claude Code transcript path from the cwd it started in
+    and its session id. None if either is missing or the file isn't on disk."""
+    if not cwd or not session_id:
+        return None
+    p = Path.home() / ".claude" / "projects" / _transcript_slug(cwd) / f"{session_id}.jsonl"
+    return p if p.exists() else None
+
 
 def read_sous_status(base: Path) -> Optional[dict]:
     path = base / SOUS_STATUS_FILE
@@ -183,11 +203,13 @@ def _kitchen_dirs() -> list[Path]:
 def classify_kitchen(base: Path, now: datetime) -> Optional[dict]:
     """Read one kitchen's state and classify it for the overview footer/snapshot.
 
-    Returns {name, state, summary, mtime} where state is one of
-    waiting_on_you / working / idle / booting, or None if the kitchen is
-    excluded (overview itself, or a parent_kitchen sub-sous) or unreadable —
-    e.g. it closed mid-render, in which case we skip it rather than let a
-    racing stat() crash the whole footer/forward.
+    Returns {name, state, summary, mtime, worktree, source, sous_session_id}
+    where state is one of waiting_on_you / working / idle / booting, or None if
+    the kitchen is excluded (overview itself, or a parent_kitchen sub-sous) or
+    unreadable — e.g. it closed mid-render, in which case we skip it rather than
+    let a racing stat() crash the whole footer/forward. The footer uses name /
+    state / summary / mtime; the snapshot helper also uses the passthrough
+    kitchen.json fields (worktree / source / sous_session_id).
     """
     try:
         kj = json.loads((base / "kitchen.json").read_text())
@@ -216,7 +238,15 @@ def classify_kitchen(base: Path, now: datetime) -> Optional[dict]:
     else:
         state = "idle"
 
-    return {"name": base.name, "state": state, "summary": sous.get("summary"), "mtime": mtime}
+    return {
+        "name": base.name,
+        "state": state,
+        "summary": sous.get("summary"),
+        "mtime": mtime,
+        "worktree": kj.get("worktree"),
+        "source": kj.get("source"),
+        "sous_session_id": kj.get("sous_session_id"),
+    }
 
 
 _STATE_GLYPH = {"waiting_on_you": "⏳", "working": "🔄", "booting": "🐣", "idle": "💤"}
@@ -246,16 +276,26 @@ def _humanize_elapsed(delta: timedelta) -> str:
 
 def _render_kitchen_status_footer(now: Optional[datetime] = None) -> str:
     """Deterministic cross-kitchen status block included in every overview
-    notification. Pure function of on-disk state — no LLM involved."""
+    notification. Pure function of on-disk state — no LLM involved.
+
+    Kitchens idle > 24h are dormant: dropped from the per-kitchen lines and
+    summarized as a single trailing count so a machine with dozens of stale
+    state dirs still shows a short, scannable footer."""
     now = now or datetime.now(timezone.utc)
-    kitchens = [k for k in (classify_kitchen(d, now) for d in _kitchen_dirs()) if k]
-    kitchens.sort(key=lambda k: (_STATE_ORDER.get(k["state"], 9), k["name"]))
+    all_kitchens = [k for k in (classify_kitchen(d, now) for d in _kitchen_dirs()) if k]
+    active, dormant = [], 0
+    for k in all_kitchens:
+        if (now - k["mtime"]) > _DORMANT_WINDOW:
+            dormant += 1
+        else:
+            active.append(k)
+    active.sort(key=lambda k: (_STATE_ORDER.get(k["state"], 9), k["name"]))
 
     header = "─── KITCHEN STATUS " + "─" * 24
     lines = [header]
-    if not kitchens:
+    if not active and not dormant:
         lines.append("   (no other kitchens open)")
-    for k in kitchens:
+    for k in active:
         glyph = _STATE_GLYPH.get(k["state"], "•")
         label = _STATE_LABEL.get(k["state"], k["state"])
         elapsed = "" if k["state"] == "booting" else f"  ({_humanize_elapsed(now - k['mtime'])})"
@@ -266,5 +306,8 @@ def _render_kitchen_status_footer(now: Optional[datetime] = None) -> str:
             if len(ctx) > 70:
                 ctx = ctx[:69] + "…"
             lines.append(f"   └─ {ctx}")
+    if dormant:
+        plural = "kitchen" if dormant == 1 else "kitchens"
+        lines.append(f"   … and {dormant} dormant {plural} (idle > 24h)")
     lines.append("─" * len(header))
     return "\n".join(lines)

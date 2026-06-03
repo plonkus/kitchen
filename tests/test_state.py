@@ -14,7 +14,7 @@ from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
     update_sous_status, read_sous_status, _render_kitchen_status_footer,
-    classify_kitchen,
+    classify_kitchen, _transcript_slug, transcript_path_for,
 )
 
 
@@ -148,6 +148,51 @@ class TestKitchenStatusFooter:
         out = _render_kitchen_status_footer()
         assert "good" in out
         assert "bad" not in out
+
+    def test_dormancy_filter_summarizes_stale(self, tmp_path, monkeypatch):
+        # Kitchens idle > 24h drop from the per-kitchen lines and collapse into
+        # a single trailing count.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        self._mk(root, "active", {"sous_session_id": "x"}, {"status": "idle"}, mtime_age_s=5 * 60)
+        self._mk(root, "old1", {"sous_session_id": "y"}, {"status": "idle"}, mtime_age_s=30 * 3600)
+        self._mk(root, "old2", {"sous_session_id": "z"}, {"status": "idle"}, mtime_age_s=48 * 3600)
+        out = _render_kitchen_status_footer()
+        assert "active" in out
+        assert "old1" not in out and "old2" not in out
+        assert "2 dormant kitchens (idle > 24h)" in out
+
+    def test_dormancy_singular(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        self._mk(root, "old1", {"sous_session_id": "y"}, {"status": "idle"}, mtime_age_s=30 * 3600)
+        out = _render_kitchen_status_footer()
+        assert "1 dormant kitchen (idle > 24h)" in out
+
+
+class TestTranscriptPath:
+    def test_slug_rule_examples(self):
+        # Per spec §transcript-path slug rule (empirically verified on disk):
+        # every non-alphanumeric char → '-', per character, no run-collapsing.
+        assert _transcript_slug("/Users/plucas/.gemini/config/projects") == \
+            "-Users-plucas--gemini-config-projects"
+        assert _transcript_slug("/Users/plucas/cncorp/plow/.bare") == \
+            "-Users-plucas-cncorp-plow--bare"
+        assert _transcript_slug("/Users/plucas/cncorp/codel/lark-terraform-codel") == \
+            "-Users-plucas-cncorp-codel-lark-terraform-codel"
+
+    def test_path_none_without_cwd_or_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert transcript_path_for("/proj", None) is None
+        assert transcript_path_for(None, "sid") is None
+
+    def test_path_none_when_file_missing_else_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert transcript_path_for("/proj", "sid") is None  # file not on disk
+        p = tmp_path / ".claude" / "projects" / "-proj" / "sid.jsonl"
+        p.parent.mkdir(parents=True)
+        p.write_text("{}")
+        assert transcript_path_for("/proj", "sid") == p
 
 
 class TestStatus:

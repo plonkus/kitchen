@@ -16,7 +16,8 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
-    update_sous_status,
+    update_sous_status, classify_kitchen, transcript_path_for,
+    _kitchen_dirs, _render_kitchen_status_footer,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous
@@ -452,6 +453,43 @@ def cmd_overview(args):
         sys.exit(f"overview-sous.md not found at {role_md}")
 
     spawn_sous(name, base, role_md.read_text(), overview=True)
+
+
+def cmd_overview_snapshot(args):
+    """Print a JSON digest of every open kitchen for the overview sous to
+    ingest at boot. Includes the derived Claude Code transcript path so the
+    sous can read recent activity without reproducing the slug rule by hand.
+    Excludes overview itself and parent_kitchen sub-sous (via classify_kitchen).
+    """
+    now = datetime.now(timezone.utc)
+    kitchens = []
+    for d in _kitchen_dirs():
+        info = classify_kitchen(d, now)
+        if not info:
+            continue
+        # The sous's cwd at session start is the worktree (it os.chdir's there)
+        # when present, else the project source — that's what Claude Code slugs.
+        cwd = info["worktree"] or info["source"]
+        tpath = transcript_path_for(cwd, info["sous_session_id"])
+        kitchens.append({
+            "name": info["name"],
+            "session": mc(info["name"]),
+            "worktree": info["worktree"],
+            "source": info["source"],
+            "sous_session_id": info["sous_session_id"],
+            "transcript_path": str(tpath) if tpath else None,
+            "last_status_mtime": info["mtime"].isoformat(),
+            "status": info["state"],
+            "summary": info["summary"],
+        })
+    print(json.dumps({"kitchens": kitchens}, indent=2))
+
+
+def cmd_overview_footer(args):
+    """Print the deterministic KITCHEN STATUS footer (dormancy-filtered). The
+    overview sous shells out to this to end a response or answer `status`,
+    so the footer it shows matches the one pushed in channel notifications."""
+    print(_render_kitchen_status_footer())
 
 
 def cmd_hire(args):
@@ -1138,6 +1176,8 @@ def main():
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
 
     sub.add_parser("overview", help="Open the global cross-kitchen overview kitchen")
+    sub.add_parser("overview-snapshot", help="(internal) JSON digest of open kitchens for the overview sous")
+    sub.add_parser("overview-footer", help="(internal) Print the deterministic KITCHEN STATUS footer")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")
@@ -1195,6 +1235,10 @@ def main():
         cmd_open(args)
     elif args.command == "overview":
         cmd_overview(args)
+    elif args.command == "overview-snapshot":
+        cmd_overview_snapshot(args)
+    elif args.command == "overview-footer":
+        cmd_overview_footer(args)
     elif args.command == "hire":
         cmd_hire(args)
     elif args.command == "ticket":

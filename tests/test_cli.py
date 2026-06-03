@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_overview, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _forward_to_overview_if_open
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_overview, cmd_overview_snapshot, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _forward_to_overview_if_open
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -945,6 +945,81 @@ class TestCloseOverview:
         assert not (base / "cooks").exists()
         assert not (base / "notes").exists()
         mock_tmux.assert_called_once()  # kill-session
+
+
+class TestOverviewSnapshot:
+    def _mk(self, home, name, kj, sous=None):
+        d = home / ".claude-kitchen" / name
+        d.mkdir(parents=True)
+        (d / "kitchen.json").write_text(json.dumps(kj))
+        if sous is not None:
+            (d / "sous.json").write_text(json.dumps(sous))
+
+    def _transcript(self, home, cwd, session_id):
+        import re
+        slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+        p = home / ".claude" / "projects" / slug / f"{session_id}.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}\n")
+        return p
+
+    def _run(self, capsys):
+        cmd_overview_snapshot(MagicMock())
+        return json.loads(capsys.readouterr().out)
+
+    def test_schema_filters_and_slug(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # worktree kitchen: transcript slug must come from worktree, not source
+        self._mk(tmp_path, "wt", {"source": "/proj/main", "worktree": "/proj/wt",
+                                  "sous_session_id": "sid-wt"},
+                 {"status": "idle", "summary": "done"})
+        self._transcript(tmp_path, "/proj/wt", "sid-wt")
+        # non-worktree kitchen: slug from source
+        self._mk(tmp_path, "plain", {"source": "/proj/plain", "worktree": None,
+                                     "sous_session_id": "sid-plain"}, {"status": "working"})
+        self._transcript(tmp_path, "/proj/plain", "sid-plain")
+        # brand-new kitchen: no sous_session_id, no sous.json
+        self._mk(tmp_path, "fresh", {"source": "/proj/fresh"})
+        # excluded: overview itself + a parent_kitchen sub-sous
+        self._mk(tmp_path, "overview", {"slug": "overview"})
+        self._mk(tmp_path, "subby", {"source": "/proj/s", "parent_kitchen": "wt",
+                                     "sous_session_id": "z"}, {"status": "idle"})
+
+        out = self._run(capsys)
+        by = {k["name"]: k for k in out["kitchens"]}
+        assert set(by) == {"wt", "plain", "fresh"}  # overview + subby filtered out
+
+        # worktree slug correctness: derived from worktree path, file exists
+        assert by["wt"]["session"] == "ck-wt"
+        assert by["wt"]["worktree"] == "/proj/wt"
+        assert by["wt"]["transcript_path"] == str(
+            tmp_path / ".claude" / "projects" / "-proj-wt" / "sid-wt.jsonl")
+        assert by["wt"]["summary"] == "done"
+        assert by["wt"]["last_status_mtime"]  # ISO string present
+        assert by["wt"]["status"] in ("idle", "waiting_on_you")
+
+        # non-worktree: slug from source
+        assert by["plain"]["transcript_path"] == str(
+            tmp_path / ".claude" / "projects" / "-proj-plain" / "sid-plain.jsonl")
+
+        # brand-new → booting, null transcript + summary, no crash
+        assert by["fresh"]["sous_session_id"] is None
+        assert by["fresh"]["transcript_path"] is None
+        assert by["fresh"]["status"] == "booting"
+        assert by["fresh"]["summary"] is None
+
+    def test_empty_when_no_kitchens(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".claude-kitchen").mkdir()
+        assert self._run(capsys) == {"kitchens": []}
+
+    def test_missing_transcript_file_is_null(self, tmp_path, monkeypatch, capsys):
+        # session id present but the transcript file isn't on disk → null
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._mk(tmp_path, "k", {"source": "/proj/k", "worktree": None,
+                                 "sous_session_id": "ghost"}, {"status": "idle"})
+        out = self._run(capsys)
+        assert out["kitchens"][0]["transcript_path"] is None
 
 
 class TestSweepCooks:
