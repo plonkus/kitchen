@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -135,3 +136,132 @@ def _slug_from_toplevel(project_path: Path) -> str:
     if not slug:
         sys.exit(f"Could not derive a slug from toplevel {toplevel!r}.")
     return slug
+
+
+# --- Overview: sous status + cross-kitchen footer ----------------------------
+#
+# A regular kitchen's sous runs in the head chef's terminal, not a tmux window,
+# so its status can't live in cooks/ (sweep deletes non-window cooks, and
+# brigade/statusline count cooks/*.json as agents). Instead the sous persists
+# its own status at <state-dir>/sous.json — read only by the overview footer
+# and (Chunk 3) the snapshot helper.
+
+SOUS_STATUS_FILE = "sous.json"
+
+# A kitchen whose last sous activity was a Stop within this window is still
+# "waiting on you"; older than this it's just idle.
+_WAITING_WINDOW = timedelta(minutes=10)
+
+
+def read_sous_status(base: Path) -> Optional[dict]:
+    path = base / SOUS_STATUS_FILE
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def update_sous_status(base: Path, **fields):
+    """Merge `fields` into <state-dir>/sous.json (atomic). Mirrors update_status
+    but writes the sous's own file at the state-dir root, not under cooks/."""
+    current = read_sous_status(base) or {}
+    current.update(fields)
+    atomic_write_json(base / SOUS_STATUS_FILE, current)
+
+
+def _kitchen_dirs() -> list[Path]:
+    """All kitchen state dirs under ~/.claude-kitchen that carry a kitchen.json."""
+    root = Path.home() / ".claude-kitchen"
+    if not root.is_dir():
+        return []
+    return sorted(d for d in root.iterdir()
+                  if d.is_dir() and (d / "kitchen.json").exists())
+
+
+def classify_kitchen(base: Path, now: datetime) -> Optional[dict]:
+    """Read one kitchen's state and classify it for the overview footer/snapshot.
+
+    Returns {name, state, summary, mtime} where state is one of
+    waiting_on_you / working / idle / booting, or None if the kitchen is
+    excluded from overview (the overview kitchen itself, or a sub-sous whose
+    kitchen.json has parent_kitchen set).
+    """
+    try:
+        kj = json.loads((base / "kitchen.json").read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    name = base.name
+    if name == "overview" or kj.get("parent_kitchen"):
+        return None
+
+    sous = read_sous_status(base) or {}
+    status = sous.get("status")
+    sous_path = base / SOUS_STATUS_FILE
+    src = sous_path if sous_path.exists() else base
+    mtime = datetime.fromtimestamp(src.stat().st_mtime, tz=timezone.utc)
+    recent = (now - mtime) <= _WAITING_WINDOW
+    has_session_id = bool(kj.get("sous_session_id"))
+
+    if status == "working":
+        state = "working"
+    elif status == "idle" and recent:
+        state = "waiting_on_you"
+    elif not has_session_id:
+        state = "booting"
+    else:
+        state = "idle"
+
+    return {"name": name, "state": state, "summary": sous.get("summary"), "mtime": mtime}
+
+
+_STATE_GLYPH = {"waiting_on_you": "⏳", "working": "🔄", "booting": "🐣", "idle": "💤"}
+_STATE_LABEL = {
+    "waiting_on_you": "waiting on you",
+    "working": "working",
+    "booting": "booting",
+    "idle": "idle",
+}
+# Sort: who needs the head chef first, who's busy next, just-started, then idle.
+_STATE_ORDER = {"waiting_on_you": 0, "working": 1, "booting": 2, "idle": 3}
+
+
+def _humanize_elapsed(delta: timedelta) -> str:
+    secs = int(delta.total_seconds())
+    if secs < 60:
+        return "just now"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m"
+    hours, mins = divmod(mins, 60)
+    if hours < 24:
+        return f"{hours}h {mins}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def _render_kitchen_status_footer(now: Optional[datetime] = None) -> str:
+    """Deterministic cross-kitchen status block included in every overview
+    notification. Pure function of on-disk state — no LLM involved."""
+    now = now or datetime.now(timezone.utc)
+    kitchens = [k for k in (classify_kitchen(d, now) for d in _kitchen_dirs()) if k]
+    kitchens.sort(key=lambda k: (_STATE_ORDER.get(k["state"], 9), k["name"]))
+
+    header = "─── KITCHEN STATUS " + "─" * 24
+    lines = [header]
+    if not kitchens:
+        lines.append("   (no other kitchens open)")
+    for k in kitchens:
+        glyph = _STATE_GLYPH.get(k["state"], "•")
+        label = _STATE_LABEL.get(k["state"], k["state"])
+        elapsed = "" if k["state"] == "booting" else f"  ({_humanize_elapsed(now - k['mtime'])})"
+        lines.append(f"{glyph} {k['name']}    {label}{elapsed}")
+        first = (k["summary"] or "").strip().splitlines()
+        if first:
+            ctx = first[0]
+            if len(ctx) > 70:
+                ctx = ctx[:69] + "…"
+            lines.append(f"   └─ {ctx}")
+    lines.append("─" * len(header))
+    return "\n".join(lines)

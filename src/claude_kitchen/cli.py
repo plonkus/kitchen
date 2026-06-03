@@ -16,6 +16,7 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
+    update_sous_status,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous
@@ -596,6 +597,45 @@ def _hook_gate() -> tuple[str, str, Path] | None:
     return name, session, Path(status)
 
 
+def _forward_to_overview_if_open(event, payload):
+    """Forward a sous event to the overview kitchen's channel, if overview is
+    open. Repacks into the EXISTING channel schema ({cook, summary, ts}): cook
+    is the source kitchen name, summary is an event-flavored line plus the
+    deterministic KITCHEN STATUS footer. Every error is swallowed — overview
+    being closed, crashed, or slow must never break the source kitchen's sous.
+    """
+    # Self-loop guard FIRST and non-negotiable: overview's own Stop must never
+    # push to overview's own socket — that injects a channel notification which
+    # triggers another Stop, an infinite turn loop. Derive the source kitchen
+    # from AGENT_SESSION and bail if it's overview.
+    if bare(os.environ.get("AGENT_SESSION", "")) == "overview":
+        return
+    from claude_kitchen.channel import SOCK_NAME, send_to_socket
+    sock = overview_state_dir() / SOCK_NAME
+    if not sock.exists():
+        return
+    try:
+        if event == "Stop":
+            line = f"stop → {payload.get('last_assistant_message', '')}"
+        elif event == "UserPromptSubmit":
+            # Field verified empirically against Claude Code (see commit
+            # message): UserPromptSubmit carries the typed text in `prompt`.
+            text = payload.get("prompt", "")
+            line = f"prompt → {text}" if text else "prompt → "
+        else:
+            return
+        from claude_kitchen.state import _render_kitchen_status_footer
+        summary = line + "\n\n" + _render_kitchen_status_footer()
+        push = {
+            "cook": bare(os.environ.get("AGENT_SESSION", "")),
+            "summary": summary,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        send_to_socket(sock, push)
+    except Exception:
+        return
+
+
 def cmd_hook(args):
     """Handle hook events from Claude Code (stdin) or Codex (--message arg)."""
     ctx = _hook_gate()
@@ -613,10 +653,18 @@ def cmd_hook(args):
     event = payload.get("hook_event_name", "")
 
     if name == "sous":
-        # Sous hook is otherwise a no-op — prevents echo loops where the sous's
-        # own Stop events would feed back through the cook channel push below.
-        # Carveout: capture session_id on Claude Stop so `kitchen open --resume`
-        # can find this exact sous after a crash. (Sous is always Claude.)
+        # The sous never falls through to the cook-channel push below (that
+        # would echo-loop its own Stop events). It does three things, then
+        # returns:
+        #   1. capture session_id on Claude Stop so `kitchen open --resume`
+        #      finds this exact sous after a crash (sous is always Claude),
+        #   2. persist its own status at <state-dir>/sous.json so the overview
+        #      footer/snapshot can classify this kitchen — written at the
+        #      state-dir root, NOT under cooks/, so it stays out of brigade /
+        #      statusline cook counts and `kitchen sweep`,
+        #   3. forward the event to the overview kitchen if it's open.
+        # session_id is captured BEFORE the forward so the footer the forward
+        # renders sees a non-null sous_session_id (classifies past-booting).
         if not codex and event == "Stop":
             sid = payload.get("session_id")
             kj_file = base / "kitchen.json"
@@ -625,6 +673,17 @@ def cmd_hook(args):
                 if kj.get("sous_session_id") != sid:
                     kj["sous_session_id"] = sid
                     kj_file.write_text(json.dumps(kj) + "\n")
+
+        if event == "UserPromptSubmit":
+            update_sous_status(base, status="working", agent="sous", session=session)
+        elif event == "Stop":
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            update_sous_status(
+                base, status="idle", agent="sous", session=session,
+                summary=payload.get("last_assistant_message", ""), ts=ts,
+            )
+
+        _forward_to_overview_if_open(event, payload)
         return
 
     if not codex:
@@ -1055,8 +1114,8 @@ def cmd_close(args):
 
     tmux("kill-session", "-t", session)
 
-    # Clean up mcp config, socket, pid, and stale cook state
-    for f in (".mcp.json", "kitchen.sock", "sous.pid"):
+    # Clean up mcp config, socket, pid, sous status, and stale cook state
+    for f in (".mcp.json", "kitchen.sock", "sous.pid", "sous.json"):
         (base / f).unlink(missing_ok=True)
     cooks_dir = base / "cooks"
     if cooks_dir.is_dir():

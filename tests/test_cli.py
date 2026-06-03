@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_overview, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_overview, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _forward_to_overview_if_open
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -116,7 +116,10 @@ class TestHook:
         assert call_args[0][1]["cook"] == "eng"
         assert call_args[0][1]["summary"] == "all tests pass"
 
-    def test_sous_stop_is_noop(self, monkeypatch, tmp_path):
+    def test_sous_stop_persists_status_no_cook_file_no_push(self, monkeypatch, tmp_path):
+        # HOME→tmp_path makes the overview socket deterministically absent, so
+        # the forward branch no-ops and never pushes.
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AGENT_NAME", "sous")
         monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
@@ -133,13 +136,33 @@ class TestHook:
         with patch("claude_kitchen.channel.send_to_socket", mock_send):
             cmd_hook(argparse.Namespace(command="hook"))
 
-        # No cook status file written.
+        # Sous persists its own status at the state-dir root (so the overview
+        # footer/snapshot can classify this kitchen), NOT in cooks/.
+        sous = json.loads((tmp_path / "sous.json").read_text())
+        assert sous["status"] == "idle"
+        assert sentinel in sous["summary"]
         assert not (tmp_path / "cooks").exists() or not any((tmp_path / "cooks").iterdir())
-        # No channel push.
+        # Overview closed → no channel push; still no notes/ marker.
         mock_send.assert_not_called()
-        # No marker file written under notes/ (covers the old awaiting-sentinel file).
         notes = tmp_path / "notes"
         assert not notes.exists() or not any(notes.iterdir())
+
+    def test_sous_user_prompt_submit_persists_working(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path))
+        payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "do the thing"})
+        monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=payload)))
+
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        sous = json.loads((tmp_path / "sous.json").read_text())
+        assert sous["status"] == "working"
+        assert not (tmp_path / "cooks").exists()
+        mock_send.assert_not_called()  # overview closed
 
     def test_hook_noop_outside_kitchen(self, monkeypatch):
         monkeypatch.delenv("AGENT_NAME", raising=False)
@@ -215,6 +238,85 @@ class TestHook:
         assert call_args[0][0] == tmp_path / "kitchen.sock"
         assert call_args[0][1]["cook"] == "codex-eng"
         assert call_args[0][1]["summary"] == "captured codex summary"
+
+
+class TestForwardToOverview:
+    """The sous-hook forward branch. The self-loop guard is load-bearing: it
+    must fire BEFORE the socket check so overview's own events never push to
+    overview's own socket (infinite turn loop)."""
+
+    def _overview_socket(self, tmp_path):
+        sock = tmp_path / ".claude-kitchen" / "overview" / "kitchen.sock"
+        sock.parent.mkdir(parents=True)
+        sock.touch()
+        return sock
+
+    def test_self_loop_guard_fires_before_socket(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_SESSION", "ck-overview")
+        self._overview_socket(tmp_path)  # socket PRESENT — guard must still bail
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            _forward_to_overview_if_open("Stop", {"last_assistant_message": "hi"})
+        mock_send.assert_not_called()
+
+    def test_noop_when_socket_absent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")  # no overview socket
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            _forward_to_overview_if_open("Stop", {"last_assistant_message": "hi"})
+        mock_send.assert_not_called()
+
+    def test_swallows_broken_connection(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
+        self._overview_socket(tmp_path)
+
+        def boom(*a, **k):
+            raise ConnectionError("broken pipe")
+
+        with patch("claude_kitchen.channel.send_to_socket", boom), \
+             patch("claude_kitchen.state._render_kitchen_status_footer", return_value="F"):
+            # Must not propagate — a dead overview can't break the source sous.
+            _forward_to_overview_if_open("Stop", {"last_assistant_message": "hi"})
+
+    def test_forwards_stop_with_footer(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
+        sock = self._overview_socket(tmp_path)
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send), \
+             patch("claude_kitchen.state._render_kitchen_status_footer", return_value="FOOTER"):
+            _forward_to_overview_if_open("Stop", {"last_assistant_message": "need your call"})
+        mock_send.assert_called_once()
+        called_sock, push = mock_send.call_args[0]
+        assert called_sock == sock
+        assert push["cook"] == "plow-main"  # source kitchen carried in `cook`
+        assert push["summary"] == "stop → need your call\n\nFOOTER"
+        assert push["ts"]
+
+    def test_forwards_prompt_text(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
+        self._overview_socket(tmp_path)
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send), \
+             patch("claude_kitchen.state._render_kitchen_status_footer", return_value="FOOTER"):
+            _forward_to_overview_if_open("UserPromptSubmit", {"prompt": "ship it"})
+        push = mock_send.call_args[0][1]
+        assert push["summary"] == "prompt → ship it\n\nFOOTER"
+
+    def test_forwards_prompt_empty_degrades(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
+        self._overview_socket(tmp_path)
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send), \
+             patch("claude_kitchen.state._render_kitchen_status_footer", return_value="FOOTER"):
+            _forward_to_overview_if_open("UserPromptSubmit", {})  # no prompt field
+        push = mock_send.call_args[0][1]
+        assert push["summary"] == "prompt → \n\nFOOTER"
 
 
 def _stage_transcript(tmp_path, *, model, usage):
@@ -827,6 +929,7 @@ class TestCloseOverview:
         (base / ".mcp.json").write_text("{}")
         (base / "kitchen.sock").write_text("")
         (base / "sous.pid").write_text("123")
+        (base / "sous.json").write_text("{}")
         (base / "cooks" / "ghost.json").write_text("{}")
 
         args = MagicMock()
@@ -837,7 +940,7 @@ class TestCloseOverview:
         cmd_close(args)  # must not raise
 
         # Standard teardown: state files and dirs removed.
-        for leftover in ("kitchen.json", ".mcp.json", "kitchen.sock", "sous.pid"):
+        for leftover in ("kitchen.json", ".mcp.json", "kitchen.sock", "sous.pid", "sous.json"):
             assert not (base / leftover).exists(), f"{leftover} should be removed"
         assert not (base / "cooks").exists()
         assert not (base / "notes").exists()

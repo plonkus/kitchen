@@ -1,5 +1,7 @@
 """Tests for state read/write."""
 import json
+import os
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -8,6 +10,7 @@ import pytest
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
+    update_sous_status, read_sous_status, _render_kitchen_status_footer,
 )
 
 
@@ -20,6 +23,84 @@ def test_state_dir(tmp_path, monkeypatch):
 def test_overview_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert overview_state_dir() == tmp_path / ".claude-kitchen" / "overview"
+
+
+class TestSousStatus:
+    def test_roundtrip_at_state_dir_root(self, tmp_path):
+        # Sous status lives at <state-dir>/sous.json, NOT under cooks/ — keeps
+        # it out of brigade/statusline cook counts and `kitchen sweep`.
+        update_sous_status(tmp_path, status="idle", summary="done", agent="sous")
+        assert (tmp_path / "sous.json").exists()
+        assert not (tmp_path / "cooks").exists()
+        data = read_sous_status(tmp_path)
+        assert data["status"] == "idle"
+        assert data["summary"] == "done"
+
+    def test_update_merges(self, tmp_path):
+        update_sous_status(tmp_path, status="working", agent="sous")
+        update_sous_status(tmp_path, status="idle", summary="reply")
+        data = read_sous_status(tmp_path)
+        assert data["status"] == "idle"
+        assert data["summary"] == "reply"
+        assert data["agent"] == "sous"  # durable field preserved across merge
+
+    def test_read_missing_returns_none(self, tmp_path):
+        assert read_sous_status(tmp_path) is None
+
+
+class TestKitchenStatusFooter:
+    def _mk(self, root, name, kj, sous=None, mtime_age_s=None):
+        d = root / name
+        d.mkdir(parents=True)
+        (d / "kitchen.json").write_text(json.dumps(kj))
+        if sous is not None:
+            p = d / "sous.json"
+            p.write_text(json.dumps(sous))
+            if mtime_age_s is not None:
+                t = time.time() - mtime_age_s
+                os.utime(p, (t, t))
+
+    def test_four_classifications_sorted_and_filtered(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        # idle status within the 10-min window → waiting on you
+        self._mk(root, "alpha", {"sous_session_id": "x"},
+                 {"status": "idle", "summary": "need your call"}, mtime_age_s=60)
+        # working
+        self._mk(root, "bravo", {"sous_session_id": "y"},
+                 {"status": "working", "summary": "crunching"}, mtime_age_s=5)
+        # idle status but stale (>10min) → idle
+        self._mk(root, "charlie", {"sous_session_id": "z"},
+                 {"status": "idle", "summary": "all done"}, mtime_age_s=20 * 60)
+        # no sous_session_id, no sous.json → booting
+        self._mk(root, "delta", {})
+        # excluded: the overview kitchen itself
+        self._mk(root, "overview", {"slug": "overview"})
+        # excluded: a sub-sous (parent_kitchen set)
+        self._mk(root, "subby", {"sous_session_id": "p", "parent_kitchen": "alpha"},
+                 {"status": "working"})
+
+        out = _render_kitchen_status_footer()
+
+        assert "⏳ alpha" in out and "waiting on you" in out
+        assert "🔄 bravo" in out and "working" in out
+        assert "💤 charlie" in out and "idle" in out
+        assert "🐣 delta" in out and "booting" in out
+        # one-line context pulled from sous summary
+        assert "└─ need your call" in out
+        # exclusions
+        assert "overview" not in out
+        assert "subby" not in out
+        # sort order: waiting → working → booting → idle
+        assert out.index("alpha") < out.index("bravo") < out.index("delta") < out.index("charlie")
+        assert "KITCHEN STATUS" in out
+
+    def test_empty_when_no_kitchens(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".claude-kitchen").mkdir()
+        out = _render_kitchen_status_footer()
+        assert "no other kitchens" in out
+        assert "KITCHEN STATUS" in out
 
 
 class TestStatus:
