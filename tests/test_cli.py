@@ -319,6 +319,109 @@ class TestForwardToOverview:
         assert push["summary"] == "prompt → \n\nFOOTER"
 
 
+class TestOverviewE2E:
+    """Full forward wiring without spawning Claude: open overview → a source
+    kitchen's sous fires Stop then UserPromptSubmit → both land on overview's
+    socket with the right shape → close overview → the next Stop no-ops and the
+    source kitchen is unharmed."""
+
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    def test_full_flow(self, mock_tmux, mock_has, mock_spawn, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_tmux.return_value = MagicMock(returncode=0)
+
+        # 1. Open the overview kitchen (state dir + kitchen.json + .mcp.json).
+        cmd_overview(MagicMock())
+        ov = tmp_path / ".claude-kitchen" / "overview"
+        assert (ov / "kitchen.json").exists()
+        ov_sock = ov / "kitchen.sock"
+        ov_sock.touch()  # the channel MCP server would create this when live
+
+        # 2. A source kitchen whose sous fires events.
+        src = tmp_path / ".claude-kitchen" / "plow-main"
+        src.mkdir(parents=True)
+        (src / "kitchen.json").write_text(json.dumps({"source": "/p/plow", "slug": "plow"}))
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
+        monkeypatch.setenv("STATUS_DIR", str(src))
+
+        sent = []
+        with patch("claude_kitchen.channel.send_to_socket", lambda s, d: sent.append((s, d))):
+            # 2a. Stop → forward
+            _stdin_payload(monkeypatch, hook_event_name="Stop",
+                           last_assistant_message="need your call on the migration",
+                           session_id="sid-1")
+            cmd_hook(argparse.Namespace(command="hook"))
+            # 2b. UserPromptSubmit → forward
+            monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=json.dumps(
+                {"hook_event_name": "UserPromptSubmit", "prompt": "ship it"}))))
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        # Both forwards landed on OVERVIEW's socket with source name + footer.
+        assert len(sent) == 2
+        stop_sock, stop_push = sent[0]
+        assert stop_sock == ov_sock
+        assert stop_push["cook"] == "plow-main"
+        assert stop_push["summary"].startswith("stop → need your call on the migration")
+        assert "KITCHEN STATUS" in stop_push["summary"]
+        assert stop_push["ts"]
+        ups_sock, ups_push = sent[1]
+        assert ups_sock == ov_sock
+        assert ups_push["summary"].startswith("prompt → ship it")
+        assert "KITCHEN STATUS" in ups_push["summary"]
+        # The source kitchen's own sous.json tracked the latest event.
+        assert json.loads((src / "sous.json").read_text())["status"] == "working"
+
+        # 3. Close overview (socket gone) → next Stop no-ops, source unharmed.
+        ov_sock.unlink()
+        sent.clear()
+        with patch("claude_kitchen.channel.send_to_socket", lambda s, d: sent.append((s, d))):
+            _stdin_payload(monkeypatch, hook_event_name="Stop",
+                           last_assistant_message="done, overview closed", session_id="sid-1")
+            cmd_hook(argparse.Namespace(command="hook"))  # must not raise
+        assert sent == []  # nothing forwarded to a dead overview
+        assert json.loads((src / "sous.json").read_text())["status"] == "idle"
+
+
+class TestCrossBackendRegression:
+    """A Claude cook and a Codex cook still notify THEIR kitchen's socket. The
+    overview socket is for sous-level forwards only — cook events never reach
+    it (the forward branch is in the sous early-return path, not the cook path)."""
+
+    def test_cooks_route_to_own_socket_not_overview(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # overview is open (socket present) to prove cook events still skip it
+        ov = tmp_path / ".claude-kitchen" / "overview"
+        ov.mkdir(parents=True)
+        ov_sock = ov / "kitchen.sock"
+        ov_sock.touch()
+        # the cooks' kitchen
+        kitchen = tmp_path / ".claude-kitchen" / "risotto"
+        kitchen.mkdir(parents=True)
+        kit_sock = kitchen / "kitchen.sock"
+
+        sent = []
+        with patch("claude_kitchen.channel.send_to_socket", lambda s, d: sent.append((s, d))):
+            # Claude cook Stop
+            monkeypatch.setenv("AGENT_NAME", "eng")
+            monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+            monkeypatch.setenv("STATUS_DIR", str(kitchen))
+            _stdin_payload(monkeypatch, hook_event_name="Stop",
+                           last_assistant_message="claude cook done", session_id="x")
+            cmd_hook(argparse.Namespace(command="hook"))
+            # Codex cook notify (same kitchen, different backend)
+            monkeypatch.setenv("AGENT_NAME", "codex-rev")
+            payload = _codex_notify_payload(**{"last-assistant-message": "codex cook done"})
+            cmd_hook(argparse.Namespace(command="hook-codex", json_payload=payload))
+
+        socks = [s for s, _ in sent]
+        assert socks.count(kit_sock) == 2          # both cooks → their kitchen socket
+        assert ov_sock not in socks                # overview never sees cook events
+        assert {d["cook"] for _, d in sent} == {"eng", "codex-rev"}
+
+
 def _stage_transcript(tmp_path, *, model, usage):
     """Write a transcript JSONL with one assistant line, structurally
     faithful to the shape captured 2026-04-29 against Claude Code v2.1.119

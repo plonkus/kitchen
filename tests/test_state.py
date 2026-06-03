@@ -119,6 +119,19 @@ class TestKitchenStatusFooter:
         result = classify_kitchen(base, datetime.now(timezone.utc))
         assert result["state"] == "idle"
 
+    def test_old_no_session_id_is_idle_not_booting(self, tmp_path):
+        # PRECEDENCE LOCK (spec §snapshot rule 1: age dominates). A leaked/stale
+        # state dir with NO sous_session_id and an mtime 30min old is `idle`,
+        # NOT `booting`. Fails against a hypothetical "booting wins over age"
+        # implementation (which would short-circuit to booting on the missing
+        # session id before checking age).
+        base = tmp_path / "leaked"
+        base.mkdir()
+        (base / "kitchen.json").write_text(json.dumps({"source": "/p"}))  # no sous_session_id
+        old = time.time() - 30 * 60  # set AFTER writing kitchen.json (which bumps dir mtime)
+        os.utime(base, (old, old))   # no sous.json → classify falls back to state-dir mtime
+        assert classify_kitchen(base, datetime.now(timezone.utc))["state"] == "idle"
+
     def test_fresh_working_stays_working(self, tmp_path):
         # Sanity counterpart: a recent 'working' kitchen is still working.
         base = tmp_path / "freshkit"
