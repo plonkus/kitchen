@@ -185,35 +185,38 @@ def classify_kitchen(base: Path, now: datetime) -> Optional[dict]:
 
     Returns {name, state, summary, mtime} where state is one of
     waiting_on_you / working / idle / booting, or None if the kitchen is
-    excluded from overview (the overview kitchen itself, or a sub-sous whose
-    kitchen.json has parent_kitchen set).
+    excluded (overview itself, or a parent_kitchen sub-sous) or unreadable —
+    e.g. it closed mid-render, in which case we skip it rather than let a
+    racing stat() crash the whole footer/forward.
     """
     try:
         kj = json.loads((base / "kitchen.json").read_text())
+        if base.name == "overview" or kj.get("parent_kitchen"):
+            return None
+        sous = read_sous_status(base) or {}
+        sous_path = base / SOUS_STATUS_FILE
+        src = sous_path if sous_path.exists() else base
+        mtime = datetime.fromtimestamp(src.stat().st_mtime, tz=timezone.utc)
     except (json.JSONDecodeError, OSError):
         return None
-    name = base.name
-    if name == "overview" or kj.get("parent_kitchen"):
-        return None
 
-    sous = read_sous_status(base) or {}
     status = sous.get("status")
-    sous_path = base / SOUS_STATUS_FILE
-    src = sous_path if sous_path.exists() else base
-    mtime = datetime.fromtimestamp(src.stat().st_mtime, tz=timezone.utc)
-    recent = (now - mtime) <= _WAITING_WINDOW
     has_session_id = bool(kj.get("sous_session_id"))
-
-    if status == "working":
+    # Age dominates: a kitchen whose status file hasn't moved in >10min is idle
+    # regardless of a stale stored 'working'/'idle' (the sous has finished,
+    # stalled, or crashed). Only fresh kitchens get working/waiting/booting.
+    if (now - mtime) > _WAITING_WINDOW:
+        state = "idle"
+    elif status == "working":
         state = "working"
-    elif status == "idle" and recent:
+    elif status == "idle":
         state = "waiting_on_you"
     elif not has_session_id:
         state = "booting"
     else:
         state = "idle"
 
-    return {"name": name, "state": state, "summary": sous.get("summary"), "mtime": mtime}
+    return {"name": base.name, "state": state, "summary": sous.get("summary"), "mtime": mtime}
 
 
 _STATE_GLYPH = {"waiting_on_you": "⏳", "working": "🔄", "booting": "🐣", "idle": "💤"}

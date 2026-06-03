@@ -7,10 +7,14 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from datetime import datetime, timezone
+
+import claude_kitchen.state as state
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
     update_sous_status, read_sous_status, _render_kitchen_status_footer,
+    classify_kitchen,
 )
 
 
@@ -101,6 +105,49 @@ class TestKitchenStatusFooter:
         out = _render_kitchen_status_footer()
         assert "no other kitchens" in out
         assert "KITCHEN STATUS" in out
+
+    def test_stale_working_ages_out_to_idle(self, tmp_path):
+        # A kitchen stuck on status='working' whose status file hasn't moved in
+        # >10min must age out to idle (sous finished/stalled/crashed) — age
+        # dominates the stored status. classify_kitchen takes base directly.
+        base = tmp_path / "stalekit"
+        base.mkdir()
+        (base / "kitchen.json").write_text(json.dumps({"sous_session_id": "x"}))
+        update_sous_status(base, status="working", summary="busy")
+        old = time.time() - 20 * 60
+        os.utime(base / "sous.json", (old, old))
+        result = classify_kitchen(base, datetime.now(timezone.utc))
+        assert result["state"] == "idle"
+
+    def test_fresh_working_stays_working(self, tmp_path):
+        # Sanity counterpart: a recent 'working' kitchen is still working.
+        base = tmp_path / "freshkit"
+        base.mkdir()
+        (base / "kitchen.json").write_text(json.dumps({"sous_session_id": "x"}))
+        update_sous_status(base, status="working", summary="busy")
+        assert classify_kitchen(base, datetime.now(timezone.utc))["state"] == "working"
+
+    def test_skips_kitchen_that_races_closed(self, tmp_path):
+        # If a kitchen closes mid-render (stat raises), classify_kitchen must
+        # skip it (return None), not propagate — one racing kitchen can't be
+        # allowed to crash the whole footer/forward.
+        base = tmp_path / "racer"
+        base.mkdir()
+        (base / "kitchen.json").write_text(json.dumps({"sous_session_id": "x"}))
+        with patch.object(state.Path, "stat", side_effect=OSError("closed mid-render")):
+            assert classify_kitchen(base, datetime.now(timezone.utc)) is None
+
+    def test_footer_skips_unreadable_kitchen(self, tmp_path, monkeypatch):
+        # A malformed kitchen.json is skipped; the rest of the footer renders.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        self._mk(root, "good", {"sous_session_id": "x"}, {"status": "idle"}, mtime_age_s=30)
+        bad = root / "bad"
+        bad.mkdir(parents=True)
+        (bad / "kitchen.json").write_text("{not valid json")
+        out = _render_kitchen_status_footer()
+        assert "good" in out
+        assert "bad" not in out
 
 
 class TestStatus:
