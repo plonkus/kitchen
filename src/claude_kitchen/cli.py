@@ -83,11 +83,14 @@ def resolve_kitchen(kitchen: str = None) -> str:
     if kitchen:
         if kitchen == "projects":
             sys.exit("'projects' is a reserved kitchen name (used for the project wiki).")
-        # NOTE: "overview" is deliberately NOT rejected here. resolve_kitchen
-        # is the path for close/brigade/peek, which must target the live (or
-        # stale-crashed) overview kitchen — `kitchen close overview` is a
-        # documented teardown + crash-recovery step. The reservation that
-        # blocks `kitchen open overview` lives in cmd_open instead.
+        # "overview" is the global kitchen: always resolve it to ck-overview,
+        # never the per-project namespaced fallback below. It's NOT rejected
+        # here — close/brigade/peek must reach the live (or stale-crashed)
+        # overview, the documented teardown + crash-recovery path. The
+        # open-time reservation that blocks `kitchen open overview` lives in
+        # cmd_open instead.
+        if kitchen == "overview":
+            return "overview"
         # A bare name typed from inside a project root still resolves to its
         # namespaced kitchen when no literal `ck-<kitchen>` session exists —
         # so `kitchen close foo` reaches `ck-<slug>-foo`. If the bare session
@@ -299,10 +302,16 @@ def _legacy_bare_kitchen(requested: str, project: Path):
 
 
 def cmd_open(args):
+    reserved = "'overview' is a reserved name — use 'kitchen overview' instead"
+    # Reject the explicit reserved name before resolving the project, so
+    # `kitchen open overview /bad/path` reports the reservation rather than a
+    # project-resolution error.
+    if args.name == "overview":
+        sys.exit(reserved)
     project = resolve_project(args.project)
     requested = args.name or project.name
     if requested == "overview":
-        sys.exit("'overview' is a reserved name — use 'kitchen overview' instead")
+        sys.exit(reserved)
     # Namespace the kitchen by project slug so kitchens for different projects
     # never collide on tmux session / state dir / socket names — e.g.
     # `kitchen open main` in two repos yields plow-main and racksmith-main,

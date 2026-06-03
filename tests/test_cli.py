@@ -45,6 +45,15 @@ class TestResolveKitchen:
         # brigade / peek must reach it. resolve_kitchen must NOT reject it.
         assert resolve_kitchen(kitchen="overview") == "overview"
 
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-overview")
+    @patch("claude_kitchen.cli._cwd_project", return_value=Path("/tmp/widget"))
+    @patch("claude_kitchen.cli.has_session", side_effect=lambda s: s == "ck-widget-overview")
+    def test_overview_never_falls_back_to_namespaced(self, mock_has, mock_proj, mock_ns):
+        # "overview" is the global kitchen. Even with no live ck-overview and a
+        # cwd project that has a ck-<slug>-overview session, the bare name must
+        # resolve to the global "overview", never the namespaced fallback.
+        assert resolve_kitchen(kitchen="overview") == "overview"
+
 
 class TestResolveProject:
     def test_existing_directory_resolves(self, tmp_path):
@@ -725,6 +734,18 @@ class TestCmdOpen:
         args.project = "/tmp/myproject"
         with pytest.raises(SystemExit, match="reserved name"):
             cmd_open(args)
+
+    def test_reserved_name_short_circuits_before_project_resolution(self):
+        # `kitchen open overview /bad/path` must emit the reservation error,
+        # not a project-resolution error — the reserved name is rejected
+        # before resolve_project is ever called.
+        args = MagicMock()
+        args.name = "overview"
+        args.project = "/this/path/does/not/exist/xyz"
+        with patch("claude_kitchen.cli.resolve_project") as mock_resolve:
+            with pytest.raises(SystemExit, match="reserved name"):
+                cmd_open(args)
+            mock_resolve.assert_not_called()
 
 
 class TestCmdOverview:
