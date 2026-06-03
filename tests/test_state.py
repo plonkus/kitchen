@@ -182,6 +182,44 @@ class TestKitchenStatusFooter:
         out = _render_kitchen_status_footer()
         assert "1 dormant kitchen (idle > 24h)" in out
 
+    def test_waiting_shows_full_multiline_summary_no_truncation(self, tmp_path, monkeypatch):
+        # v1.1 smart depth: a waiting_on_you kitchen gets its FULL sous message,
+        # every line, with no truncation/ellipsis — these need head-chef action.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        msg = ("I'm blocked on the migration plan.\n"
+               "Decide: option A (fast, risky) or option B (slow, safe)?\n"
+               + "detail " * 30)  # a long line that v1 would have truncated at 70
+        # recent idle → waiting_on_you (the only state with a recent idle status)
+        self._mk(root, "waiter", {"sous_session_id": "x"},
+                 {"status": "idle", "summary": msg}, mtime_age_s=120)
+        out = _render_kitchen_status_footer()
+        assert "I'm blocked on the migration plan." in out
+        assert "option A (fast, risky) or option B (slow, safe)?" in out
+        assert ("detail " * 30).strip() in out   # long line present in full
+        assert "…" not in out                    # no truncation ellipsis anywhere
+
+    def test_idle_is_terse_no_context_line(self, tmp_path, monkeypatch):
+        # v1.1 smart depth: an idle kitchen is one line (header only) — its old
+        # summary is not echoed under it.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        self._mk(root, "sleepy", {"sous_session_id": "x"},
+                 {"status": "idle", "summary": "old chatter from earlier"}, mtime_age_s=30 * 60)
+        out = _render_kitchen_status_footer()
+        assert "💤 sleepy" in out
+        assert "old chatter from earlier" not in out
+
+    def test_working_caps_at_two_lines(self, tmp_path, monkeypatch):
+        # v1.1 smart depth: working kitchens get the first line or two, untruncated.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        self._mk(root, "busy", {"sous_session_id": "x"},
+                 {"status": "working", "summary": "line one\nline two\nline three"}, mtime_age_s=30)
+        out = _render_kitchen_status_footer()
+        assert "line one" in out and "line two" in out
+        assert "line three" not in out
+
 
 class TestTranscriptPath:
     def test_slug_rule_examples(self):

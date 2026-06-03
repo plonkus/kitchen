@@ -296,27 +296,16 @@ class TestForwardToOverview:
         assert push["summary"] == "stop → need your call\n\nFOOTER"
         assert push["ts"]
 
-    def test_forwards_prompt_text(self, monkeypatch, tmp_path):
+    def test_userpromptsubmit_does_not_forward(self, monkeypatch, tmp_path):
+        # v1.1: only Stop forwards. The head chef typing in a kitchen must NOT
+        # produce an overview notification, even with overview open.
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
         self._overview_socket(tmp_path)
         mock_send = MagicMock()
-        with patch("claude_kitchen.channel.send_to_socket", mock_send), \
-             patch("claude_kitchen.state._render_kitchen_status_footer", return_value="FOOTER"):
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
             _forward_to_overview_if_open("UserPromptSubmit", {"prompt": "ship it"})
-        push = mock_send.call_args[0][1]
-        assert push["summary"] == "prompt → ship it\n\nFOOTER"
-
-    def test_forwards_prompt_empty_degrades(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("AGENT_SESSION", "ck-plow-main")
-        self._overview_socket(tmp_path)
-        mock_send = MagicMock()
-        with patch("claude_kitchen.channel.send_to_socket", mock_send), \
-             patch("claude_kitchen.state._render_kitchen_status_footer", return_value="FOOTER"):
-            _forward_to_overview_if_open("UserPromptSubmit", {})  # no prompt field
-        push = mock_send.call_args[0][1]
-        assert push["summary"] == "prompt → \n\nFOOTER"
+        mock_send.assert_not_called()
 
 
 class TestOverviewE2E:
@@ -349,30 +338,37 @@ class TestOverviewE2E:
 
         sent = []
         with patch("claude_kitchen.channel.send_to_socket", lambda s, d: sent.append((s, d))):
-            # 2a. Stop → forward
+            # 2a. Stop → forwards to overview
             _stdin_payload(monkeypatch, hook_event_name="Stop",
                            last_assistant_message="need your call on the migration",
                            session_id="sid-1")
             cmd_hook(argparse.Namespace(command="hook"))
-            # 2b. UserPromptSubmit → forward
+            # 2b. UserPromptSubmit → does NOT forward (v1.1), but bumps status
             monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=json.dumps(
                 {"hook_event_name": "UserPromptSubmit", "prompt": "ship it"}))))
             cmd_hook(argparse.Namespace(command="hook"))
 
-        # Both forwards landed on OVERVIEW's socket with source name + footer.
-        assert len(sent) == 2
+        # Only the Stop forwarded; the prompt did not push anything to overview.
+        assert len(sent) == 1
         stop_sock, stop_push = sent[0]
         assert stop_sock == ov_sock
         assert stop_push["cook"] == "plow-main"
         assert stop_push["summary"].startswith("stop → need your call on the migration")
         assert "KITCHEN STATUS" in stop_push["summary"]
         assert stop_push["ts"]
-        ups_sock, ups_push = sent[1]
-        assert ups_sock == ov_sock
-        assert ups_push["summary"].startswith("prompt → ship it")
-        assert "KITCHEN STATUS" in ups_push["summary"]
-        # The source kitchen's own sous.json tracked the latest event.
+        # The prompt still updated the source's own status to working (mtime
+        # bump) — the next Stop forward / footer will reflect it, no forward
+        # needed for the prompt itself.
         assert json.loads((src / "sous.json").read_text())["status"] == "working"
+
+        # 2c. A later Stop forwards again with the refreshed state.
+        sent.clear()
+        with patch("claude_kitchen.channel.send_to_socket", lambda s, d: sent.append((s, d))):
+            _stdin_payload(monkeypatch, hook_event_name="Stop",
+                           last_assistant_message="shipped it", session_id="sid-1")
+            cmd_hook(argparse.Namespace(command="hook"))
+        assert len(sent) == 1
+        assert sent[0][1]["summary"].startswith("stop → shipped it")
 
         # 3. Close overview (socket gone) → next Stop no-ops, source unharmed.
         ov_sock.unlink()

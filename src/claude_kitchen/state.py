@@ -274,6 +274,25 @@ def _humanize_elapsed(delta: timedelta) -> str:
     return f"{days}d {hours}h"
 
 
+def _context_block(state: str, summary: Optional[str]) -> list[str]:
+    """Smart-depth detail under a kitchen's header line. Full width, never
+    truncated — long lines are left for the terminal to wrap (the head chef
+    prefers detail over brevity). Depth varies by how much the head chef needs:
+
+    - waiting_on_you → the FULL sous message, verbatim, every line (these are
+      the kitchens that need a decision — they get the room).
+    - working        → the first line or two of what it's doing.
+    - idle / booting → nothing; the header line already carries the timestamp.
+    """
+    body = (summary or "").strip()
+    if not body or state in ("idle", "booting"):
+        return []
+    text_lines = body.splitlines()
+    if state == "working":
+        text_lines = text_lines[:2]
+    return [f"   └─ {text_lines[0]}"] + [f"      {ln}" for ln in text_lines[1:]]
+
+
 def _render_kitchen_status_footer(now: Optional[datetime] = None) -> str:
     """Deterministic cross-kitchen status block included in every overview
     notification. Pure function of on-disk state — no LLM involved.
@@ -300,12 +319,7 @@ def _render_kitchen_status_footer(now: Optional[datetime] = None) -> str:
         label = _STATE_LABEL.get(k["state"], k["state"])
         elapsed = "" if k["state"] == "booting" else f"  ({_humanize_elapsed(now - k['mtime'])})"
         lines.append(f"{glyph} {k['name']}    {label}{elapsed}")
-        first = (k["summary"] or "").strip().splitlines()
-        if first:
-            ctx = first[0]
-            if len(ctx) > 70:
-                ctx = ctx[:69] + "…"
-            lines.append(f"   └─ {ctx}")
+        lines.extend(_context_block(k["state"], k["summary"]))
     if dormant:
         plural = "kitchen" if dormant == 1 else "kitchens"
         lines.append(f"   … and {dormant} dormant {plural} (idle > 24h)")

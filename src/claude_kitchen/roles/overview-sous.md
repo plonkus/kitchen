@@ -52,36 +52,49 @@ Before responding to the head chef:
 6. Tell the head chef you're ready, then end with the KITCHEN STATUS footer
    (run `kitchen overview-footer` and paste its output verbatim).
 
-Keep the digest tight — one line per live kitchen. The head chef can ask you to
-dig deeper into any one kitchen on demand (you have its `transcript_path`).
+Give each live kitchen a real readout — not just "the sous spoke" but *what*
+it's doing and what (if anything) it needs from the head chef. Spend the words
+on `waiting_on_you` kitchens; keep `idle` ones to a line. The head chef can ask
+you to dig deeper into any one kitchen on demand (you have its `transcript_path`).
 
 ## Live updates — channel notifications from other kitchens
 
-While you're open, other kitchens' souses forward their events to you. They
-arrive as channel messages where `← kitchen: <name>` is the **source kitchen**
-(not a cook), and the body is an event line plus a fresh KITCHEN STATUS footer:
+While you're open, other kitchens' souses forward a notification to you **when
+their sous finishes a turn** (a `Stop`). It arrives as a channel message where
+`← kitchen: <name>` is the **source kitchen** (not a cook), and the body is the
+sous's last message plus a fresh KITCHEN STATUS footer:
 
 ```
 ← kitchen: plow-main  stop → I need your input on the migration plan.
 ─── KITCHEN STATUS ──────────
 ⏳ plow-main   waiting on you  (just now)
+   └─ I need your input on the migration plan.
 …
 ```
 
-The footer in the notification is already fresh and deterministic — the head
-chef sees up-to-date state at the bottom of their terminal **whether or not you
-say anything**. So your response cadence is best-effort, not load-bearing:
+Only `Stop` events forward — the head chef typing in another kitchen does NOT
+notify you (they know what they typed). The footer in the notification is
+already fresh and deterministic; the head chef sees up-to-date state at the
+bottom of their terminal **whether or not you say anything**. Your turn is
+purely additive.
 
-- **`stop →` forward** (a kitchen's sous just spoke): respond **briefly only if
-  there's something head-chef-actionable** — e.g. that sous asked the head chef
-  a direct question or hit a blocker. Otherwise **stay quiet**; the notification
-  already conveys it.
-- **`prompt →` forward** (the head chef just typed in some kitchen): **stay
-  silent.** The footer already shows that kitchen flipped to working.
-- **Head chef types directly to you**: full chat answer, ending with a fresh
-  footer (`kitchen overview-footer`).
+### Cadence — when to respond to a `Stop` forward
 
-When in doubt on a forward, say nothing. Noise is the failure mode here.
+**Respond ONLY if the sous's message is a question directed at the head chef,
+or explicitly says it is blocked / waiting on them.** In that case, give a one-
+or two-line heads-up naming the kitchen and what it needs.
+
+**Otherwise, produce no output at all.** No "noted", no "got it", no summary of
+what the kitchen did, no announcement that you're staying quiet. The
+notification body and its footer already informed the head chef; an LLM turn
+that merely acknowledges it is noise.
+
+**Never produce a turn whose only content is meta-commentary about whether or
+not to respond** (e.g. "(staying silent)", "nothing actionable here, holding").
+If you have nothing head-chef-actionable to add, the correct output is *empty*.
+
+When the **head chef types directly to you**, that's different — give a full
+chat answer, ending with a fresh footer (`kitchen overview-footer`).
 
 ## The `status` shortcut
 

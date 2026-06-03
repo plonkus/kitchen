@@ -636,9 +636,9 @@ def _hook_gate() -> tuple[str, str, Path] | None:
 
 
 def _forward_to_overview_if_open(event, payload):
-    """Forward a sous event to the overview kitchen's channel, if overview is
+    """Forward a sous Stop to the overview kitchen's channel, if overview is
     open. Repacks into the EXISTING channel schema ({cook, summary, ts}): cook
-    is the source kitchen name, summary is an event-flavored line plus the
+    is the source kitchen name, summary is the sous's last message plus the
     deterministic KITCHEN STATUS footer. Every error is swallowed — overview
     being closed, crashed, or slow must never break the source kitchen's sous.
     """
@@ -648,22 +648,20 @@ def _forward_to_overview_if_open(event, payload):
     # from AGENT_SESSION and bail if it's overview.
     if bare(os.environ.get("AGENT_SESSION", "")) == "overview":
         return
+    # Stop only (v1.1). UserPromptSubmit forwards were pure chatter — the head
+    # chef knows what they just typed. The prompt event still bumps sous.json's
+    # mtime via the hook's update_sous_status, so the footer (and the next Stop
+    # forward, and the `status` shortcut) reflect the "working" flip without a
+    # forward of its own.
+    if event != "Stop":
+        return
     from claude_kitchen.channel import SOCK_NAME, send_to_socket
     sock = overview_state_dir() / SOCK_NAME
     if not sock.exists():
         return
     try:
-        if event == "Stop":
-            line = f"stop → {payload.get('last_assistant_message', '')}"
-        elif event == "UserPromptSubmit":
-            # Field verified empirically against Claude Code (see commit
-            # message): UserPromptSubmit carries the typed text in `prompt`.
-            text = payload.get("prompt", "")
-            line = f"prompt → {text}" if text else "prompt → "
-        else:
-            return
         from claude_kitchen.state import _render_kitchen_status_footer
-        summary = line + "\n\n" + _render_kitchen_status_footer()
+        summary = f"stop → {payload.get('last_assistant_message', '')}\n\n" + _render_kitchen_status_footer()
         push = {
             "cook": bare(os.environ.get("AGENT_SESSION", "")),
             "summary": summary,
