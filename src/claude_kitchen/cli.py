@@ -15,7 +15,7 @@ from claude_kitchen.tmux import (
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, namespaced, wiki_dir, notes_dir,
+    project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous
@@ -83,6 +83,11 @@ def resolve_kitchen(kitchen: str = None) -> str:
     if kitchen:
         if kitchen == "projects":
             sys.exit("'projects' is a reserved kitchen name (used for the project wiki).")
+        # NOTE: "overview" is deliberately NOT rejected here. resolve_kitchen
+        # is the path for close/brigade/peek, which must target the live (or
+        # stale-crashed) overview kitchen — `kitchen close overview` is a
+        # documented teardown + crash-recovery step. The reservation that
+        # blocks `kitchen open overview` lives in cmd_open instead.
         # A bare name typed from inside a project root still resolves to its
         # namespaced kitchen when no literal `ck-<kitchen>` session exists —
         # so `kitchen close foo` reaches `ck-<slug>-foo`. If the bare session
@@ -296,6 +301,8 @@ def _legacy_bare_kitchen(requested: str, project: Path):
 def cmd_open(args):
     project = resolve_project(args.project)
     requested = args.name or project.name
+    if requested == "overview":
+        sys.exit("'overview' is a reserved name — use 'kitchen overview' instead")
     # Namespace the kitchen by project slug so kitchens for different projects
     # never collide on tmux session / state dir / socket names — e.g.
     # `kitchen open main` in two repos yields plow-main and racksmith-main,
@@ -389,6 +396,52 @@ def cmd_open(args):
 
     spawn_sous(name, base, sous_md.read_text(), project, slug=slug,
                resume_session_id=sous_session_id)
+
+
+def cmd_overview(args):
+    """Open the global cross-kitchen overview kitchen at ~/.claude-kitchen/overview/.
+
+    Unlike a regular kitchen (scoped to a project), overview is global: it
+    bypasses namespacing and lives at a fixed path regardless of cwd. Reuses
+    spawn_sous (overview mode) for the pid guard and Claude launch.
+    """
+    name = "overview"
+    base = overview_state_dir()
+    session = mc(name)
+
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "wiki").mkdir(exist_ok=True)
+    (base / "notes").mkdir(exist_ok=True)
+
+    # Write the minimal kitchen.json only on first open so a re-invocation
+    # doesn't clobber a recorded sous_session_id before the pid guard fires.
+    kitchen_file = base / "kitchen.json"
+    if not kitchen_file.exists():
+        kitchen_file.write_text(json.dumps(
+            {"source": None, "slug": "overview", "worktree": None, "sous_session_id": None}
+        ) + "\n")
+
+    if not has_session(session):
+        tmux("new-session", "-d", "-s", session, "-n", "_placeholder")
+
+    mcp_config = {
+        "mcpServers": {
+            "kitchen": {
+                "command": "kitchen",
+                "args": ["channel-server", name],
+            }
+        }
+    }
+    (base / ".mcp.json").write_text(json.dumps(mcp_config, indent=2) + "\n")
+
+    print("Overview kitchen is open. Sous chef on the line.")
+    print(f"   tmux attach -t {session}")
+
+    role_md = _PKG_DIR / "roles" / "overview-sous.md"
+    if not role_md.exists():
+        sys.exit(f"overview-sous.md not found at {role_md}")
+
+    spawn_sous(name, base, role_md.read_text(), overview=True)
 
 
 def cmd_hire(args):
@@ -975,15 +1028,19 @@ def cmd_close(args):
     if kitchen_file.exists():
         try:
             kj = json.loads(kitchen_file.read_text())
-            source = Path(kj["source"])
-            cwd = Path(kj.get("worktree", kj["source"]))
-            if cwd.exists():
-                run_hook(source, "on-close", kitchen, cwd=cwd)
-            if "worktree" in kj and not args.keep_worktree:
-                worktree = Path(kj["worktree"])
-                if worktree.exists():
-                    remove_worktree(worktree, force=args.force)
-        except (json.JSONDecodeError, KeyError) as e:
+            # source/worktree are null for the global overview kitchen — it
+            # has no project root, on-close hook, or worktree to remove.
+            source = kj.get("source")
+            worktree = kj.get("worktree")
+            if source:
+                cwd = Path(worktree or source)
+                if cwd.exists():
+                    run_hook(Path(source), "on-close", kitchen, cwd=cwd)
+            if worktree and not args.keep_worktree:
+                wt = Path(worktree)
+                if wt.exists():
+                    remove_worktree(wt, force=args.force)
+        except json.JSONDecodeError as e:
             print(f"Warning: bad kitchen.json: {e}", file=sys.stderr)
         kitchen_file.unlink(missing_ok=True)
 
@@ -1011,6 +1068,8 @@ def main():
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
+
+    sub.add_parser("overview", help="Open the global cross-kitchen overview kitchen")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")
@@ -1066,6 +1125,8 @@ def main():
 
     if args.command == "open":
         cmd_open(args)
+    elif args.command == "overview":
+        cmd_overview(args)
     elif args.command == "hire":
         cmd_hire(args)
     elif args.command == "ticket":

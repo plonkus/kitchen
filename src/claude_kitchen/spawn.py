@@ -21,8 +21,14 @@ def _check_sous_pid(state_dir: Path):
 
 def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
                project: Path = None, slug: str = None,
-               resume_session_id: str = None):
-    """Replace current process with Claude as sous chef."""
+               resume_session_id: str = None, overview: bool = False):
+    """Replace current process with Claude as sous chef.
+
+    overview=True spawns the global overview kitchen: its wiki/notes are
+    scratch dirs scoped to the overview state dir itself (not the project-
+    shared wiki), so they're exported unconditionally rather than gated on
+    a project slug.
+    """
     _check_sous_pid(state_dir)
 
     # Write our PID before exec — exec preserves the PID
@@ -32,7 +38,10 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     os.environ["AGENT_SESSION"] = session
     os.environ["AGENT_NAME"] = "sous"
     os.environ["STATUS_DIR"] = str(state_dir)
-    if slug:
+    if overview:
+        os.environ["KITCHEN_WIKI"] = str(state_dir / "wiki")
+        os.environ["KITCHEN_NOTES"] = str(state_dir / "notes")
+    elif slug:
         from claude_kitchen.state import wiki_dir, notes_dir
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
         os.environ["KITCHEN_NOTES"] = str(notes_dir(kitchen))

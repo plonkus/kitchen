@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_overview, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -38,6 +38,12 @@ class TestResolveKitchen:
     def test_rejects_reserved_projects_name(self):
         with pytest.raises(SystemExit, match="reserved"):
             resolve_kitchen(kitchen="projects")
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    def test_overview_resolves_as_target(self, mock_has):
+        # Unlike "projects", "overview" is a real, targetable kitchen — close /
+        # brigade / peek must reach it. resolve_kitchen must NOT reject it.
+        assert resolve_kitchen(kitchen="overview") == "overview"
 
 
 class TestResolveProject:
@@ -709,6 +715,112 @@ class TestCmdOpen:
         assert call_args[0][0] == "widget-risotto"
         assert call_args[0][1] == tmp_path
         assert call_args[0][3] == Path("/tmp/risotto")
+
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp/myproject"))
+    def test_rejects_reserved_overview_name(self, mock_resolve):
+        # `kitchen open overview` must be rejected at the cmd_open entry point —
+        # before any worktree / state-dir / tmux side effects.
+        args = MagicMock()
+        args.name = "overview"
+        args.project = "/tmp/myproject"
+        with pytest.raises(SystemExit, match="reserved name"):
+            cmd_open(args)
+
+
+class TestCmdOverview:
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    def test_creates_global_state_and_execs(
+        self, mock_tmux, mock_has, mock_spawn, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_tmux.return_value = MagicMock(returncode=0)
+
+        cmd_overview(MagicMock())
+
+        base = tmp_path / ".claude-kitchen" / "overview"
+        assert base.is_dir()
+        assert (base / "wiki").is_dir()
+        assert (base / "notes").is_dir()
+
+        # kitchen.json schema for overview: source/worktree/sous_session_id null,
+        # slug pinned to "overview".
+        kj = json.loads((base / "kitchen.json").read_text())
+        assert kj == {
+            "source": None, "slug": "overview",
+            "worktree": None, "sous_session_id": None,
+        }
+
+        # MCP channel server bound to the overview kitchen.
+        cfg = json.loads((base / ".mcp.json").read_text())
+        assert cfg["mcpServers"]["kitchen"]["args"] == ["channel-server", "overview"]
+
+        # spawn_sous invoked in overview mode for the global state dir.
+        mock_spawn.assert_called_once()
+        cargs, ckwargs = mock_spawn.call_args
+        assert cargs[0] == "overview"
+        assert cargs[1] == base
+        assert ckwargs.get("overview") is True
+
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    def test_reopen_preserves_kitchen_json(
+        self, mock_tmux, mock_has, mock_spawn, tmp_path, monkeypatch,
+    ):
+        # A second invocation must not clobber a recorded sous_session_id
+        # (the pid guard inside spawn_sous is what stops a real re-open).
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_tmux.return_value = MagicMock(returncode=0)
+        base = tmp_path / ".claude-kitchen" / "overview"
+        base.mkdir(parents=True)
+        (base / "kitchen.json").write_text(json.dumps(
+            {"source": None, "slug": "overview", "worktree": None,
+             "sous_session_id": "abc-123"}
+        ) + "\n")
+
+        cmd_overview(MagicMock())
+
+        kj = json.loads((base / "kitchen.json").read_text())
+        assert kj["sous_session_id"] == "abc-123"
+
+
+class TestCloseOverview:
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="overview")
+    def test_close_overview_null_source_no_crash(
+        self, mock_resolve, mock_state, mock_tmux, tmp_path,
+    ):
+        # Overview's kitchen.json has source=null/worktree=null. cmd_close must
+        # not crash on Path(None) and must perform standard teardown.
+        base = tmp_path / "overview"
+        (base / "cooks").mkdir(parents=True)
+        (base / "notes").mkdir()
+        mock_state.return_value = base
+        (base / "kitchen.json").write_text(json.dumps(
+            {"source": None, "slug": "overview", "worktree": None,
+             "sous_session_id": None}
+        ) + "\n")
+        (base / ".mcp.json").write_text("{}")
+        (base / "kitchen.sock").write_text("")
+        (base / "sous.pid").write_text("123")
+        (base / "cooks" / "ghost.json").write_text("{}")
+
+        args = MagicMock()
+        args.kitchen = "overview"
+        args.keep_worktree = False
+        args.force = False
+
+        cmd_close(args)  # must not raise
+
+        # Standard teardown: state files and dirs removed.
+        for leftover in ("kitchen.json", ".mcp.json", "kitchen.sock", "sous.pid"):
+            assert not (base / leftover).exists(), f"{leftover} should be removed"
+        assert not (base / "cooks").exists()
+        assert not (base / "notes").exists()
+        mock_tmux.assert_called_once()  # kill-session
 
 
 class TestSweepCooks:

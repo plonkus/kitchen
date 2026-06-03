@@ -7,7 +7,7 @@ import pytest
 
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, namespaced, wiki_dir, notes_dir,
+    project_slug, namespaced, wiki_dir, notes_dir, overview_state_dir,
 )
 
 
@@ -15,6 +15,11 @@ def test_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     d = state_dir("risotto")
     assert d == tmp_path / ".claude-kitchen" / "risotto"
+
+
+def test_overview_state_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert overview_state_dir() == tmp_path / ".claude-kitchen" / "overview"
 
 
 class TestStatus:

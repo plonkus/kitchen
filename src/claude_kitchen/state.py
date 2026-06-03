@@ -13,6 +13,11 @@ def state_dir(kitchen: str) -> Path:
     return Path.home() / ".claude-kitchen" / kitchen
 
 
+def overview_state_dir() -> Path:
+    """Fixed global state dir for the overview kitchen, independent of cwd."""
+    return Path.home() / ".claude-kitchen" / "overview"
+
+
 def wiki_dir(slug: str) -> Path:
     return Path.home() / ".claude-kitchen" / "projects" / slug / "wiki"
 

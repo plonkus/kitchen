@@ -207,3 +207,40 @@ class TestSpawnSous:
         # Register post-spawn values with monkeypatch so its teardown restores them
         monkeypatch.setenv("KITCHEN_WIKI", os.environ["KITCHEN_WIKI"])
         monkeypatch.setenv("KITCHEN_NOTES", os.environ["KITCHEN_NOTES"])
+
+
+class TestSpawnSousOverview:
+    @patch("claude_kitchen.spawn.os.chdir")
+    @patch("claude_kitchen.spawn.os.execvp")
+    def test_overview_env_prefix_and_role(self, mock_exec, mock_chdir, tmp_path, monkeypatch):
+        """overview=True: wiki/notes are scoped to the overview state dir (set
+        unconditionally, no slug), session is ck-overview, RC prefix is
+        'overview', and the role prompt is inlined via --append-system-prompt."""
+        monkeypatch.delenv("KITCHEN_WIKI", raising=False)
+        monkeypatch.delenv("KITCHEN_NOTES", raising=False)
+        for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        base = tmp_path / ".claude-kitchen" / "overview"
+        base.mkdir(parents=True)
+
+        spawn_sous("overview", base, "OVERVIEW ROLE PROMPT", overview=True)
+
+        import os
+        assert os.environ["AGENT_NAME"] == "sous"
+        assert os.environ["AGENT_SESSION"] == "ck-overview"
+        assert os.environ["STATUS_DIR"] == str(base)
+        assert os.environ["KITCHEN_WIKI"] == str(base / "wiki")
+        assert os.environ["KITCHEN_NOTES"] == str(base / "notes")
+
+        argv = mock_exec.call_args.args[1]
+        i = argv.index("--dangerously-load-development-channels")
+        assert argv[i + 1] == "server:kitchen"
+        assert argv[argv.index("--mcp-config") + 1] == str(base / ".mcp.json")
+        assert "--remote-control" in argv
+        assert argv[argv.index("--remote-control-session-name-prefix") + 1] == "overview"
+        assert argv[argv.index("--append-system-prompt") + 1] == "OVERVIEW ROLE PROMPT"
+        # overview has no project root, so no chdir
+        mock_chdir.assert_not_called()
+
+        monkeypatch.setenv("KITCHEN_WIKI", os.environ["KITCHEN_WIKI"])
+        monkeypatch.setenv("KITCHEN_NOTES", os.environ["KITCHEN_NOTES"])
