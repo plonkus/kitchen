@@ -39,6 +39,9 @@ tick, do exactly this:
      isn't on your PATH) to see what the kitchen's sous is doing.
    - Glance at the kitchen's existing `~/.claude-kitchen/<name>/synopsis.md` (if
      any) so your update reads as continuity, not a cold restart.
+   - Read the kitchen's `~/.claude-kitchen/<name>/sous.json` for its `ts` — the
+     activity timestamp that triggered this regen. That goes in `based_on_mtime`
+     so the server can tell which state the synopsis reflects.
    - Write a fresh **2–3 sentence** synopsis to
      `~/.claude-kitchen/<name>/synopsis.md` — plain narrative present tense,
      "what's happening and what (if anything) it's waiting on." Frontmatter:
@@ -46,6 +49,7 @@ tick, do exactly this:
      ```markdown
      ---
      generated_at: <current UTC time, e.g. 2026-06-03T18:45:00Z>
+     based_on_mtime: <the `ts` from that kitchen's sous.json>
      kitchen: <name>
      ---
      <2–3 sentence synopsis>

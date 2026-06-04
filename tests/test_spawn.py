@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock
-from claude_kitchen.spawn import build_shell_cmd, spawn_sous
+from claude_kitchen.spawn import build_shell_cmd, spawn_sous, spawn_overview_sous
 
 
 def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
@@ -207,3 +207,56 @@ class TestSpawnSous:
         # Register post-spawn values with monkeypatch so its teardown restores them
         monkeypatch.setenv("KITCHEN_WIKI", os.environ["KITCHEN_WIKI"])
         monkeypatch.setenv("KITCHEN_NOTES", os.environ["KITCHEN_NOTES"])
+
+
+class TestSpawnOverviewSous:
+    @patch("claude_kitchen.spawn.tmux")
+    def test_launches_server_and_sous_windows_with_env(self, mock_tmux, tmp_path):
+        # Highest-risk new wiring: a detached ck-overview session with two
+        # windows (FastAPI server + overview Claude), both carrying the dashboard
+        # env. No execvp. Assert the exact tmux invocations + command/env shape.
+        role = tmp_path / "overview-sous.md"
+        role.write_text("role")
+        spawn_overview_sous(tmp_path, role, port="5757")
+
+        calls = mock_tmux.call_args_list
+        assert len(calls) == 2
+
+        # window 1: the FastAPI server, as a fresh DETACHED session
+        server = calls[0].args
+        assert server[0] == "new-session" and "-d" in server
+        assert server[server.index("-s") + 1] == "ck-overview"
+        assert server[server.index("-n") + 1] == "server"
+        assert server[server.index("-c") + 1] == str(tmp_path)
+        server_cmd = server[-1]
+        assert "kitchen dashboard-server" in server_cmd
+
+        # window 2: the overview Claude, added to the same session
+        sous = calls[1].args
+        assert sous[0] == "new-window"
+        assert sous[sous.index("-t") + 1] == "ck-overview"
+        assert sous[sous.index("-n") + 1] == "sous"
+        assert sous[sous.index("-c") + 1] == str(tmp_path)
+        sous_cmd = sous[-1]
+        assert "claude --dangerously-skip-permissions" in sous_cmd
+        assert "--append-system-prompt-file" in sous_cmd
+        assert str(role) in sous_cmd
+
+        # both windows export the dashboard env
+        for cmd in (server_cmd, sous_cmd):
+            assert "AGENT_NAME=sous" in cmd
+            assert "AGENT_SESSION=ck-overview" in cmd
+            assert f"STATUS_DIR={tmp_path}" in cmd
+            assert "KITCHEN_DASHBOARD_URL=http://127.0.0.1:5757" in cmd
+            assert "KITCHEN_DASHBOARD_PORT=5757" in cmd
+            assert f"KITCHEN_NOTES={tmp_path / 'notes'}" in cmd
+            assert f"KITCHEN_WIKI={tmp_path / 'wiki'}" in cmd
+
+    @patch("claude_kitchen.spawn.tmux")
+    def test_port_flows_into_url_and_env(self, mock_tmux, tmp_path):
+        role = tmp_path / "r.md"
+        role.write_text("r")
+        spawn_overview_sous(tmp_path, role, port="6001")
+        sous_cmd = mock_tmux.call_args_list[1].args[-1]
+        assert "KITCHEN_DASHBOARD_URL=http://127.0.0.1:6001" in sous_cmd
+        assert "KITCHEN_DASHBOARD_PORT=6001" in sous_cmd
