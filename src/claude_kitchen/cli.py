@@ -4,8 +4,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -256,6 +258,11 @@ def cmd_statusline_segment(args):
                 pass
 
     segments = []
+    # Surface the overview dashboard URL when this sous was spawned with it
+    # (spawn_sous exports KITCHEN_DASHBOARD_URL). Absent → just the sous info.
+    url = os.environ.get("KITCHEN_DASHBOARD_URL")
+    if url:
+        segments.append(f"📊 {url}")
     if env:
         segments.append(f"[ tmux attach -t {env} ]")
     segments.append(f"[ {active}/{total} agents active ]")
@@ -295,8 +302,17 @@ def _legacy_bare_kitchen(requested: str, project: Path):
 
 
 def cmd_open(args):
+    reserved = "'overview' is a reserved name — use 'kitchen overview' instead"
+    # Reject the reserved name before resolving the project, so
+    # `kitchen open overview /bad/path` reports the reservation, not a path error.
+    if args.name == "overview":
+        sys.exit(reserved)
     project = resolve_project(args.project)
     requested = args.name or project.name
+    if requested == "overview":
+        sys.exit(reserved)
+    # Auto-start the cross-kitchen dashboard (idempotent; never blocks the open).
+    _ensure_overview_running()
     # Namespace the kitchen by project slug so kitchens for different projects
     # never collide on tmux session / state dir / socket names — e.g.
     # `kitchen open main` in two repos yields plow-main and racksmith-main,
@@ -936,11 +952,12 @@ def cmd_setup(args):
             pass
 
     if cmd and sl_file_resolves and _has_kitchen_segment(cmd):
-        print("✅ Statusline configured (kitchen segment active)")
+        print("✅ Statusline configured (kitchen segment active — surfaces 📊 dashboard URL when overview is up)")
     elif cmd and sl_file_resolves:
-        # Don't overwrite — advise embedding.
+        # Don't overwrite a custom statusline — advise embedding (soft-warn).
         print("⚠️  Statusline configured, but no kitchen segment detected")
         print(f'   Add `$(kitchen statusline-segment)` to your existing statusline')
+        print(f"   (it also surfaces the 📊 dashboard URL once overview is running)")
         print(f"   wherever you want cook/attach info to appear. Example line:")
         print(f'     printf "%s  %s\\n" "<your existing output>" "$(kitchen statusline-segment)"')
         print()
@@ -982,6 +999,9 @@ def cmd_setup(args):
 
 def cmd_close(args):
     kitchen = resolve_kitchen(args.kitchen)
+    if kitchen == "overview":
+        _close_overview()
+        return
     session = mc(kitchen)
     base = state_dir(kitchen)
 
@@ -1019,42 +1039,140 @@ def cmd_close(args):
 
 # --- Overview v2 ----------------------------------------------------------
 
-def cmd_overview(args):
-    """Open the global overview kitchen: a detached `ck-overview` tmux session
-    running the FastAPI dashboard server and the overview-sous Claude (a /loop
-    summarizer). Dashboard at http://127.0.0.1:<port>/."""
+def _overview_port() -> str:
+    return os.environ.get("KITCHEN_DASHBOARD_PORT", "5757")
+
+
+def _healthz_ok(port: str, timeout: float) -> bool:
+    """Poll GET /healthz until it answers 200 or `timeout` seconds elapse."""
+    import urllib.request
+    url = f"http://127.0.0.1:{port}/healthz"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def _overview_state_setup() -> Path:
     base = overview_state_dir()
     base.mkdir(parents=True, exist_ok=True)
     (base / "wiki").mkdir(exist_ok=True)
     (base / "notes").mkdir(exist_ok=True)
-    kj_file = base / "kitchen.json"
-    if not kj_file.exists():
-        kj_file.write_text(json.dumps({"source": None, "slug": "overview"}) + "\n")
+    kj = base / "kitchen.json"
+    if not kj.exists():
+        kj.write_text(json.dumps({"source": None, "slug": "overview"}) + "\n")
+    return base
 
-    session = mc("overview")
-    if has_session(session):
-        sys.exit("Overview already running. `kitchen close overview` first to restart.")
 
+def _start_overview(port: str):
+    """Spawn the overview kitchen (dashboard server + sous), confirm /healthz is
+    up (10s; warn-not-block on timeout), and launch a DETACHED kickoff that
+    starts the summarizer loop once the sous boots — so callers (notably
+    `kitchen open`) don't block on the overview sous's ~minute-long boot."""
+    base = _overview_state_setup()
     role = _PKG_DIR / "roles" / "overview-sous.md"
     if not role.exists():
         sys.exit(f"overview-sous.md not found at {role}")
-
     from claude_kitchen.spawn import spawn_overview_sous
-    port = os.environ.get("KITCHEN_DASHBOARD_PORT", "5757")
     spawn_overview_sous(base, role, port)
+    if not _healthz_ok(port, timeout=10):
+        print("Warning: overview dashboard didn't come up within 10s.", file=sys.stderr)
+    subprocess.Popen(
+        ["kitchen", "overview-kickoff"], start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
+
+def _terminate_overview_server(session: str):
+    """SIGTERM the dashboard server — the `server` pane's process is the uvicorn
+    server (bash exec'd into `kitchen dashboard-server`), so it shuts down
+    gracefully and frees the port. SIGKILL if it lingers past a 3s grace."""
+    result = tmux("list-panes", "-t", f"{session}:server", "-F", "#{pane_pid}")
+    if result.returncode != 0:
+        return
+    for tok in result.stdout.split():
+        if not tok.isdigit():
+            continue
+        pid = int(tok)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            continue
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError):
+                break
+            time.sleep(0.1)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def cmd_overview(args):
+    """Open the global overview kitchen: a detached `ck-overview` tmux session
+    running the FastAPI dashboard server and the overview-sous Claude (a /loop
+    summarizer). Dashboard at http://127.0.0.1:<port>/."""
+    session = mc("overview")
+    if has_session(session):
+        sys.exit("Overview already running. `kitchen close overview` first to restart.")
+    port = _overview_port()
+    _start_overview(port)
     print(f"Overview up. Dashboard: http://127.0.0.1:{port}")
     print(f"   tmux attach -t {session}")
 
-    # Kick off the summarizer loop once the sous's Claude reaches its prompt.
-    loop_min = os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5")
-    if wait_for_prompt(session, "sous", "claude"):
+
+def cmd_overview_kickoff(args):
+    """(internal) Wait for the detached overview sous to reach its prompt, then
+    send the /loop kickoff. Run detached by _start_overview so `kitchen open`
+    doesn't block on the sous booting."""
+    session = mc("overview")
+    base = overview_state_dir()
+    if wait_for_prompt(session, "sous", "claude", timeout=90):
+        loop_min = os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5")
         kickoff = (f"/loop {loop_min}m Run one overview synopsis tick now, "
                    f"following your role's loop-tick procedure.")
         send_keys(session, "sous", kickoff, backend="claude", log_dir=base / "cooks")
-    else:
-        print("Warning: overview-sous didn't reach its prompt; loop not started.",
-              file=sys.stderr)
+
+
+def _ensure_overview_running():
+    """Idempotent overview-up check run at the start of every `kitchen open`.
+    No-op if ck-overview is up AND /healthz answers; otherwise (re)spawn. Never
+    blocks the open — `_start_overview` warns (doesn't raise) on a 10s healthz
+    timeout, so a down overview can't stop you from opening regular kitchens."""
+    session = mc("overview")
+    port = _overview_port()
+    if has_session(session) and _healthz_ok(port, timeout=2):
+        return
+    if has_session(session):
+        # Session lingers but the server is unhealthy — tear it down, respawn.
+        _terminate_overview_server(session)
+        tmux("kill-session", "-t", session)
+    if not (_PKG_DIR / "roles" / "overview-sous.md").exists():
+        return
+    _start_overview(port)
+
+
+def _close_overview():
+    """Tear down the overview kitchen: graceful server shutdown + kill the
+    ck-overview session (server + sous windows). Synopsis files live in OTHER
+    kitchens' dirs and are cached state — they are deliberately untouched."""
+    session = mc("overview")
+    base = overview_state_dir()
+    _terminate_overview_server(session)
+    tmux("kill-session", "-t", session)
+    for f in ("kitchen.json", "sous.json", "sous.pid", ".mcp.json"):
+        (base / f).unlink(missing_ok=True)
+    print("Overview closed. Dashboard down.")
 
 
 def cmd_overview_changes(args):
@@ -1177,6 +1295,7 @@ def main():
 
     sub.add_parser("overview", help="Open the global overview dashboard kitchen")
     sub.add_parser("overview-changes", help="(internal) List kitchens needing a fresh synopsis")
+    sub.add_parser("overview-kickoff", help="(internal) Start the overview sous's summarizer loop")
     sub.add_parser("dashboard-server", help="(internal) Run the FastAPI dashboard server")
     sub.add_parser("overview-broadcast-tick", help="(internal) Tell the dashboard a loop tick finished")
 
@@ -1188,6 +1307,8 @@ def main():
         cmd_overview(args)
     elif args.command == "overview-changes":
         cmd_overview_changes(args)
+    elif args.command == "overview-kickoff":
+        cmd_overview_kickoff(args)
     elif args.command == "dashboard-server":
         cmd_dashboard_server(args)
     elif args.command == "overview-broadcast-tick":

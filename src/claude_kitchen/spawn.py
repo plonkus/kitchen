@@ -32,6 +32,10 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     os.environ["AGENT_SESSION"] = session
     os.environ["AGENT_NAME"] = "sous"
     os.environ["STATUS_DIR"] = str(state_dir)
+    # Surface the overview dashboard URL in every sous's env so the statusline
+    # segment can show it. Port matches the dashboard server convention.
+    _port = os.environ.get("KITCHEN_DASHBOARD_PORT", "5757")
+    os.environ["KITCHEN_DASHBOARD_URL"] = f"http://127.0.0.1:{_port}"
     if slug:
         from claude_kitchen.state import wiki_dir, notes_dir
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))

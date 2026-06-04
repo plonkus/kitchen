@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -12,9 +13,25 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, cmd_overview_changes
+from claude_kitchen.cli import (
+    resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire,
+    cmd_close, _sweep_cooks, cmd_sweep, cmd_overview_changes,
+    _ensure_overview_running, _close_overview, cmd_statusline_segment,
+)
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
+
+
+@pytest.fixture(autouse=True)
+def _no_overview_autostart():
+    """`cmd_open` auto-starts the overview dashboard. Stub the cli-module
+    `_ensure_overview_running` for every test so units never spawn a real
+    ck-overview tmux session / dashboard server. This patches the attribute
+    cmd_open looks up; the `_ensure_overview_running` name imported into this
+    test module still points at the real function, so the dedicated lifecycle
+    tests below can exercise it directly. Request this fixture for the mock."""
+    with patch("claude_kitchen.cli._ensure_overview_running") as m:
+        yield m
 
 
 class TestResolveKitchen:
@@ -306,6 +323,160 @@ class TestOverviewChanges:
         assert name == "k"
         assert transcript == str(tpath)   # slug derived from worktree, file exists
         assert sid == "sid-xyz"
+
+
+class TestCmdOpenOverviewIntegration:
+    def test_open_overview_is_reserved(self):
+        args = MagicMock()
+        args.name = "overview"
+        with pytest.raises(SystemExit, match="reserved name"):
+            cmd_open(args)
+
+    def test_reserved_short_circuits_before_project_resolution(self):
+        args = MagicMock()
+        args.name = "overview"
+        args.project = "/this/path/does/not/exist"
+        with patch("claude_kitchen.cli.resolve_project") as mock_resolve:
+            with pytest.raises(SystemExit, match="reserved name"):
+                cmd_open(args)
+            mock_resolve.assert_not_called()
+
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp/myproject"))
+    def test_open_auto_starts_overview(self, mock_resolve, mock_state, mock_tmux, mock_has,
+                                       mock_spawn, mock_slug, mock_ns, tmp_path, monkeypatch,
+                                       _no_overview_autostart):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_state.return_value = tmp_path
+        mock_tmux.return_value = MagicMock(returncode=0)
+        args = MagicMock()
+        args.name = None  # use project.name, no worktree
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = False
+        cmd_open(args)
+        _no_overview_autostart.assert_called_once()  # overview ensured at open
+
+
+class TestEnsureOverviewRunning:
+    # NOTE: the autouse fixture patches the cli-module attribute, but the
+    # `_ensure_overview_running` name imported into this test module still
+    # points at the real function — so calling it here runs the real logic.
+
+    @patch("claude_kitchen.cli._start_overview")
+    @patch("claude_kitchen.cli._healthz_ok", return_value=True)
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    def test_noop_when_session_up_and_healthy(self, mock_has, mock_health, mock_start):
+        _ensure_overview_running()
+        mock_start.assert_not_called()
+
+    @patch("claude_kitchen.cli._start_overview")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    def test_spawns_when_no_session(self, mock_has, mock_start):
+        _ensure_overview_running()
+        mock_start.assert_called_once()
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli._terminate_overview_server")
+    @patch("claude_kitchen.cli._start_overview")
+    @patch("claude_kitchen.cli._healthz_ok", return_value=False)
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    def test_respawns_when_session_up_but_unhealthy(self, mock_has, mock_health, mock_start,
+                                                    mock_term, mock_tmux):
+        _ensure_overview_running()
+        mock_term.assert_called_once()      # stale server torn down
+        assert any(c.args[:1] == ("kill-session",) for c in mock_tmux.call_args_list)
+        mock_start.assert_called_once()     # then respawned
+
+
+class TestCloseOverview:
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli._terminate_overview_server")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="overview")
+    def test_teardown_kills_server_and_session_preserving_synopsis(
+        self, mock_resolve, mock_term, mock_tmux, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        base = tmp_path / ".claude-kitchen" / "overview"
+        base.mkdir(parents=True)
+        (base / "kitchen.json").write_text("{}")
+        (base / "sous.json").write_text("{}")
+        # synopsis files live in OTHER kitchens' dirs — must survive close
+        other = tmp_path / ".claude-kitchen" / "plow-main"
+        other.mkdir(parents=True)
+        (other / "synopsis.md").write_text("keep me")
+
+        args = MagicMock()
+        args.kitchen = "overview"
+        cmd_close(args)
+
+        mock_term.assert_called_once()  # FastAPI server SIGTERM'd
+        assert any(c.args[:1] == ("kill-session",) for c in mock_tmux.call_args_list)
+        assert not (base / "kitchen.json").exists()
+        assert not (base / "sous.json").exists()
+        assert (other / "synopsis.md").read_text() == "keep me"  # cached state preserved
+
+
+class TestTerminateOverviewServer:
+    def _run(self, stdout):
+        from claude_kitchen.cli import _terminate_overview_server
+        _terminate_overview_server("ck-overview")
+
+    @patch("claude_kitchen.cli.time.sleep", lambda *_: None)
+    @patch("claude_kitchen.cli.os.kill")
+    @patch("claude_kitchen.cli.tmux")
+    def test_sigterm_graceful_no_sigkill(self, mock_tmux, mock_kill):
+        mock_tmux.return_value = MagicMock(returncode=0, stdout="4242\n")
+        # SIGTERM lands; the first liveness probe os.kill(pid, 0) then reports the
+        # process gone → graceful exit, no SIGKILL.
+        seen = []
+        def fake_kill(pid, sig):
+            seen.append((pid, sig))
+            if sig == 0:
+                raise ProcessLookupError
+        mock_kill.side_effect = fake_kill
+        self._run("4242\n")
+        assert (4242, signal.SIGTERM) in seen
+        assert not any(s == signal.SIGKILL for _, s in seen)
+
+    @patch("claude_kitchen.cli.time.sleep", lambda *_: None)
+    @patch("claude_kitchen.cli.os.kill")
+    @patch("claude_kitchen.cli.tmux")
+    def test_sigkill_when_unresponsive(self, mock_tmux, mock_kill, monkeypatch):
+        mock_tmux.return_value = MagicMock(returncode=0, stdout="99\n")
+        # Process never dies (os.kill never raises). Drive the clock so the 3s
+        # grace window expires → SIGKILL fallback.
+        ticks = iter([0, 0, 1, 2, 5])
+        monkeypatch.setattr("claude_kitchen.cli.time.time", lambda: next(ticks))
+        self._run("99\n")
+        sigs = [c.args[1] for c in mock_kill.call_args_list]
+        assert signal.SIGTERM in sigs
+        assert signal.SIGKILL in sigs
+
+
+class TestStatuslineSegmentDashboardUrl:
+    @patch("claude_kitchen.cli.state_dir")
+    def test_shows_dashboard_url_when_env_set(self, mock_state, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("KITCHEN_DASHBOARD_URL", "http://127.0.0.1:5757")
+        mock_state.return_value = tmp_path
+        cmd_statusline_segment(MagicMock())
+        out = capsys.readouterr().out
+        assert "📊 http://127.0.0.1:5757" in out
+
+    @patch("claude_kitchen.cli.state_dir")
+    def test_no_url_when_env_absent(self, mock_state, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.delenv("KITCHEN_DASHBOARD_URL", raising=False)
+        mock_state.return_value = tmp_path
+        cmd_statusline_segment(MagicMock())
+        out = capsys.readouterr().out
+        assert "📊" not in out
 
 
 class TestClaudeStopTokenCapture:

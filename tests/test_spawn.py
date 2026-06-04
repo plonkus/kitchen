@@ -160,6 +160,19 @@ class TestSpawnSous:
 
     @patch("claude_kitchen.spawn.os.chdir")
     @patch("claude_kitchen.spawn.os.execvp")
+    def test_exports_dashboard_url(self, mock_exec, mock_chdir, tmp_path, monkeypatch):
+        # Every sous gets KITCHEN_DASHBOARD_URL so its statusline can surface the
+        # dashboard; the port follows KITCHEN_DASHBOARD_PORT.
+        monkeypatch.setenv("KITCHEN_DASHBOARD_PORT", "6060")
+        for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        monkeypatch.delenv("KITCHEN_DASHBOARD_URL", raising=False)
+        spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y")
+        assert os.environ["KITCHEN_DASHBOARD_URL"] == "http://127.0.0.1:6060"
+        monkeypatch.setenv("KITCHEN_DASHBOARD_URL", os.environ["KITCHEN_DASHBOARD_URL"])
+
+    @patch("claude_kitchen.spawn.os.chdir")
+    @patch("claude_kitchen.spawn.os.execvp")
     def test_remote_control_enabled_with_kitchen_prefix(
         self, mock_exec, mock_chdir, tmp_path, monkeypatch,
     ):
