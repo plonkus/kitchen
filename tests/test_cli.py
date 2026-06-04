@@ -17,6 +17,7 @@ from claude_kitchen.cli import (
     resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire,
     cmd_close, _sweep_cooks, cmd_sweep, cmd_overview_changes,
     _ensure_overview_running, _close_overview, cmd_statusline_segment,
+    cmd_overview, cmd_overview_kickoff,
 )
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
@@ -361,6 +362,39 @@ class TestCmdOpenOverviewIntegration:
         args.resume = False
         cmd_open(args)
         _no_overview_autostart.assert_called_once()  # overview ensured at open
+
+
+class TestCmdOverviewIdempotent:
+    def test_reuses_ensure_running_and_prints_url(self, capsys, _no_overview_autostart):
+        # Explicit `kitchen overview` is now idempotent: it routes through
+        # _ensure_overview_running (which checks /healthz and self-heals) instead
+        # of erroring when the tmux session merely exists, and prints the URL.
+        cmd_overview(MagicMock())
+        _no_overview_autostart.assert_called_once()
+        out = capsys.readouterr().out
+        assert "http://127.0.0.1:5757" in out
+        assert "ck-overview" in out
+
+
+class TestOverviewKickoffLog:
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=False)
+    def test_logs_failure_when_sous_never_boots(self, mock_wait, mock_send, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cmd_overview_kickoff(MagicMock())
+        log = (tmp_path / ".claude-kitchen" / "overview" / "kickoff.log").read_text()
+        assert "FAILED" in log
+        mock_send.assert_not_called()  # no /loop sent if the sous never showed
+
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    def test_logs_success_when_loop_started(self, mock_wait, mock_send, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("KITCHEN_OVERVIEW_LOOP_MIN", "7")
+        cmd_overview_kickoff(MagicMock())
+        log = (tmp_path / ".claude-kitchen" / "overview" / "kickoff.log").read_text()
+        assert "loop started (interval 7m)" in log
+        mock_send.assert_called_once()
 
 
 class TestEnsureOverviewRunning:

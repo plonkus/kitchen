@@ -1121,27 +1121,49 @@ def _terminate_overview_server(session: str):
 def cmd_overview(args):
     """Open the global overview kitchen: a detached `ck-overview` tmux session
     running the FastAPI dashboard server and the overview-sous Claude (a /loop
-    summarizer). Dashboard at http://127.0.0.1:<port>/."""
-    session = mc("overview")
-    if has_session(session):
-        sys.exit("Overview already running. `kitchen close overview` first to restart.")
+    summarizer). Dashboard at http://127.0.0.1:<port>/.
+
+    Idempotent — reuses the auto-start path: it no-ops when the overview is up
+    and healthy, and repairs a session whose server has died, rather than
+    erroring out. Prints the URL either way."""
     port = _overview_port()
-    _start_overview(port)
+    _ensure_overview_running()
     print(f"Overview up. Dashboard: http://127.0.0.1:{port}")
-    print(f"   tmux attach -t {session}")
+    print(f"   tmux attach -t {mc('overview')}")
+
+
+def _kickoff_log(base: Path, message: str):
+    """Append a timestamped line to <overview-state-dir>/kickoff.log. The kickoff
+    runs as a detached subprocess with no terminal, so this file is the only way
+    to diagnose a loop that failed to start. Best-effort."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        with (base / "kickoff.log").open("a") as f:
+            f.write(f"{ts}\t{message}\n")
+    except OSError:
+        pass
 
 
 def cmd_overview_kickoff(args):
     """(internal) Wait for the detached overview sous to reach its prompt, then
     send the /loop kickoff. Run detached by _start_overview so `kitchen open`
-    doesn't block on the sous booting."""
+    doesn't block on the sous booting. Outcome is logged to kickoff.log because
+    the detached process is otherwise silent on failure."""
     session = mc("overview")
     base = overview_state_dir()
-    if wait_for_prompt(session, "sous", "claude", timeout=90):
+    try:
+        if not wait_for_prompt(session, "sous", "claude", timeout=90):
+            _kickoff_log(base, "FAILED: overview sous did not reach its prompt "
+                               "within 90s; loop not started")
+            return
         loop_min = os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5")
         kickoff = (f"/loop {loop_min}m Run one overview synopsis tick now, "
                    f"following your role's loop-tick procedure.")
         send_keys(session, "sous", kickoff, backend="claude", log_dir=base / "cooks")
+        _kickoff_log(base, f"loop started (interval {loop_min}m)")
+    except Exception as e:
+        _kickoff_log(base, f"ERROR: {e!r}")
 
 
 def _ensure_overview_running():
