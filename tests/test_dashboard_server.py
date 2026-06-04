@@ -42,10 +42,18 @@ def test_index_serves_dashboard_html():
 
 
 def test_events_ws_accepts_connection():
-    # Chunk 1: the endpoint accepts connections and holds them open; there is
-    # no broadcast yet (Chunk 2 wires loop_tick). Connecting must not error.
     with client.websocket_connect("/events"):
         pass
+
+
+def test_loop_tick_broadcasts_to_ws_clients():
+    # POST /internal/loop-tick → every connected dashboard receives a loop_tick.
+    with client.websocket_connect("/events") as ws:
+        r = client.post("/internal/loop-tick")
+        assert r.status_code == 200
+        msg = ws.receive_json()
+        assert msg["type"] == "loop_tick"
+        assert msg["ts"].endswith("Z")
 
 
 def test_state_shape_and_classification(tmp_path, monkeypatch):
@@ -88,3 +96,17 @@ def test_state_empty_when_no_kitchens(tmp_path, monkeypatch):
     (tmp_path / ".claude-kitchen").mkdir()
     body = client.get("/state").json()
     assert body["kitchens"] == []
+
+
+def test_old_leaked_dir_is_idle_not_booting(tmp_path, monkeypatch):
+    # Chunk 1 review fold-in: a leaked state dir (no sous.json, dir mtime >10min)
+    # classifies as idle, NOT booting — age dominates. Guards the deviation from
+    # a naive "no sous.json → booting" rule.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = tmp_path / ".claude-kitchen" / "leaked"
+    d.mkdir(parents=True)
+    (d / "kitchen.json").write_text(json.dumps({"source": "/p"}))  # no sous.json
+    old = time.time() - 30 * 60  # set AFTER writing kitchen.json (which bumps dir mtime)
+    os.utime(d, (old, old))
+    by = {k["name"]: k for k in client.get("/state").json()["kitchens"]}
+    assert by["leaked"]["status"] == "idle"

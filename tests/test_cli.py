@@ -1,15 +1,18 @@
 """Tests for the kitchen CLI."""
 import argparse
 import json
+import os
+import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, cmd_overview_changes
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -101,30 +104,48 @@ class TestHook:
         assert call_args[0][1]["cook"] == "eng"
         assert call_args[0][1]["summary"] == "all tests pass"
 
-    def test_sous_stop_is_noop(self, monkeypatch, tmp_path):
+    def test_sous_stop_writes_sous_json(self, monkeypatch, tmp_path):
+        # v2: the sous Stop writes <state-dir>/sous.json {status:idle, ...} (the
+        # mtime signal the overview loop diffs), captures session_id to
+        # kitchen.json, and does NOT touch cooks/ or push to the channel.
         monkeypatch.setenv("AGENT_NAME", "sous")
         monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
-        # Assemble the legacy sentinel at runtime — keeps the residue grep
-        # in Task 11 Step 1 clean.
-        sentinel = f"[{'AWAITING'}: head-chef decision on rollout]"
-        _stdin_payload(
-            monkeypatch,
-            hook_event_name="Stop",
-            last_assistant_message=f"Phase one done.\n\n{sentinel}",
-        )
+        (tmp_path / "kitchen.json").write_text(json.dumps({"source": "/p"}))
+        _stdin_payload(monkeypatch, hook_event_name="Stop",
+                       last_assistant_message="Phase one done.", session_id="sess-1")
 
         mock_send = MagicMock()
         with patch("claude_kitchen.channel.send_to_socket", mock_send):
             cmd_hook(argparse.Namespace(command="hook"))
 
-        # No cook status file written.
+        sous = json.loads((tmp_path / "sous.json").read_text())
+        assert sous["status"] == "idle"
+        assert sous["sous_session_id"] == "sess-1"
+        assert sous["ts"].endswith("Z")
+        # session id also captured to kitchen.json for --resume
+        assert json.loads((tmp_path / "kitchen.json").read_text())["sous_session_id"] == "sess-1"
+        # no cook file, no channel push
         assert not (tmp_path / "cooks").exists() or not any((tmp_path / "cooks").iterdir())
-        # No channel push.
         mock_send.assert_not_called()
-        # No marker file written under notes/ (covers the old awaiting-sentinel file).
-        notes = tmp_path / "notes"
-        assert not notes.exists() or not any(notes.iterdir())
+
+    def test_sous_user_prompt_submit_writes_working_preserving_session(self, monkeypatch, tmp_path):
+        # UserPromptSubmit → working, preserving any session_id from a prior Stop
+        # (the prompt payload doesn't carry one).
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path))
+        (tmp_path / "sous.json").write_text(json.dumps(
+            {"status": "idle", "ts": "old", "sous_session_id": "sess-1"}))
+        payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "go"})
+        monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=payload)))
+
+        with patch("claude_kitchen.channel.send_to_socket", MagicMock()):
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        sous = json.loads((tmp_path / "sous.json").read_text())
+        assert sous["status"] == "working"
+        assert sous["sous_session_id"] == "sess-1"  # preserved
 
     def test_hook_noop_outside_kitchen(self, monkeypatch):
         monkeypatch.delenv("AGENT_NAME", raising=False)
@@ -224,6 +245,67 @@ def _stage_transcript(tmp_path, *, model, usage):
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text(json.dumps(line) + "\n")
     return str(transcript)
+
+
+class TestOverviewChanges:
+    """`kitchen overview-changes` — the overview loop's work list. Pure stats."""
+
+    def _mk(self, home, name, kitchen=None, sous_age=None, synopsis_age=None,
+            sous_session_id="sess"):
+        d = home / ".claude-kitchen" / name
+        d.mkdir(parents=True)
+        (d / "kitchen.json").write_text(json.dumps(kitchen or {"source": "/p/" + name}))
+        if sous_age is not None:
+            (d / "sous.json").write_text(json.dumps(
+                {"status": "idle", "ts": "x", "sous_session_id": sous_session_id}))
+            t = time.time() - sous_age
+            os.utime(d / "sous.json", (t, t))
+        if synopsis_age is not None:
+            (d / "synopsis.md").write_text("old synopsis")
+            t = time.time() - synopsis_age
+            os.utime(d / "synopsis.md", (t, t))
+        return d
+
+    def _run(self, capsys):
+        cmd_overview_changes(argparse.Namespace(command="overview-changes"))
+        return [ln for ln in capsys.readouterr().out.splitlines() if ln]
+
+    def test_lists_changed_and_filters(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # changed: sous newer than synopsis
+        self._mk(tmp_path, "changed", sous_age=60, synopsis_age=600)
+        # changed: no synopsis at all
+        self._mk(tmp_path, "nosyn", sous_age=60)
+        # unchanged: synopsis newer than sous
+        self._mk(tmp_path, "current", sous_age=600, synopsis_age=60)
+        # no sous.json yet → nothing to summarize
+        self._mk(tmp_path, "fresh")
+        # dormant: sous.json > 24h old
+        self._mk(tmp_path, "dormant", sous_age=30 * 3600)
+        # excluded: overview itself + a parent_kitchen sub-sous
+        self._mk(tmp_path, "overview", sous_age=60)
+        self._mk(tmp_path, "subby", kitchen={"source": "/p", "parent_kitchen": "x"}, sous_age=60)
+
+        names = {ln.split("\t")[0] for ln in self._run(capsys)}
+        assert names == {"changed", "nosyn"}
+
+    def test_output_format_with_transcript(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # kitchen.json points at a worktree; create the matching transcript file
+        wt = "/proj/wt"
+        self._mk(tmp_path, "k", kitchen={"source": "/proj/main", "worktree": wt},
+                 sous_age=30, sous_session_id="sid-xyz")
+        slug = re.sub(r"[^a-zA-Z0-9]", "-", wt)
+        tpath = tmp_path / ".claude" / "projects" / slug / "sid-xyz.jsonl"
+        tpath.parent.mkdir(parents=True)
+        tpath.write_text("{}\n")
+
+        lines = self._run(capsys)
+        assert len(lines) == 1
+        name, transcript, sid = lines[0].split("\t")
+        assert name == "k"
+        assert transcript == str(tpath)   # slug derived from worktree, file exists
+        assert sid == "sid-xyz"
 
 
 class TestClaudeStopTokenCapture:

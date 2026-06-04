@@ -78,10 +78,19 @@ def wait_for_prompt(session: str, window: str, backend: str, timeout: int = 60) 
     # when a new version is published. Dismiss it once with `3` (= "Skip
     # until next version") + Enter so the welcome marker can appear.
     update_dismissed = False
+    # Claude shows a one-time "trust this folder?" dialog when launched in a
+    # directory it hasn't seen — e.g. the detached overview sous's fresh state
+    # dir, where no head chef is attached to confirm it. Accept the default
+    # ("Yes, I trust this folder") with Enter so headless souses can boot.
+    trust_dismissed = False
     while time.time() < deadline:
         content = capture_pane(session, window)
         if content and marker in content:
             return True
+        if (backend == "claude" and not trust_dismissed and content
+                and "trust this folder" in content):
+            tmux("send-keys", "-t", f"{session}:{window}", "Enter", check=True)
+            trust_dismissed = True
         if (backend == "codex" and not update_dismissed and content
                 and ("Update available!" in content
                      or "Press enter to continue" in content)):

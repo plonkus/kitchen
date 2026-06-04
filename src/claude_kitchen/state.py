@@ -5,12 +5,18 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 
 def state_dir(kitchen: str) -> Path:
     return Path.home() / ".claude-kitchen" / kitchen
+
+
+def overview_state_dir() -> Path:
+    """Fixed global state dir for the overview kitchen, independent of cwd."""
+    return Path.home() / ".claude-kitchen" / "overview"
 
 
 def wiki_dir(slug: str) -> Path:
@@ -130,3 +136,28 @@ def _slug_from_toplevel(project_path: Path) -> str:
     if not slug:
         sys.exit(f"Could not derive a slug from toplevel {toplevel!r}.")
     return slug
+
+
+# --- Overview v2: sous status + transcript derivation ----------------------
+
+def write_sous_json(base: Path, status: str, sous_session_id: str = ""):
+    """Write the minimal per-kitchen sous status the overview loop + dashboard
+    read. Atomic. Bumping this file's mtime is the change signal that
+    `kitchen overview-changes` diffs against `synopsis.md`."""
+    atomic_write_json(base / "sous.json", {
+        "status": status,
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sous_session_id": sous_session_id or "",
+    })
+
+
+def transcript_path_for(cwd: Optional[str], session_id: str) -> Optional[Path]:
+    """Claude Code transcript path for a sous session:
+    `~/.claude/projects/<cwd-slug>/<session_id>.jsonl`, where the slug replaces
+    every non-alphanumeric char in the absolute cwd with '-' (per-character, no
+    run-collapsing). None if cwd/session is missing or the file isn't on disk."""
+    if not cwd or not session_id:
+        return None
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+    p = Path.home() / ".claude" / "projects" / slug / f"{session_id}.jsonl"
+    return p if p.exists() else None

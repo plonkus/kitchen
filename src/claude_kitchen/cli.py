@@ -16,6 +16,7 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir,
+    overview_state_dir, write_sous_json, transcript_path_for,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous
@@ -551,12 +552,26 @@ def cmd_hook(args):
     event = payload.get("hook_event_name", "")
 
     if name == "sous":
-        # Sous hook is otherwise a no-op — prevents echo loops where the sous's
-        # own Stop events would feed back through the cook channel push below.
-        # Carveout: capture session_id on Claude Stop so `kitchen open --resume`
-        # can find this exact sous after a crash. (Sous is always Claude.)
-        if not codex and event == "Stop":
-            sid = payload.get("session_id")
+        # v2: write a minimal sous.json on each turn. Its mtime is the change
+        # signal the overview loop's `kitchen overview-changes` diffs against
+        # synopsis.md, and its `status` feeds the dashboard's /state. No channel
+        # push in v2 (the dashboard is the surface). Sous is always Claude.
+        if event == "UserPromptSubmit":
+            # Head chef typed → working. Preserve any session_id from a prior Stop
+            # (UserPromptSubmit's payload doesn't carry one).
+            prior = ""
+            sous_path = base / "sous.json"
+            if sous_path.exists():
+                try:
+                    prior = json.loads(sous_path.read_text()).get("sous_session_id", "")
+                except (json.JSONDecodeError, OSError):
+                    prior = ""
+            write_sous_json(base, "working", prior)
+        elif not codex and event == "Stop":
+            sid = payload.get("session_id", "") or ""
+            write_sous_json(base, "idle", sid)
+            # Also capture session_id on kitchen.json so `kitchen open --resume`
+            # can find this exact sous after a crash.
             kj_file = base / "kitchen.json"
             if sid and kj_file.exists():
                 kj = json.loads(kj_file.read_text())
@@ -1002,6 +1017,104 @@ def cmd_close(args):
     print("Kitchen closed. Service over.")
 
 
+# --- Overview v2 ----------------------------------------------------------
+
+def cmd_overview(args):
+    """Open the global overview kitchen: a detached `ck-overview` tmux session
+    running the FastAPI dashboard server and the overview-sous Claude (a /loop
+    summarizer). Dashboard at http://127.0.0.1:<port>/."""
+    base = overview_state_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "wiki").mkdir(exist_ok=True)
+    (base / "notes").mkdir(exist_ok=True)
+    kj_file = base / "kitchen.json"
+    if not kj_file.exists():
+        kj_file.write_text(json.dumps({"source": None, "slug": "overview"}) + "\n")
+
+    session = mc("overview")
+    if has_session(session):
+        sys.exit("Overview already running. `kitchen close overview` first to restart.")
+
+    role = _PKG_DIR / "roles" / "overview-sous.md"
+    if not role.exists():
+        sys.exit(f"overview-sous.md not found at {role}")
+
+    from claude_kitchen.spawn import spawn_overview_sous
+    port = os.environ.get("KITCHEN_DASHBOARD_PORT", "5757")
+    spawn_overview_sous(base, role, port)
+
+    print(f"Overview up. Dashboard: http://127.0.0.1:{port}")
+    print(f"   tmux attach -t {session}")
+
+    # Kick off the summarizer loop once the sous's Claude reaches its prompt.
+    loop_min = os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5")
+    if wait_for_prompt(session, "sous", "claude"):
+        kickoff = (f"/loop {loop_min}m Run one overview synopsis tick now, "
+                   f"following your role's loop-tick procedure.")
+        send_keys(session, "sous", kickoff, backend="claude", log_dir=base / "cooks")
+    else:
+        print("Warning: overview-sous didn't reach its prompt; loop not started.",
+              file=sys.stderr)
+
+
+def cmd_overview_changes(args):
+    """Print the overview loop's work list — kitchens whose `sous.json` is newer
+    than their `synopsis.md` (or have no synopsis yet). One line per kitchen:
+    `<name>\\t<transcript_path>\\t<sous_session_id>`. Pure filesystem stats."""
+    root = Path.home() / ".claude-kitchen"
+    if not root.is_dir():
+        return
+    now = datetime.now(timezone.utc)
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or not (d / "kitchen.json").exists() or d.name == "overview":
+            continue
+        try:
+            kj = json.loads((d / "kitchen.json").read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if kj.get("parent_kitchen"):
+            continue
+        sous_path = d / "sous.json"
+        if not sous_path.exists():
+            continue  # nothing has happened yet → nothing to summarize
+        sous_mtime = sous_path.stat().st_mtime
+        if now - datetime.fromtimestamp(sous_mtime, tz=timezone.utc) > timedelta(hours=24):
+            continue  # dormant
+        syn_path = d / "synopsis.md"
+        if syn_path.exists() and syn_path.stat().st_mtime >= sous_mtime:
+            continue  # synopsis already reflects the latest activity
+        try:
+            sous = json.loads(sous_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            sous = {}
+        sid = sous.get("sous_session_id", "") or kj.get("sous_session_id", "") or ""
+        cwd = kj.get("worktree") or kj.get("source")
+        tpath = transcript_path_for(cwd, sid)
+        print(f"{d.name}\t{tpath or ''}\t{sid}")
+
+
+def cmd_dashboard_server(args):
+    """Run the FastAPI dashboard server (blocking). Launched as the `server`
+    window of the ck-overview tmux session; reads KITCHEN_DASHBOARD_PORT."""
+    import uvicorn
+    port = int(os.environ.get("KITCHEN_DASHBOARD_PORT", "5757"))
+    uvicorn.run("claude_kitchen.dashboard_server:app", host="127.0.0.1", port=port)
+
+
+def cmd_overview_broadcast_tick(args):
+    """POST the local dashboard server's loop-tick endpoint so it broadcasts a
+    `loop_tick` to connected dashboards. The overview sous runs this at the end
+    of each synopsis tick. Silent on failure (the server may be down)."""
+    import urllib.request
+    port = os.environ.get("KITCHEN_DASHBOARD_PORT", "5757")
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/internal/loop-tick", method="POST")
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(prog="kitchen", description="claude-kitchen CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1062,10 +1175,23 @@ def main():
     p_channel = sub.add_parser("channel-server", help="(internal) Run channel MCP server")
     p_channel.add_argument("kitchen", help="Kitchen name")
 
+    sub.add_parser("overview", help="Open the global overview dashboard kitchen")
+    sub.add_parser("overview-changes", help="(internal) List kitchens needing a fresh synopsis")
+    sub.add_parser("dashboard-server", help="(internal) Run the FastAPI dashboard server")
+    sub.add_parser("overview-broadcast-tick", help="(internal) Tell the dashboard a loop tick finished")
+
     args = parser.parse_args()
 
     if args.command == "open":
         cmd_open(args)
+    elif args.command == "overview":
+        cmd_overview(args)
+    elif args.command == "overview-changes":
+        cmd_overview_changes(args)
+    elif args.command == "dashboard-server":
+        cmd_dashboard_server(args)
+    elif args.command == "overview-broadcast-tick":
+        cmd_overview_broadcast_tick(args)
     elif args.command == "hire":
         cmd_hire(args)
     elif args.command == "ticket":

@@ -56,16 +56,28 @@
     let lastState = null;
     let lastFetch = null;
 
-    function elapsed(fromIso) {
-      if (!fromIso) return "";
-      const secs = Math.max(0, Math.floor((Date.now() - Date.parse(fromIso)) / 1000));
+    function fmtDuration(secs) {
       if (secs < 60) return secs + "s";
       const mins = Math.floor(secs / 60);
-      if (mins < 60) return mins + "m";
+      if (mins < 60) return mins + "m " + (secs % 60) + "s";
       const hrs = Math.floor(mins / 60);
       if (hrs < 24) return hrs + "h " + (mins % 60) + "m";
       const days = Math.floor(hrs / 24);
       return days + "d " + (hrs % 24) + "h";
+    }
+
+    // Time SINCE a past timestamp (status rows). Past timestamps only.
+    function elapsed(fromIso) {
+      if (!fromIso) return "";
+      return fmtDuration(Math.max(0, Math.floor((Date.now() - Date.parse(fromIso)) / 1000)));
+    }
+
+    // Time UNTIL a future timestamp (the next loop tick). Handles future
+    // correctly instead of clamping to 0 the way elapsed() does for the past.
+    function countdown(toIso) {
+      if (!toIso) return "—";
+      const secs = Math.floor((Date.parse(toIso) - Date.now()) / 1000);
+      return secs <= 0 ? "any moment" : fmtDuration(secs);
     }
 
     function row(k) {
@@ -124,7 +136,7 @@
 
       const updated = lastFetch ? Math.floor((Date.now() - lastFetch) / 1000) + "s ago" : "—";
       const next = lastState.next_loop_tick_at
-        ? "next loop tick in " + elapsed(lastState.next_loop_tick_at).replace("-", "")
+        ? "next loop tick in " + countdown(lastState.next_loop_tick_at)
         : "next loop tick: —";
       document.getElementById("status-line").textContent = `Updated ${updated} · ${next}`;
     }

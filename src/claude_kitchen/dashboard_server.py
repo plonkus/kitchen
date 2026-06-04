@@ -154,6 +154,15 @@ def healthz() -> dict:
     return {"ok": True}
 
 
+@app.post("/internal/loop-tick")
+async def loop_tick() -> dict:
+    """Loopback-only hook the overview sous hits at the end of each synopsis
+    tick (`kitchen overview-broadcast-tick`). Broadcasts a `loop_tick` so every
+    connected dashboard re-fetches /state with the fresh synopses."""
+    await broadcast({"type": "loop_tick", "ts": _iso(datetime.now(timezone.utc))})
+    return {"ok": True}
+
+
 # --- websocket broadcast ---------------------------------------------------
 #
 # Read-only stream: clients connect and listen; the server pushes a `loop_tick`

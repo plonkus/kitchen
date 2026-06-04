@@ -4,8 +4,34 @@ from unittest.mock import patch, MagicMock
 import pytest
 from claude_kitchen.tmux import (
     mc, bare, list_sessions, list_windows,
-    has_session, capture_pane,
+    has_session, capture_pane, wait_for_prompt,
 )
+
+
+class TestWaitForPrompt:
+    @patch("claude_kitchen.tmux.time.sleep", lambda *_: None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_dismisses_claude_trust_dialog(self, mock_cap, mock_tmux):
+        # The detached overview sous boots in a fresh dir → Claude's one-time
+        # "trust this folder?" dialog. wait_for_prompt must confirm it (Enter)
+        # and then succeed once the welcome marker appears.
+        mock_cap.side_effect = [
+            "Is this a project you created or one you trust this folder?",
+            "Claude Code v2.1.162  Welcome back",
+        ]
+        assert wait_for_prompt("ck-overview", "sous", "claude", timeout=5) is True
+        # Confirmed the dialog with a single Enter to the sous window.
+        assert any(c.args[:1] == ("send-keys",) and "Enter" in c.args
+                   for c in mock_tmux.call_args_list)
+
+    @patch("claude_kitchen.tmux.time.sleep", lambda *_: None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_no_send_when_prompt_already_present(self, mock_cap, mock_tmux):
+        mock_cap.return_value = "Claude Code v2.1.162"
+        assert wait_for_prompt("ck-overview", "sous", "claude", timeout=5) is True
+        mock_tmux.assert_not_called()
 
 CK_PREFIX = "ck-"
 
