@@ -1261,10 +1261,12 @@ def _summarize_kitchen(name: str, tpath: str, sid: str, model: str) -> bool:
     wrap → write its `synopsis.json` atomically. Returns True iff a synopsis was
     written. The one-shot is a fresh, bounded `claude -p` (no accumulation): the
     role is the system prompt and the kitchen's ~50 transcript lines + prior
-    synopsis go in the user message. On a non-JSON / missing-or-invalid
-    `line`|`urgency` answer, the write is SKIPPED (prior synopsis left intact —
-    never overwrite good data with garbage). An empty/whitespace `block` is
-    normalized to null (and then `actions` to [])."""
+    synopsis go in the user message. The stdout is held to the locked schema:
+    over-cap `line`/`block`/`actions` strings are truncated to their caps; an
+    empty/whitespace `block` normalizes to null (and `actions` to []); and a
+    STRUCTURAL violation (non-JSON, missing/empty `line`, bad `urgency`,
+    non-string `block`, or `actions` not a 0–3 list of strings) SKIPS the write,
+    leaving the prior synopsis intact — never overwrite good data with garbage."""
     base = Path.home() / ".claude-kitchen" / name
     syn_path = base / "synopsis.json"
     prior = syn_path.read_text() if syn_path.exists() else ""
@@ -1297,18 +1299,32 @@ def _summarize_kitchen(name: str, tpath: str, sid: str, model: str) -> bool:
         print(f"[overview-loop] {name}: non-JSON one-shot output; skip write",
               file=sys.stderr)
         return False
+    # Enforce the locked schema before wrapping+writing. Over-cap strings are
+    # truncated to their cap (graceful — the kitchen still gets a summary);
+    # structural violations skip the write entirely (prior synopsis left intact).
+    # Either way the persisted file conforms to the schema.
     line = obj.get("line")
     urgency = obj.get("urgency")
     if not isinstance(line, str) or not line.strip() or urgency not in ("low", "med", "high"):
         print(f"[overview-loop] {name}: missing/invalid line|urgency; skip write",
               file=sys.stderr)
         return False
+    line = line[:90]
     block = obj.get("block")
-    if not isinstance(block, str) or not block.strip():
-        block = None
-    actions = obj.get("actions") if block is not None else []
-    if not isinstance(actions, list):
-        actions = []
+    if isinstance(block, str):
+        block = block[:90] if block.strip() else None
+    elif block is not None:
+        print(f"[overview-loop] {name}: non-string block; skip write", file=sys.stderr)
+        return False
+    if block is None:
+        actions = []  # the schema requires [] whenever nothing is blocked
+    else:
+        actions = obj.get("actions", [])
+        if (not isinstance(actions, list) or len(actions) > 3
+                or not all(isinstance(a, str) for a in actions)):
+            print(f"[overview-loop] {name}: invalid actions; skip write", file=sys.stderr)
+            return False
+        actions = [a[:60] for a in actions]
     try:
         based_on = json.loads((base / "sous.json").read_text()).get("ts", "")
     except (OSError, json.JSONDecodeError):

@@ -505,6 +505,35 @@ class TestOverviewLoop:
         assert _summarize_kitchen("k", "", "sid", "opus") is False
         assert not (tmp_path / ".claude-kitchen" / "k" / "synopsis.json").exists()
 
+    def test_summarize_kitchen_truncates_over_cap_strings(self, tmp_path, monkeypatch):
+        # Over-cap strings are truncated to their caps (90/90/60), not skipped —
+        # the kitchen still gets a conforming summary.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._mk(tmp_path, "k", ts="2026-06-08T13:00:00Z")
+        out = json.dumps({"line": "L" * 200, "block": "B" * 200,
+                          "actions": ["A" * 100, "C" * 70], "urgency": "high"})
+        monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: self._ok(out))
+        assert _summarize_kitchen("k", "", "sid", "opus") is True
+        rec = json.loads((tmp_path / ".claude-kitchen" / "k" / "synopsis.json").read_text())
+        assert len(rec["line"]) == 90
+        assert len(rec["block"]) == 90
+        assert [len(a) for a in rec["actions"]] == [60, 60]
+
+    @pytest.mark.parametrize("bad", [
+        {"line": "x", "block": 123, "actions": [], "urgency": "low"},                 # non-string block
+        {"line": "x", "block": "b", "actions": "nope", "urgency": "low"},             # actions not a list
+        {"line": "x", "block": "b", "actions": ["a", "b", "c", "d"], "urgency": "low"},  # >3 actions
+        {"line": "x", "block": "b", "actions": [1, 2], "urgency": "low"},             # non-string action
+    ])
+    def test_summarize_kitchen_skips_on_structural_violation(self, bad, tmp_path, monkeypatch):
+        # A malformed structure skips the write and leaves the prior synopsis intact.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        prior = '{"line": "KEEP", "block": null, "actions": [], "urgency": "low"}'
+        self._mk(tmp_path, "k", prior_synopsis=prior)
+        monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: self._ok(json.dumps(bad)))
+        assert _summarize_kitchen("k", "", "sid", "opus") is False
+        assert json.loads((tmp_path / ".claude-kitchen" / "k" / "synopsis.json").read_text())["line"] == "KEEP"
+
     def test_oneshot_runs_with_hook_env_stripped(self, tmp_path, monkeypatch):
         """The one-shot's hooks must no-op — so AGENT_NAME/AGENT_SESSION/STATUS_DIR
         are stripped from its env (the hook gate needs all three)."""

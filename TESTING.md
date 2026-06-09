@@ -7,7 +7,7 @@ by the manual smokes below.
 ## Overview v2 dashboard smoke
 
 1. `kitchen open <some-test-kitchen>` — observe `ck-overview` auto-starts
-   (check `tmux ls`, expect a `ck-overview` session with `server` + `sous`
+   (check `tmux ls`, expect a `ck-overview` session with `server` + `loop`
    windows).
 2. Browser: open `http://127.0.0.1:5757/`. Expect a status grid populated from
    actual kitchen state. The footer shows a "live" indicator (WS connected).
@@ -21,5 +21,6 @@ by the manual smokes below.
 5. `kitchen close overview` — verify port 5757 frees and `ck-overview` tears
    down. Synopsis files persist (they're cached state).
 
-If a loop tick fails to fire, check `~/.claude-kitchen/overview/kickoff.log` for
-the detached kickoff's outcome.
+If a loop tick fails to fire, inspect the `loop` window's output
+(`tmux attach -t ck-overview`, then select the `loop` window) — the Python loop
+logs per-kitchen skips and errors to stderr there.
