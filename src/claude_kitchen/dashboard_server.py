@@ -3,8 +3,8 @@
 A small FastAPI app that renders a cross-kitchen status dashboard in a browser
 tab. It reads kitchen state straight off disk (`~/.claude-kitchen/<name>/`) on
 every `/state` request — one cheap filesystem scan, no daemon state to keep in
-sync. The `/loop` summarizer writes `synopsis.json` files and pushes a
-`loop_tick` over the `/events` WebSocket; connected dashboards re-fetch `/state`.
+sync. The `kitchen overview-loop` daemon writes `synopsis.json` files and pushes
+a `loop_tick` over the `/events` WebSocket; connected dashboards re-fetch `/state`.
 
 localhost only — binds 127.0.0.1, no auth, no TLS. Run standalone with:
 
@@ -24,11 +24,17 @@ _DASHBOARD_HTML = _PKG_DIR / "dashboard.html"
 # Captured once at import so the dashboard can show "server up since …".
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
-# Classification thresholds (precedence retained from v1): age dominates —
-# anything quiet for >10min is idle regardless of its stored status; quiet for
-# >24h is dormant (collapsed in the dashboard).
+# Classification thresholds. Grouping is *time-independent* for blocked
+# kitchens (see _classify): _IDLE_AFTER only bounds "actively working" and
+# "just booting" (a working/no-sous kitchen quiet >10min falls through to idle);
+# _DORMANT_AFTER collapses long-idle kitchens into the dashboard's drawer. A
+# kitchen blocked on the head chef stays waiting_on_you at any age and is never
+# dormant.
 _IDLE_AFTER = timedelta(minutes=10)
 _DORMANT_AFTER = timedelta(hours=24)
+
+# Sort order within "Waiting on you": high → med → low, then oldest first.
+_URGENCY_RANK = {"high": 0, "med": 1, "low": 2}
 
 app = FastAPI(title="claude-kitchen overview")
 
@@ -44,40 +50,49 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _read_synopsis(path: Path) -> tuple[str, Optional[str]]:
-    """Return (body, generated_at) from a synopsis.md. ('', None) when the file
-    is missing/unreadable. Parses the `generated_at:` frontmatter key if present."""
+def _read_synopsis(path: Path) -> dict:
+    """Parse synopsis.json → the structured copy fields exposed in /state
+    (`line`/`block`/`actions`/`urgency`, plus `generated_at` surfaced as
+    `synopsis_generated_at`). Absent or unparseable → graceful-empty defaults:
+    the *common* state right after deploy (only a stale synopsis.md exists until
+    the loop writes the .json). A missing/garbled file is a normal transient
+    data state, not a misconfiguration, so it must never crash /state — the
+    kitchen just renders with no copy until the next tick fills it in."""
+    empty = {"line": "", "block": None, "actions": [], "urgency": "low",
+             "synopsis_generated_at": None}
     if not path.exists():
-        return "", None
+        return empty
     try:
-        text = path.read_text()
-    except OSError:
-        return "", None
-    generated_at = None
-    body = text
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) == 3:
-            frontmatter, body = parts[1], parts[2]
-            for line in frontmatter.splitlines():
-                if line.strip().startswith("generated_at:"):
-                    generated_at = line.split(":", 1)[1].strip()
-    return body.strip(), generated_at
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return empty
+    return {
+        "line": data.get("line", ""),
+        "block": data.get("block"),
+        "actions": data.get("actions", []),
+        "urgency": data.get("urgency", "low"),
+        "synopsis_generated_at": data.get("generated_at"),
+    }
 
 
-def _classify(has_sous: bool, sous_status: Optional[str], age: timedelta) -> str:
-    """Derive a dashboard status. Age dominates (quiet >10min → idle); a kitchen
-    that hasn't written sous.json yet is booting (it just opened) unless it has
-    already gone quiet, in which case it's an idle/leaked dir."""
-    if age > _IDLE_AFTER:
-        return "idle"
-    if not has_sous:
-        return "booting"
-    if sous_status == "working":
+def _classify(has_sous: bool, sous_status: Optional[str],
+              block: Optional[str], age: timedelta) -> str:
+    """Derive a dashboard status — time-independent for "waiting on you". A
+    blocked kitchen (block != null) stays waiting_on_you at any age and is never
+    swept to idle/dormant; recency only separates actively-working from idle
+    among non-blocked kitchens. Order is significant:
+      1. working sous, fresh (≤10min)            → working
+      2. blocked on the head chef (any age)      → waiting_on_you  (also catches
+         a stale working sous that left a block — busy can't nag forever)
+      3. no sous yet, fresh (≤10min)             → booting (just spawned)
+      4. otherwise                               → idle"""
+    if sous_status == "working" and age <= _IDLE_AFTER:
         return "working"
-    if sous_status == "idle":
+    if block is not None:
         return "waiting_on_you"
-    return "booting"
+    if not has_sous and age <= _IDLE_AFTER:
+        return "booting"
+    return "idle"
 
 
 def _scan_kitchen(base: Path, now: datetime) -> Optional[dict]:
@@ -103,14 +118,21 @@ def _scan_kitchen(base: Path, now: datetime) -> Optional[dict]:
         return None
 
     age = now - mtime
-    synopsis, generated_at = _read_synopsis(base / "synopsis.md")
+    syn = _read_synopsis(base / "synopsis.json")
+    status = _classify(has_sous, sous.get("status"), syn["block"], age)
     return {
         "name": base.name,
-        "status": _classify(has_sous, sous.get("status"), age),
+        "status": status,
+        "line": syn["line"],
+        "block": syn["block"],
+        "actions": syn["actions"],
+        "urgency": syn["urgency"],
         "last_status_mtime": _iso(mtime),
-        "synopsis": synopsis,
-        "synopsis_generated_at": generated_at,
-        "dormant": age > _DORMANT_AFTER,
+        "synopsis_generated_at": syn["synopsis_generated_at"],
+        # dormant only collapses long-idle kitchens. A blocked kitchen is
+        # waiting_on_you (never idle), so it is never dormant — this is the field
+        # that would otherwise re-hide a blocked-old kitchen.
+        "dormant": status == "idle" and age > _DORMANT_AFTER,
     }
 
 
@@ -124,7 +146,20 @@ def _scan_kitchens(now: datetime) -> list[dict]:
             record = _scan_kitchen(d, now)
             if record:
                 out.append(record)
-    return out
+    return _sort_kitchens(out)
+
+
+def _sort_kitchens(kitchens: list[dict]) -> list[dict]:
+    """waiting_on_you sorts urgency high→med→low, then oldest mtime first; every
+    other group keeps name order (the scan already yields name-sorted). The
+    frontend buckets by status and renders each group in the order given — one
+    source of truth, no client-side re-sort. last_status_mtime is zero-padded
+    ISO, so an ascending string sort puts the oldest first."""
+    waiting = [k for k in kitchens if k["status"] == "waiting_on_you"]
+    others = [k for k in kitchens if k["status"] != "waiting_on_you"]
+    waiting.sort(key=lambda k: (_URGENCY_RANK.get(k["urgency"], 2),
+                                k["last_status_mtime"]))
+    return waiting + others
 
 
 def build_state() -> dict:

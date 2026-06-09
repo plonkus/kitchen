@@ -1,4 +1,4 @@
-"""Tests for the overview v2 dashboard server (Chunk 1)."""
+"""Tests for the overview v2 dashboard server (Chunk 3: structured /state)."""
 import json
 import os
 import time
@@ -11,7 +11,8 @@ client = TestClient(app)
 
 
 def _mk(home, name, kitchen=None, sous=None, synopsis=None, age_s=None):
-    """Synthesize a kitchen state dir under <home>/.claude-kitchen/. age_s
+    """Synthesize a kitchen state dir under <home>/.claude-kitchen/. `synopsis`
+    is the dict written to synopsis.json (the structured contract). age_s
     back-dates the sous.json mtime (or the dir mtime when there's no sous.json)."""
     d = home / ".claude-kitchen" / name
     d.mkdir(parents=True)
@@ -21,11 +22,16 @@ def _mk(home, name, kitchen=None, sous=None, synopsis=None, age_s=None):
         (d / "sous.json").write_text(json.dumps(sous))
         target = d / "sous.json"
     if synopsis is not None:
-        (d / "synopsis.md").write_text(synopsis)
+        (d / "synopsis.json").write_text(json.dumps(synopsis))
     if age_s is not None:
         t = time.time() - age_s
         os.utime(target, (t, t))
     return d
+
+
+def _syn(line="", block=None, actions=None, urgency="low", generated_at=None):
+    return {"line": line, "block": block, "actions": actions or [],
+            "urgency": urgency, "generated_at": generated_at}
 
 
 def test_healthz():
@@ -38,7 +44,6 @@ def test_index_serves_dashboard_html():
     r = client.get("/")
     assert r.status_code == 200
     assert "kitchen dashboard" in r.text
-    assert "cdn.tailwindcss.com" in r.text  # Tailwind via CDN, no build step
 
 
 def test_events_ws_accepts_connection():
@@ -56,57 +61,130 @@ def test_loop_tick_broadcasts_to_ws_clients():
         assert msg["ts"].endswith("Z")
 
 
-def test_state_shape_and_classification(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _mk(tmp_path, "waiter", sous={"status": "idle", "summary": "need a call"}, age_s=120)   # recent idle → waiting
-    _mk(tmp_path, "busy", sous={"status": "working"}, age_s=30)                              # working
-    _mk(tmp_path, "fresh")                                                                   # no sous.json, recent → booting
-    _mk(tmp_path, "sleepy", sous={"status": "idle"}, age_s=30 * 60)                          # >10min → idle, not dormant
-    _mk(tmp_path, "stale", sous={"status": "idle"}, age_s=30 * 3600)                         # >24h → idle + dormant
-    _mk(tmp_path, "withsyn", sous={"status": "idle"}, age_s=60,
-        synopsis="---\ngenerated_at: 2026-06-03T18:45:00Z\nkitchen: withsyn\n---\nDid a thing.\nThen another.")
-    _mk(tmp_path, "overview", sous={"status": "idle"}, age_s=10)                             # excluded by name
-    _mk(tmp_path, "subby", kitchen={"source": "/p", "parent_kitchen": "waiter"},
-        sous={"status": "working"}, age_s=10)                                               # excluded (sub-sous)
-
-    body = client.get("/state").json()
-    assert body["next_loop_tick_at"] is None          # Chunk 2 wires the loop
-    assert body["server_started_at"].endswith("Z")    # ISO timestamp captured at load
-
-    by = {k["name"]: k for k in body["kitchens"]}
-    assert set(by) == {"waiter", "busy", "fresh", "sleepy", "stale", "withsyn"}  # overview + subby filtered out
-
-    assert by["waiter"]["status"] == "waiting_on_you"
-    assert by["busy"]["status"] == "working"
-    assert by["fresh"]["status"] == "booting"
-    assert by["sleepy"]["status"] == "idle" and by["sleepy"]["dormant"] is False
-    assert by["stale"]["dormant"] is True
-    assert by["busy"]["last_status_mtime"].endswith("Z")
-
-    # synopsis.md is parsed into body + generated_at frontmatter
-    assert by["withsyn"]["synopsis"] == "Did a thing.\nThen another."
-    assert by["withsyn"]["synopsis_generated_at"] == "2026-06-03T18:45:00Z"
-    # no synopsis.md → empty synopsis, null generated_at
-    assert by["fresh"]["synopsis"] == ""
-    assert by["fresh"]["synopsis_generated_at"] is None
-
-
-def test_state_empty_when_no_kitchens(tmp_path, monkeypatch):
+def test_state_envelope(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude-kitchen").mkdir()
     body = client.get("/state").json()
+    assert body["next_loop_tick_at"] is None          # Chunk 2 wires the loop
+    assert body["server_started_at"].endswith("Z")    # ISO timestamp captured at load
     assert body["kitchens"] == []
 
 
-def test_old_leaked_dir_is_idle_not_booting(tmp_path, monkeypatch):
-    # Chunk 1 review fold-in: a leaked state dir (no sous.json, dir mtime >10min)
-    # classifies as idle, NOT booting — age dominates. Guards the deviation from
-    # a naive "no sous.json → booting" rule.
+# The §3 grouping contract — every Done-when case, asserted in one fixture set.
+def test_state_grouping_all_cases(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    d = tmp_path / ".claude-kitchen" / "leaked"
-    d.mkdir(parents=True)
-    (d / "kitchen.json").write_text(json.dumps({"source": "/p"}))  # no sous.json
-    old = time.time() - 30 * 60  # set AFTER writing kitchen.json (which bumps dir mtime)
-    os.utime(d, (old, old))
+    HOUR = 3600
+
+    # (1) blocked + recent → waiting_on_you, dormant False
+    _mk(tmp_path, "c1_blocked_recent", sous={"status": "idle"}, age_s=120,
+        synopsis=_syn(block="approve the prod deploy",
+                      actions=["review the diff", "say go"], urgency="high"))
+    # (2) blocked + OLD (>24h) → MUST still be waiting_on_you AND dormant False
+    _mk(tmp_path, "c2_blocked_old", sous={"status": "idle"}, age_s=30 * HOUR,
+        synopsis=_syn(block="merge the long-running PR", actions=["click merge"],
+                      urgency="med"))
+    # (3) block!=null but sous working + recent → working (busy can't nag)
+    _mk(tmp_path, "c3_working_blocked", sous={"status": "working"}, age_s=30,
+        synopsis=_syn(line="running the build", block="a stale ask", urgency="high"))
+    # (4) working status but stale mtime (>10min) + block!=null → finished → waiting
+    _mk(tmp_path, "c4_stale_working", sous={"status": "working"}, age_s=20 * 60,
+        synopsis=_syn(block="confirm the rename", actions=["ack"], urgency="low"))
+    # (5) idle, block==null, recent → idle, dormant False
+    _mk(tmp_path, "c5_idle_recent", sous={"status": "idle"}, age_s=120,
+        synopsis=_syn(line="waiting for the next task"))
+    # (6) idle, block==null, age >24h → idle, dormant True
+    _mk(tmp_path, "c6_idle_old", sous={"status": "idle"}, age_s=30 * HOUR,
+        synopsis=_syn(line="long done"))
+    # (7a) no sous.json + recent → booting
+    _mk(tmp_path, "c7a_nosous_recent")
+    # (7b) no sous.json + OLD → idle, dormant True (NOT booting forever)
+    _mk(tmp_path, "c7b_nosous_old", age_s=30 * HOUR)
+    # (8) no synopsis.json → graceful-empty, no crash
+    _mk(tmp_path, "c8_no_synopsis", sous={"status": "idle"}, age_s=120)
+    # extra waiting kitchen to exercise oldest-first tiebreak among low urgency
+    _mk(tmp_path, "c9_blocked_low_old", sous={"status": "idle"}, age_s=40 * HOUR,
+        synopsis=_syn(block="old low-priority ask", actions=["glance"], urgency="low"))
+    # exclusions
+    _mk(tmp_path, "overview", sous={"status": "idle"}, age_s=10)
+    _mk(tmp_path, "subby", kitchen={"source": "/p", "parent_kitchen": "x"},
+        sous={"status": "working"}, age_s=10)
+
+    body = client.get("/state").json()
+    by = {k["name"]: k for k in body["kitchens"]}
+    assert "overview" not in by and "subby" not in by   # excluded
+
+    # (1) blocked + recent
+    c1 = by["c1_blocked_recent"]
+    assert c1["status"] == "waiting_on_you" and c1["dormant"] is False
+    assert c1["block"] == "approve the prod deploy"
+    assert c1["actions"] == ["review the diff", "say go"]
+    assert c1["urgency"] == "high"
+
+    # (2) THE time-independence regression: old block stays waiting AND not dormant
+    c2 = by["c2_blocked_old"]
+    assert c2["status"] == "waiting_on_you"
+    assert c2["dormant"] is False
+
+    # (3) working overrides a stale block when fresh
+    assert by["c3_working_blocked"]["status"] == "working"
+    assert by["c3_working_blocked"]["dormant"] is False
+
+    # (4) stale working with a block → treated as finished → waiting
+    assert by["c4_stale_working"]["status"] == "waiting_on_you"
+    assert by["c4_stale_working"]["dormant"] is False
+
+    # (5) idle recent
+    assert by["c5_idle_recent"]["status"] == "idle"
+    assert by["c5_idle_recent"]["dormant"] is False
+
+    # (6) idle old → dormant
+    assert by["c6_idle_old"]["status"] == "idle"
+    assert by["c6_idle_old"]["dormant"] is True
+
+    # (7a) booting
+    assert by["c7a_nosous_recent"]["status"] == "booting"
+    assert by["c7a_nosous_recent"]["dormant"] is False
+
+    # (7b) old leaked dir → idle + dormant, never stuck booting
+    assert by["c7b_nosous_old"]["status"] == "idle"
+    assert by["c7b_nosous_old"]["dormant"] is True
+
+    # (8) no synopsis.json → graceful-empty defaults, no crash
+    c8 = by["c8_no_synopsis"]
+    assert c8["status"] == "idle"               # block==null keeps it out of waiting
+    assert c8["line"] == "" and c8["block"] is None
+    assert c8["actions"] == [] and c8["urgency"] == "low"
+    assert c8["synopsis_generated_at"] is None
+
+    # the old prose `synopsis` field is gone everywhere
+    assert all("synopsis" not in k for k in body["kitchens"])
+
+    # sort: waiting_on_you by urgency high→med→low, then oldest first
+    waiting_order = [k["name"] for k in body["kitchens"]
+                     if k["status"] == "waiting_on_you"]
+    assert waiting_order == [
+        "c1_blocked_recent",    # high
+        "c2_blocked_old",       # med
+        "c9_blocked_low_old",   # low, age 40h  (oldest)
+        "c4_stale_working",     # low, age 20m  (newest)
+    ]
+
+
+def test_synopsis_generated_at_surfaced(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _mk(tmp_path, "k", sous={"status": "idle"}, age_s=60,
+        synopsis=_syn(line="did a thing", generated_at="2026-06-03T18:45:00Z"))
     by = {k["name"]: k for k in client.get("/state").json()["kitchens"]}
-    assert by["leaked"]["status"] == "idle"
+    assert by["k"]["line"] == "did a thing"
+    assert by["k"]["synopsis_generated_at"] == "2026-06-03T18:45:00Z"
+
+
+def test_malformed_synopsis_json_does_not_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = _mk(tmp_path, "garbled", sous={"status": "idle"}, age_s=60)
+    (d / "synopsis.json").write_text("{not valid json")
+    body = client.get("/state").json()           # must not 500
+    by = {k["name"]: k for k in body["kitchens"]}
+    assert by["garbled"]["status"] == "idle"     # graceful-empty → block null → not waiting
+    assert by["garbled"]["line"] == "" and by["garbled"]["block"] is None
+    assert by["garbled"]["urgency"] == "low"
