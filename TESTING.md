@@ -30,6 +30,8 @@ by the manual smokes below.
 5. Grouping: a kitchen whose synopsis has `block != null` sits in "Waiting on
    you" regardless of age (never in the dormant drawer); flipping its sous to
    `working` (a new turn starting) moves it to Working on the next re-render.
+   Time-based regrouping needs no loop_tick: the page also polls `/state` every
+   15s, so a working kitchen going >10min stale drifts to Idle on its own.
 6. Statusline: confirm the test kitchen's sous pane shows
    `📊 http://127.0.0.1:5757` in its statusline.
 7. `kitchen close overview` — verify port 5757 frees and `ck-overview` tears

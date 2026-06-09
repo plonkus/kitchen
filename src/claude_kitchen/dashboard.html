@@ -169,7 +169,10 @@ body{
 <script>
 /* ══════════════════════════════════════════════════════════════
    Variant A wired to live /state. No sample data: fetch('/state') on
-   load, re-fetch on each `loop_tick` over ws://…/events. The server
+   load, re-fetch on each `loop_tick` over ws://…/events, plus a 15s
+   safety poll — status grouping is time-based on the server (working→
+   idle at 10min stale, idle→dormant at 24h), so a kitchen can change
+   groups with no loop_tick ever firing. The server
    (§3) returns kitchens already sorted (waiting by urgency→oldest;
    others by name) — we bucket by `dormant` then `status` and render
    in the order given. No client-side re-sort: one source of truth.
@@ -271,7 +274,7 @@ async function fetchState(){
     const r = await fetch('/state');
     lastState = await r.json();
     render();
-  }catch(e){ /* keep the last-rendered state; the WS reconnect re-triggers a fetch */ }
+  }catch(e){ /* keep the last-rendered state; the next poll/loop_tick retries */ }
 }
 
 /* ───────── ambient liveness: ticking clock + elapsed timers (not interaction) ───────── */
@@ -300,6 +303,7 @@ dt.addEventListener('click', ()=>{ dt.classList.toggle('open'); dl.classList.tog
 fetchState();
 connectWS();
 tick(); setInterval(tick, 1000);
+setInterval(fetchState, 15000);   // safety poll: server-side time-based regrouping has no loop_tick
 </script>
 </body>
 </html>
