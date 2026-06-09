@@ -3,10 +3,12 @@
 Walks the whole structured pipeline in one test: `kitchen open` auto-starts the
 overview → a real `_overview_loop_tick` gates on changed kitchens, runs the
 one-shot (mocked `claude -p`), validates → wraps → writes `synopsis.json`, and
-broadcasts `loop_tick` over the WS → a connected dashboard re-fetches /state and
-sees the structured contract with time-independent grouping → an idle tick
-spawns zero `claude` → a sous flipping to "working" clears out of Waiting →
-`kitchen close overview` tears the server down while synopsis files survive.
+broadcasts `loop_tick` over the WS (the signal a connected dashboard refreshes
+on) → /state serves the structured contract with time-independent grouping, and
+GET / serves the variant-A page that consumes it → an idle tick spawns zero
+`claude` → a sous flipping to "working" clears out of Waiting → `kitchen close
+overview` tears the server down while synopsis files survive. (No browser/JS
+here: rendering itself is covered by the manual smoke in TESTING.md.)
 """
 import json
 import os
@@ -66,9 +68,11 @@ def test_overview_v2_full_flow(tmp_path, monkeypatch):
     ensure.assert_called_once()  # the dashboard is ensured up at the start of open
 
     # --- Phase 2: a real loop tick — gate → one-shot → validate/wrap/write ---
-    # `claude -p` is the only mock: it returns the bare four-field JSON the
-    # role emits. The broadcast POSTs the real /internal/loop-tick via the
-    # TestClient, so the WS push is exercised for real too.
+    # `claude -p` is mocked to return the bare four-field JSON the role emits.
+    # The broadcast is rerouted to POST the real /internal/loop-tick via the
+    # TestClient (the in-process app has no real port for the urllib helper to
+    # hit — _broadcast_loop_tick itself is covered below), so the WS push is
+    # exercised for real.
     claude = MagicMock(return_value=MagicMock(
         returncode=0, stdout=json.dumps(ONE_SHOT)))
     tick_post = MagicMock(side_effect=lambda: client.post("/internal/loop-tick"))
@@ -76,7 +80,7 @@ def test_overview_v2_full_flow(tmp_path, monkeypatch):
          patch("claude_kitchen.cli._broadcast_loop_tick", tick_post), \
          client.websocket_connect("/events") as ws:
         assert cli._overview_loop_tick("opus") == 1
-        msg = ws.receive_json()    # the dashboard's WS wake-up
+        msg = ws.receive_json()    # the refresh signal a dashboard listens for
         assert msg["type"] == "loop_tick" and msg["ts"].endswith("Z")
 
         # The changed kitchen got exactly ONE fresh one-shot, with an explicit
@@ -95,9 +99,11 @@ def test_overview_v2_full_flow(tmp_path, monkeypatch):
         assert claude.call_count == 1
         assert tick_post.call_count == 1
 
-    # The loop wrapped the four fields with the envelope and wrote the full
-    # 7-field synopsis.json.
+    # The loop wrapped the four fields with the envelope and wrote exactly the
+    # 7-field synopsis.json — nothing missing, nothing extra.
     syn = json.loads((kdir / "synopsis.json").read_text())
+    assert set(syn) == {"generated_at", "based_on_mtime", "kitchen",
+                        "line", "block", "actions", "urgency"}
     assert syn["kitchen"] == "plow-main"
     assert syn["based_on_mtime"] == "2026-06-07T09:00:00Z"  # sous.json's ts
     datetime.strptime(syn["generated_at"], "%Y-%m-%dT%H:%M:%SZ")
@@ -105,6 +111,11 @@ def test_overview_v2_full_flow(tmp_path, monkeypatch):
         assert syn[field] == value
 
     # --- Phase 3: /state serves the structured contract ----------------------
+    # GET / serves the variant-A page that consumes it (full rendering is the
+    # manual smoke's job; this pins that the server ships the right frontend).
+    page = client.get("/").text
+    assert "Waiting on you" in page and 'id="dormToggle"' in page
+
     state = client.get("/state").json()
     by = {k["name"]: k for k in state["kitchens"]}
     k = by["plow-main"]
@@ -139,3 +150,39 @@ def test_overview_v2_full_flow(tmp_path, monkeypatch):
     assert not (root / "overview" / "kitchen.json").exists()  # overview torn down
     assert (kdir / "synopsis.json").exists()                  # synopsis preserved
     assert json.loads((kdir / "synopsis.json").read_text()) == syn
+
+
+def test_broadcast_loop_tick_posts_real_http(monkeypatch):
+    """The real `_broadcast_loop_tick` (rerouted in the e2e above, since the
+    TestClient app has no port): it POSTs /internal/loop-tick on
+    KITCHEN_DASHBOARD_PORT over real HTTP, and stays silent when no server
+    listens — a down dashboard must never kill the loop."""
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args):  # keep pytest output clean
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("KITCHEN_DASHBOARD_PORT", str(port))
+    try:
+        cli._broadcast_loop_tick()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert hits == ["/internal/loop-tick"]
+
+    cli._broadcast_loop_tick()  # port now closed → must not raise
