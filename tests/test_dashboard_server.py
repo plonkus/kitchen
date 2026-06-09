@@ -188,3 +188,21 @@ def test_malformed_synopsis_json_does_not_crash(tmp_path, monkeypatch):
     assert by["garbled"]["status"] == "idle"     # graceful-empty → block null → not waiting
     assert by["garbled"]["line"] == "" and by["garbled"]["block"] is None
     assert by["garbled"]["urgency"] == "low"
+
+
+def test_nondict_synopsis_json_does_not_crash(tmp_path, monkeypatch):
+    # Valid JSON that isn't an object ([], null, a bare string, a number) must
+    # fall back to graceful-empty too — not crash /state with AttributeError on
+    # data.get(...). Guards the parse-ok-but-wrong-shape case.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for i, content in enumerate(["[]", "null", '"oops"', "42"]):
+        d = _mk(tmp_path, f"nondict{i}", sous={"status": "idle"}, age_s=60)
+        (d / "synopsis.json").write_text(content)
+    body = client.get("/state").json()           # must not 500
+    by = {k["name"]: k for k in body["kitchens"]}
+    for i in range(4):
+        k = by[f"nondict{i}"]
+        assert k["status"] == "idle"             # graceful-empty → block null → not waiting
+        assert k["line"] == "" and k["block"] is None
+        assert k["actions"] == [] and k["urgency"] == "low"
+        assert k["synopsis_generated_at"] is None

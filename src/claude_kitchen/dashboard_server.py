@@ -66,6 +66,8 @@ def _read_synopsis(path: Path) -> dict:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return empty
+    if not isinstance(data, dict):   # valid JSON but [], null, a bare string, …
+        return empty
     return {
         "line": data.get("line", ""),
         "block": data.get("block"),
