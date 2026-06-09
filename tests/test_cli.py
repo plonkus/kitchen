@@ -13,11 +13,12 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
+from claude_kitchen import cli
 from claude_kitchen.cli import (
     resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire,
     cmd_close, _sweep_cooks, cmd_sweep, cmd_overview_changes,
     _ensure_overview_running, _close_overview, cmd_statusline_segment,
-    cmd_overview, cmd_overview_kickoff,
+    cmd_overview, _overview_loop_tick, _summarize_kitchen,
 )
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
@@ -371,34 +372,156 @@ class TestCmdOpenOverviewIntegration:
 class TestCmdOverviewIdempotent:
     def test_reuses_ensure_running_and_prints_url(self, capsys, _no_overview_autostart):
         # Explicit `kitchen overview` is now idempotent: it routes through
-        # _ensure_overview_running (which checks /healthz and self-heals) instead
-        # of erroring when the tmux session merely exists, and prints the URL.
+        # _ensure_overview_running (which checks /healthz + loop liveness and
+        # self-heals) instead of erroring when the tmux session merely exists,
+        # and prints the URL. The stale `tmux attach` chat hint is gone (there's
+        # no resident Claude to attach to).
         cmd_overview(MagicMock())
         _no_overview_autostart.assert_called_once()
         out = capsys.readouterr().out
         assert "http://127.0.0.1:5757" in out
-        assert "ck-overview" in out
+        assert "tmux attach" not in out
 
 
-class TestOverviewKickoffLog:
-    @patch("claude_kitchen.cli.send_keys")
-    @patch("claude_kitchen.cli.wait_for_prompt", return_value=False)
-    def test_logs_failure_when_sous_never_boots(self, mock_wait, mock_send, tmp_path, monkeypatch):
+class TestOverviewLoop:
+    """The fresh-context Python loop (§2.5) that replaced the persistent /loop
+    Claude. `_overview_loop_tick` is the testable seam under `cmd_overview_loop`'s
+    `while True`."""
+
+    def _mk(self, home, name, ts="2026-06-08T18:00:00Z", sous_age=60,
+            prior_synopsis=None):
+        d = home / ".claude-kitchen" / name
+        d.mkdir(parents=True)
+        (d / "kitchen.json").write_text(json.dumps({"source": "/p/" + name}))
+        (d / "sous.json").write_text(json.dumps(
+            {"status": "working", "ts": ts, "sous_session_id": "sid"}))
+        t = time.time() - sous_age
+        os.utime(d / "sous.json", (t, t))
+        if prior_synopsis is not None:
+            (d / "synopsis.json").write_text(prior_synopsis)
+            # older than sous.json → "changed" (sous newer than synopsis)
+            t2 = time.time() - (sous_age + 120)
+            os.utime(d / "synopsis.json", (t2, t2))
+        return d
+
+    def _ok(self, stdout):
+        return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+    def test_idle_tick_spawns_zero_claude(self, tmp_path, monkeypatch):
+        """The key win: an empty changed-list runs NO `claude` subprocess."""
         monkeypatch.setenv("HOME", str(tmp_path))
-        cmd_overview_kickoff(MagicMock())
-        log = (tmp_path / ".claude-kitchen" / "overview" / "kickoff.log").read_text()
-        assert "FAILED" in log
-        mock_send.assert_not_called()  # no /loop sent if the sous never showed
+        (tmp_path / ".claude-kitchen").mkdir()
+        # an UNCHANGED kitchen: synopsis newer than sous → not in the work list
+        d = self._mk(tmp_path, "current", sous_age=600)
+        (d / "synopsis.json").write_text('{"line": "x"}')  # mtime ~now > sous
 
-    @patch("claude_kitchen.cli.send_keys")
-    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
-    def test_logs_success_when_loop_started(self, mock_wait, mock_send, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(cli.subprocess, "run",
+                            lambda *a, **k: calls.append(a) or self._ok("{}"))
+        wrote = _overview_loop_tick("opus")
+        assert calls == []   # ZERO claude subprocesses on an idle tick
+        assert wrote == 0
+
+    def test_writes_one_synopsis_per_changed_kitchen(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("KITCHEN_OVERVIEW_LOOP_MIN", "7")
-        cmd_overview_kickoff(MagicMock())
-        log = (tmp_path / ".claude-kitchen" / "overview" / "kickoff.log").read_text()
-        assert "loop started (interval 7m)" in log
-        mock_send.assert_called_once()
+        (tmp_path / ".claude-kitchen").mkdir()
+        self._mk(tmp_path, "k1", ts="2026-06-08T10:00:00Z")  # no synopsis → changed
+        self._mk(tmp_path, "k2", ts="2026-06-08T11:00:00Z")  # no synopsis → changed
+
+        runs = []
+        out = '{"line": "cooking", "block": null, "actions": [], "urgency": "low"}'
+        def fake_run(cmd, **kw):
+            runs.append((cmd, kw))
+            return self._ok(out)
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        bcast = MagicMock()
+        monkeypatch.setattr(cli, "_broadcast_loop_tick", bcast)
+
+        wrote = _overview_loop_tick("opus")
+        assert wrote == 2
+        assert len(runs) == 2                      # exactly N fresh one-shots
+        bcast.assert_called_once()                 # broadcast since ≥1 written
+        # each one-shot ran with --model and the role as system prompt
+        cmd0 = runs[0][0]
+        assert "--model" in cmd0 and "opus" in cmd0
+        assert any("overview-sous.md" in str(a) for a in cmd0)
+        for name, ts in [("k1", "2026-06-08T10:00:00Z"), ("k2", "2026-06-08T11:00:00Z")]:
+            rec = json.loads((tmp_path / ".claude-kitchen" / name / "synopsis.json").read_text())
+            assert set(rec) == {"generated_at", "based_on_mtime", "kitchen",
+                                "line", "block", "actions", "urgency"}
+            assert rec["kitchen"] == name
+            assert rec["based_on_mtime"] == ts     # wrapped from sous.json `ts`
+            assert rec["line"] == "cooking"
+
+    def test_one_bad_kitchen_isolated_prior_synopsis_intact(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".claude-kitchen").mkdir()
+        self._mk(tmp_path, "k_good")
+        prior = ('{"generated_at": "old", "based_on_mtime": "old", "kitchen": '
+                 '"k_bad", "line": "OLD GOOD", "block": null, "actions": [], '
+                 '"urgency": "low"}')
+        dbad = self._mk(tmp_path, "k_bad", prior_synopsis=prior)
+
+        good = '{"line": "fresh", "block": null, "actions": [], "urgency": "low"}'
+        def fake_run(cmd, **kw):
+            if "k_bad" in kw.get("input", ""):
+                return self._ok("this is not json")     # garbage → skip write
+            return self._ok(good)
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(cli, "_broadcast_loop_tick", MagicMock())
+
+        wrote = _overview_loop_tick("opus")
+        assert wrote == 1                                          # only k_good
+        good_rec = json.loads((tmp_path / ".claude-kitchen" / "k_good" / "synopsis.json").read_text())
+        assert good_rec["line"] == "fresh"
+        # k_bad's prior synopsis is untouched — never overwrite good data with garbage
+        assert json.loads((dbad / "synopsis.json").read_text())["line"] == "OLD GOOD"
+
+    def test_summarize_kitchen_normalizes_whitespace_block(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._mk(tmp_path, "k", ts="2026-06-08T12:00:00Z")
+        out = '{"line": "x", "block": "   ", "actions": ["do a thing"], "urgency": "med"}'
+        monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: self._ok(out))
+        assert _summarize_kitchen("k", "", "sid", "opus") is True
+        rec = json.loads((tmp_path / ".claude-kitchen" / "k" / "synopsis.json").read_text())
+        assert rec["block"] is None        # whitespace block → null
+        assert rec["actions"] == []        # …and actions emptied
+
+    def test_summarize_kitchen_skips_on_invalid_urgency(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        prior = '{"line": "KEEP", "block": null, "actions": [], "urgency": "low"}'
+        self._mk(tmp_path, "k", prior_synopsis=prior)
+        bad = '{"line": "x", "block": null, "actions": [], "urgency": "URGENT!!"}'
+        monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: self._ok(bad))
+        assert _summarize_kitchen("k", "", "sid", "opus") is False
+        # prior left intact (invalid urgency → skip write)
+        assert json.loads((tmp_path / ".claude-kitchen" / "k" / "synopsis.json").read_text())["line"] == "KEEP"
+
+    def test_summarize_kitchen_skips_on_nonzero_exit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._mk(tmp_path, "k")
+        monkeypatch.setattr(cli.subprocess, "run",
+                            lambda *a, **k: MagicMock(returncode=1, stdout="", stderr="boom"))
+        assert _summarize_kitchen("k", "", "sid", "opus") is False
+        assert not (tmp_path / ".claude-kitchen" / "k" / "synopsis.json").exists()
+
+    def test_oneshot_runs_with_hook_env_stripped(self, tmp_path, monkeypatch):
+        """The one-shot's hooks must no-op — so AGENT_NAME/AGENT_SESSION/STATUS_DIR
+        are stripped from its env (the hook gate needs all three)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AGENT_NAME", "loop")
+        monkeypatch.setenv("AGENT_SESSION", "ck-overview")
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path))
+        self._mk(tmp_path, "k")
+        seen = {}
+        def fake_run(cmd, **kw):
+            seen.update(kw.get("env", {}))
+            return self._ok('{"line": "x", "block": null, "actions": [], "urgency": "low"}')
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        _summarize_kitchen("k", "", "sid", "opus")
+        assert "AGENT_NAME" not in seen
+        assert "AGENT_SESSION" not in seen
+        assert "STATUS_DIR" not in seen
 
 
 class TestEnsureOverviewRunning:
@@ -406,12 +529,29 @@ class TestEnsureOverviewRunning:
     # `_ensure_overview_running` name imported into this test module still
     # points at the real function — so calling it here runs the real logic.
 
+    @patch("claude_kitchen.cli._loop_window_alive", return_value=True)
     @patch("claude_kitchen.cli._start_overview")
     @patch("claude_kitchen.cli._healthz_ok", return_value=True)
     @patch("claude_kitchen.cli.has_session", return_value=True)
-    def test_noop_when_session_up_and_healthy(self, mock_has, mock_health, mock_start):
+    def test_noop_when_session_up_healthy_and_loop_alive(self, mock_has, mock_health,
+                                                         mock_start, mock_alive):
         _ensure_overview_running()
         mock_start.assert_not_called()
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli._terminate_overview_server")
+    @patch("claude_kitchen.cli._loop_window_alive", return_value=False)
+    @patch("claude_kitchen.cli._start_overview")
+    @patch("claude_kitchen.cli._healthz_ok", return_value=True)
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    def test_respawns_when_loop_window_dead(self, mock_has, mock_health, mock_start,
+                                            mock_alive, mock_term, mock_tmux):
+        # server healthy but the summarizer loop crashed → tear down + respawn,
+        # so summaries self-repair instead of silently stopping.
+        _ensure_overview_running()
+        mock_term.assert_called_once()
+        assert any(c.args[:1] == ("kill-session",) for c in mock_tmux.call_args_list)
+        mock_start.assert_called_once()
 
     @patch("claude_kitchen.cli._start_overview")
     @patch("claude_kitchen.cli.has_session", return_value=False)

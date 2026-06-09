@@ -123,22 +123,21 @@ def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: st
     return result.returncode == 0
 
 
-def spawn_overview_sous(base: Path, role_path: Path, port: str = "5757"):
+def spawn_overview_loop(base: Path, port: str = "5757"):
     """Launch the overview kitchen in a DETACHED `ck-overview` tmux session with
     two windows that live and die together:
 
       - `server`: the FastAPI dashboard (`kitchen dashboard-server`)
-      - `sous`  : the overview-sous Claude running the synopsis /loop
+      - `loop`  : the Python summarizer loop (`kitchen overview-loop`)
 
-    Unlike spawn_sous this does NOT execvp — overview runs in detached tmux, not
-    the head chef's terminal. Both windows inherit the dashboard URL/port and
-    the overview's scratch wiki/notes via exported env.
+    There is no resident Claude — the `loop` window execs the Python loop
+    directly, which spawns a fresh `claude -p` one-shot per changed kitchen.
+    Both windows inherit the dashboard URL/port via exported env.
     """
     q = shlex.quote
     session = mc("overview")
     dashboard_url = f"http://127.0.0.1:{port}"
     env = "export " + " ".join([
-        "AGENT_NAME=sous",
         f"AGENT_SESSION={session}",
         f"STATUS_DIR={q(str(base))}",
         f"KITCHEN_DASHBOARD_URL={q(dashboard_url)}",
@@ -147,9 +146,8 @@ def spawn_overview_sous(base: Path, role_path: Path, port: str = "5757"):
         f"KITCHEN_WIKI={q(str(base / 'wiki'))}",
     ])
     server_inner = f"{env}; exec kitchen dashboard-server"
-    role_flag = f"--append-system-prompt-file {q(str(role_path))}"
-    sous_inner = f"{env}; exec claude --dangerously-skip-permissions {role_flag}"
+    loop_inner = f"{env}; exec kitchen overview-loop"
     server_cmd = f"bash -lc {q(server_inner)}"
-    sous_cmd = f"bash -lc {q(sous_inner)}"
+    loop_cmd = f"bash -lc {q(loop_inner)}"
     tmux("new-session", "-d", "-s", session, "-n", "server", "-c", str(base), server_cmd)
-    tmux("new-window", "-t", session, "-n", "sous", "-c", str(base), sous_cmd)
+    tmux("new-window", "-t", session, "-n", "loop", "-c", str(base), loop_cmd)

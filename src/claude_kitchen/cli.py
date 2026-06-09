@@ -18,7 +18,7 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir,
-    overview_state_dir, write_sous_json, transcript_path_for,
+    overview_state_dir, write_sous_json, transcript_path_for, atomic_write_json,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous
@@ -1071,22 +1071,18 @@ def _overview_state_setup() -> Path:
 
 
 def _start_overview(port: str):
-    """Spawn the overview kitchen (dashboard server + sous), confirm /healthz is
-    up (10s; warn-not-block on timeout), and launch a DETACHED kickoff that
-    starts the summarizer loop once the sous boots — so callers (notably
-    `kitchen open`) don't block on the overview sous's ~minute-long boot."""
+    """Spawn the overview kitchen — the FastAPI dashboard `server` window and the
+    Python summarizer `loop` window — and confirm /healthz is up (10s; warn, not
+    block, on timeout). The `loop` window execs `kitchen overview-loop` directly:
+    no resident Claude, nothing to kick off."""
     base = _overview_state_setup()
     role = _PKG_DIR / "roles" / "overview-sous.md"
     if not role.exists():
         sys.exit(f"overview-sous.md not found at {role}")
-    from claude_kitchen.spawn import spawn_overview_sous
-    spawn_overview_sous(base, role, port)
+    from claude_kitchen.spawn import spawn_overview_loop
+    spawn_overview_loop(base, port)
     if not _healthz_ok(port, timeout=10):
         print("Warning: overview dashboard didn't come up within 10s.", file=sys.stderr)
-    subprocess.Popen(
-        ["kitchen", "overview-kickoff"], start_new_session=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
 
 
 def _terminate_overview_server(session: str):
@@ -1120,63 +1116,42 @@ def _terminate_overview_server(session: str):
 
 def cmd_overview(args):
     """Open the global overview kitchen: a detached `ck-overview` tmux session
-    running the FastAPI dashboard server and the overview-sous Claude (a /loop
-    summarizer). Dashboard at http://127.0.0.1:<port>/.
+    running the FastAPI dashboard server and the Python summarizer loop.
+    Dashboard at http://127.0.0.1:<port>/.
 
     Idempotent — reuses the auto-start path: it no-ops when the overview is up
-    and healthy, and repairs a session whose server has died, rather than
+    and healthy, and repairs a session whose server or loop has died, rather than
     erroring out. Prints the URL either way."""
     port = _overview_port()
     _ensure_overview_running()
     print(f"Overview up. Dashboard: http://127.0.0.1:{port}")
-    print(f"   tmux attach -t {mc('overview')}")
 
 
-def _kickoff_log(base: Path, message: str):
-    """Append a timestamped line to <overview-state-dir>/kickoff.log. The kickoff
-    runs as a detached subprocess with no terminal, so this file is the only way
-    to diagnose a loop that failed to start. Best-effort."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    try:
-        base.mkdir(parents=True, exist_ok=True)
-        with (base / "kickoff.log").open("a") as f:
-            f.write(f"{ts}\t{message}\n")
-    except OSError:
-        pass
-
-
-def cmd_overview_kickoff(args):
-    """(internal) Wait for the detached overview sous to reach its prompt, then
-    send the /loop kickoff. Run detached by _start_overview so `kitchen open`
-    doesn't block on the sous booting. Outcome is logged to kickoff.log because
-    the detached process is otherwise silent on failure."""
-    session = mc("overview")
-    base = overview_state_dir()
-    try:
-        if not wait_for_prompt(session, "sous", "claude", timeout=90):
-            _kickoff_log(base, "FAILED: overview sous did not reach its prompt "
-                               "within 90s; loop not started")
-            return
-        loop_min = os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5")
-        kickoff = (f"/loop {loop_min}m Run one overview synopsis tick now, "
-                   f"following your role's loop-tick procedure.")
-        send_keys(session, "sous", kickoff, backend="claude", log_dir=base / "cooks")
-        _kickoff_log(base, f"loop started (interval {loop_min}m)")
-    except Exception as e:
-        _kickoff_log(base, f"ERROR: {e!r}")
+def _loop_window_alive(session: str) -> bool:
+    """True if the ck-overview `loop` window exists and its pane process is live.
+    A crashed loop drops its window (tmux closes it on process exit), so a
+    missing window — non-zero `list-panes` — reads as dead and triggers a
+    respawn. Also catches an old `sous`-window session from before the rename."""
+    result = tmux("list-panes", "-t", f"{session}:loop", "-F", "#{pane_dead}")
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.split()) and all(t == "0" for t in result.stdout.split())
 
 
 def _ensure_overview_running():
     """Idempotent overview-up check run at the start of every `kitchen open`.
-    No-op if ck-overview is up AND /healthz answers; otherwise (re)spawn. Never
-    blocks the open — `_start_overview` warns (doesn't raise) on a 10s healthz
-    timeout, so a down overview can't stop you from opening regular kitchens."""
+    No-op only if ck-overview is up, /healthz answers, AND the summarizer `loop`
+    window is alive; otherwise tear down and (re)spawn — so a crashed loop
+    self-repairs on the next open rather than silently stopping all summaries
+    while the dashboard serves stale state. Never blocks the open
+    (`_start_overview` warns, doesn't raise, on a 10s healthz timeout)."""
     session = mc("overview")
     port = _overview_port()
-    if has_session(session) and _healthz_ok(port, timeout=2):
+    if has_session(session) and _healthz_ok(port, timeout=2) and _loop_window_alive(session):
         return
     if has_session(session):
-        # Session lingers but the server is unhealthy — tear it down, respawn.
+        # Session lingers but the server is unhealthy or the loop died — tear it
+        # down and respawn both windows together.
         _terminate_overview_server(session)
         tmux("kill-session", "-t", session)
     if not (_PKG_DIR / "roles" / "overview-sous.md").exists():
@@ -1186,7 +1161,7 @@ def _ensure_overview_running():
 
 def _close_overview():
     """Tear down the overview kitchen: graceful server shutdown + kill the
-    ck-overview session (server + sous windows). Synopsis files live in OTHER
+    ck-overview session (server + loop windows). Synopsis files live in OTHER
     kitchens' dirs and are cached state — they are deliberately untouched."""
     session = mc("overview")
     base = overview_state_dir()
@@ -1251,10 +1226,10 @@ def cmd_dashboard_server(args):
     uvicorn.run("claude_kitchen.dashboard_server:app", host="127.0.0.1", port=port)
 
 
-def cmd_overview_broadcast_tick(args):
+def _broadcast_loop_tick():
     """POST the local dashboard server's loop-tick endpoint so it broadcasts a
-    `loop_tick` to connected dashboards. The overview sous runs this at the end
-    of each synopsis tick. Silent on failure (the server may be down)."""
+    `loop_tick` to connected dashboards. Called by the loop after a tick that
+    (re)wrote at least one synopsis. Silent on failure (server may be down)."""
     import urllib.request
     port = os.environ.get("KITCHEN_DASHBOARD_PORT", "5757")
     try:
@@ -1263,6 +1238,122 @@ def cmd_overview_broadcast_tick(args):
         urllib.request.urlopen(req, timeout=2).read()
     except Exception:
         pass
+
+
+# Explicit Opus for the one-shots — never the ambient session default (§2.5).
+# The `opus` alias pins the latest Opus across model-id bumps; overridable.
+_OVERVIEW_MODEL = os.environ.get("KITCHEN_OVERVIEW_MODEL", "opus")
+
+
+def _tail_lines(path: Path, n: int = 50) -> str:
+    """Last `n` lines of a file as text — bounded memory (a deque keeps only the
+    tail), so a huge transcript still yields a small input. '' if unreadable."""
+    from collections import deque
+    try:
+        with path.open() as f:
+            return "".join(deque(f, maxlen=n))
+    except OSError:
+        return ""
+
+
+def _summarize_kitchen(name: str, tpath: str, sid: str, model: str) -> bool:
+    """Run the one-shot overview-sous on one changed kitchen, then validate →
+    wrap → write its `synopsis.json` atomically. Returns True iff a synopsis was
+    written. The one-shot is a fresh, bounded `claude -p` (no accumulation): the
+    role is the system prompt and the kitchen's ~50 transcript lines + prior
+    synopsis go in the user message. On a non-JSON / missing-or-invalid
+    `line`|`urgency` answer, the write is SKIPPED (prior synopsis left intact —
+    never overwrite good data with garbage). An empty/whitespace `block` is
+    normalized to null (and then `actions` to [])."""
+    base = Path.home() / ".claude-kitchen" / name
+    syn_path = base / "synopsis.json"
+    prior = syn_path.read_text() if syn_path.exists() else ""
+    transcript = _tail_lines(Path(tpath)) if tpath else ""
+    user_msg = (
+        f"You are summarizing the kitchen `{name}`.\n\n"
+        f"=== Last ~50 lines of the sous transcript ===\n"
+        f"{transcript or '(no transcript available)'}\n\n"
+        f"=== Prior synopsis.json (for continuity) ===\n"
+        f"{prior or 'none'}\n\n"
+        f"Emit the four-field JSON now."
+    )
+    role = _PKG_DIR / "roles" / "overview-sous.md"
+    # Strip the kitchen-agent env so the one-shot's hooks no-op (the hook gate
+    # needs AGENT_NAME+AGENT_SESSION+STATUS_DIR all set) — no echo, no stray state.
+    child_env = {k: v for k, v in os.environ.items()
+                 if k not in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR")}
+    result = subprocess.run(
+        ["claude", "-p", "--model", model, "--output-format", "text",
+         "--append-system-prompt-file", str(role)],
+        input=user_msg, capture_output=True, text=True, env=child_env, timeout=180,
+    )
+    if result.returncode != 0:
+        print(f"[overview-loop] {name}: claude -p exited {result.returncode}; "
+              f"skip write", file=sys.stderr)
+        return False
+    try:
+        obj = json.loads(result.stdout.strip())
+    except (json.JSONDecodeError, ValueError):
+        print(f"[overview-loop] {name}: non-JSON one-shot output; skip write",
+              file=sys.stderr)
+        return False
+    line = obj.get("line")
+    urgency = obj.get("urgency")
+    if not isinstance(line, str) or not line.strip() or urgency not in ("low", "med", "high"):
+        print(f"[overview-loop] {name}: missing/invalid line|urgency; skip write",
+              file=sys.stderr)
+        return False
+    block = obj.get("block")
+    if not isinstance(block, str) or not block.strip():
+        block = None
+    actions = obj.get("actions") if block is not None else []
+    if not isinstance(actions, list):
+        actions = []
+    try:
+        based_on = json.loads((base / "sous.json").read_text()).get("ts", "")
+    except (OSError, json.JSONDecodeError):
+        based_on = ""
+    atomic_write_json(syn_path, {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "based_on_mtime": based_on,
+        "kitchen": name,
+        "line": line,
+        "block": block,
+        "actions": actions,
+        "urgency": urgency,
+    })
+    return True
+
+
+def _overview_loop_tick(model: str) -> int:
+    """One change-gated tick: summarize each changed kitchen sequentially, each
+    isolated in try/except so one bad kitchen can't kill the loop or block the
+    others; broadcast a `loop_tick` iff anything was (re)written. An empty
+    changed-list spawns ZERO `claude` — the idle path costs nothing. Returns the
+    number of synopses written."""
+    wrote = 0
+    for name, tpath, sid in _overview_changed_kitchens():
+        try:
+            if _summarize_kitchen(name, tpath, sid, model):
+                wrote += 1
+        except Exception as e:
+            print(f"[overview-loop] {name}: {e!r}; continuing", file=sys.stderr)
+            continue
+    if wrote:
+        _broadcast_loop_tick()
+    return wrote
+
+
+def cmd_overview_loop(args):
+    """The overview summarizer loop — the `loop` window's entrypoint (execs this
+    directly; no resident Claude). Every KITCHEN_OVERVIEW_LOOP_MIN minutes runs a
+    fresh change-gated tick. Self-serializing: a long batch just delays the next
+    tick, never overlaps. Each summary is a fresh, bounded one-shot — no 0.9M
+    history re-chew, no compaction sawtooth, zero tokens when nothing changed."""
+    loop_min = float(os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5"))
+    while True:
+        _overview_loop_tick(_OVERVIEW_MODEL)
+        time.sleep(loop_min * 60)
 
 
 def main():
@@ -1327,9 +1418,8 @@ def main():
 
     sub.add_parser("overview", help="Open the global overview dashboard kitchen")
     sub.add_parser("overview-changes", help="(internal) List kitchens needing a fresh synopsis")
-    sub.add_parser("overview-kickoff", help="(internal) Start the overview sous's summarizer loop")
+    sub.add_parser("overview-loop", help="(internal) Run the overview summarizer loop")
     sub.add_parser("dashboard-server", help="(internal) Run the FastAPI dashboard server")
-    sub.add_parser("overview-broadcast-tick", help="(internal) Tell the dashboard a loop tick finished")
 
     args = parser.parse_args()
 
@@ -1339,12 +1429,10 @@ def main():
         cmd_overview(args)
     elif args.command == "overview-changes":
         cmd_overview_changes(args)
-    elif args.command == "overview-kickoff":
-        cmd_overview_kickoff(args)
+    elif args.command == "overview-loop":
+        cmd_overview_loop(args)
     elif args.command == "dashboard-server":
         cmd_dashboard_server(args)
-    elif args.command == "overview-broadcast-tick":
-        cmd_overview_broadcast_tick(args)
     elif args.command == "hire":
         cmd_hire(args)
     elif args.command == "ticket":

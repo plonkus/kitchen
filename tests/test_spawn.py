@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock
-from claude_kitchen.spawn import build_shell_cmd, spawn_sous, spawn_overview_sous
+from claude_kitchen.spawn import build_shell_cmd, spawn_sous, spawn_overview_loop
 
 
 def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
@@ -222,15 +222,14 @@ class TestSpawnSous:
         monkeypatch.setenv("KITCHEN_NOTES", os.environ["KITCHEN_NOTES"])
 
 
-class TestSpawnOverviewSous:
+class TestSpawnOverviewLoop:
     @patch("claude_kitchen.spawn.tmux")
-    def test_launches_server_and_sous_windows_with_env(self, mock_tmux, tmp_path):
-        # Highest-risk new wiring: a detached ck-overview session with two
-        # windows (FastAPI server + overview Claude), both carrying the dashboard
-        # env. No execvp. Assert the exact tmux invocations + command/env shape.
-        role = tmp_path / "overview-sous.md"
-        role.write_text("role")
-        spawn_overview_sous(tmp_path, role, port="5757")
+    def test_launches_server_and_loop_windows_with_env(self, mock_tmux, tmp_path):
+        # The detached ck-overview session has two windows: the FastAPI server
+        # and the Python summarizer loop (NO resident Claude). The `loop` window
+        # execs `kitchen overview-loop` directly. Assert the exact tmux
+        # invocations + command/env shape.
+        spawn_overview_loop(tmp_path, port="5757")
 
         calls = mock_tmux.call_args_list
         assert len(calls) == 2
@@ -244,20 +243,19 @@ class TestSpawnOverviewSous:
         server_cmd = server[-1]
         assert "kitchen dashboard-server" in server_cmd
 
-        # window 2: the overview Claude, added to the same session
-        sous = calls[1].args
-        assert sous[0] == "new-window"
-        assert sous[sous.index("-t") + 1] == "ck-overview"
-        assert sous[sous.index("-n") + 1] == "sous"
-        assert sous[sous.index("-c") + 1] == str(tmp_path)
-        sous_cmd = sous[-1]
-        assert "claude --dangerously-skip-permissions" in sous_cmd
-        assert "--append-system-prompt-file" in sous_cmd
-        assert str(role) in sous_cmd
+        # window 2: the Python loop, named `loop`, added to the same session
+        loop = calls[1].args
+        assert loop[0] == "new-window"
+        assert loop[loop.index("-t") + 1] == "ck-overview"
+        assert loop[loop.index("-n") + 1] == "loop"
+        assert loop[loop.index("-c") + 1] == str(tmp_path)
+        loop_cmd = loop[-1]
+        assert "exec kitchen overview-loop" in loop_cmd
+        assert "claude" not in loop_cmd          # no resident Claude
 
-        # both windows export the dashboard env
-        for cmd in (server_cmd, sous_cmd):
-            assert "AGENT_NAME=sous" in cmd
+        # both windows export the dashboard env; AGENT_NAME is gone (no sous)
+        for cmd in (server_cmd, loop_cmd):
+            assert "AGENT_NAME=" not in cmd
             assert "AGENT_SESSION=ck-overview" in cmd
             assert f"STATUS_DIR={tmp_path}" in cmd
             assert "KITCHEN_DASHBOARD_URL=http://127.0.0.1:5757" in cmd
@@ -267,9 +265,7 @@ class TestSpawnOverviewSous:
 
     @patch("claude_kitchen.spawn.tmux")
     def test_port_flows_into_url_and_env(self, mock_tmux, tmp_path):
-        role = tmp_path / "r.md"
-        role.write_text("r")
-        spawn_overview_sous(tmp_path, role, port="6001")
-        sous_cmd = mock_tmux.call_args_list[1].args[-1]
-        assert "KITCHEN_DASHBOARD_URL=http://127.0.0.1:6001" in sous_cmd
-        assert "KITCHEN_DASHBOARD_PORT=6001" in sous_cmd
+        spawn_overview_loop(tmp_path, port="6001")
+        loop_cmd = mock_tmux.call_args_list[1].args[-1]
+        assert "KITCHEN_DASHBOARD_URL=http://127.0.0.1:6001" in loop_cmd
+        assert "KITCHEN_DASHBOARD_PORT=6001" in loop_cmd
