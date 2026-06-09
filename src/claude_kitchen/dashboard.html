@@ -188,14 +188,19 @@ function escapeHtml(s){
 // Relative timestamp from an ISO mtime (the muted, right-aligned timer).
 function fmtAge(iso){
   if(!iso) return '';
-  const s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  const ms = Date.parse(iso);
+  if(Number.isNaN(ms)) return '';                            // unparseable mtime → blank, not "NaNd"
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if(s < 5) return 'now'; if(s < 60) return s + 's';
   const m = (s/60)|0; if(m < 60) return m + 'm';
   const h = (m/60)|0; if(h < 24) return h + 'h'; return ((h/24)|0) + 'd';
 }
 
 // First word of an action → accent verb; both halves escaped (untrusted).
+// Coerce to a string first so a non-string action item (a malformed synopsis
+// could carry a number/null) can't crash .indexOf and freeze the whole render.
 function verbify(a){
+  a = String(a);
   const sp = a.indexOf(' ');
   if(sp === -1) return escapeHtml(a);
   return `<span class="v">${escapeHtml(a.slice(0, sp))}</span>${escapeHtml(a.slice(sp))}`;
@@ -214,7 +219,7 @@ function renderWaiting(items){
         <span class="w-time" data-age="${escapeHtml(k.last_status_mtime)}">${fmtAge(k.last_status_mtime)}</span>
       </div>
       <p class="w-block">${escapeHtml(k.block || '')}</p>
-      <ul class="w-actions">${(k.actions || []).slice(0,3).map(a=>`<li>${verbify(a)}</li>`).join('')}</ul>
+      <ul class="w-actions">${(Array.isArray(k.actions) ? k.actions : []).slice(0,3).map(a=>`<li>${verbify(a)}</li>`).join('')}</ul>
     </div>`).join('');
 }
 

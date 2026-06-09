@@ -43,7 +43,14 @@ def test_healthz():
 def test_index_serves_dashboard_html():
     r = client.get("/")
     assert r.status_code == 200
-    assert "kitchen dashboard" in r.text
+    # variant-A design markers (assert the actual design, not just the <title>)
+    assert "Waiting on you" in r.text       # the status-spine group label
+    assert "Fraunces" in r.text             # the serif display face
+    assert "#f7f4ee" in r.text              # warm-paper background token
+    assert 'id="dormToggle"' in r.text      # the dormant show/hide toggle
+    # the old Tailwind dashboard and its hardcoded sample data are gone
+    assert "cdn.tailwindcss.com" not in r.text
+    assert "const K =" not in r.text
 
 
 def test_events_ws_accepts_connection():
