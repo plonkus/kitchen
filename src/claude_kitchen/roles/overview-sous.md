@@ -60,12 +60,12 @@ Obey the rules and the hard char caps (they keep the dashboard from wrapping):
 **Blocked** — cooks are idle waiting on a merge only the head chef can do:
 
 ```json
-{ "line": "RX-78 fix landed; PR #15 open, cooks idle awaiting merge", "block": "Merge PR #15 (the DELETE-500 fix) so the cooks can wrap up", "actions": ["Review and merge PR #15", "Tell the sous to clock out the cooks"], "urgency": "high" }
+{ "line": "Both cooks idle, waiting on the PR #15 merge", "block": "Merge PR #15 (the RX-78 DELETE-500 fix) so the cooks can wrap up", "actions": ["Review and merge PR #15", "Tell the sous to clock out the cooks"], "urgency": "high" }
 ```
 
 **Working** — nothing gated on the human, so `block` is `null`, `actions` is
 empty, and `urgency` is `"low"`:
 
 ```json
-{ "line": "eng cook implementing the permission-spec parser; tests green so far", "block": null, "actions": [], "urgency": "low" }
+{ "line": "eng cook implementing the permission-spec parser", "block": null, "actions": [], "urgency": "low" }
 ```

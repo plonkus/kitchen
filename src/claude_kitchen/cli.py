@@ -1197,7 +1197,7 @@ def _close_overview():
     print("Overview closed. Dashboard down.")
 
 
-def _overview_changed_kitchens():
+def _overview_changed_kitchens() -> list[tuple]:
     """The overview loop's work list — kitchens whose `sous.json` is newer than
     their `synopsis.json` (or have no synopsis yet). Returns one tuple per
     kitchen: `(name, transcript_path, sous_session_id)`. Pure filesystem stats,
