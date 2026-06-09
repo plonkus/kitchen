@@ -1197,14 +1197,17 @@ def _close_overview():
     print("Overview closed. Dashboard down.")
 
 
-def cmd_overview_changes(args):
-    """Print the overview loop's work list — kitchens whose `sous.json` is newer
-    than their `synopsis.json` (or have no synopsis yet). One line per kitchen:
-    `<name>\\t<transcript_path>\\t<sous_session_id>`. Pure filesystem stats."""
+def _overview_changed_kitchens():
+    """The overview loop's work list — kitchens whose `sous.json` is newer than
+    their `synopsis.json` (or have no synopsis yet). Returns one tuple per
+    kitchen: `(name, transcript_path, sous_session_id)`. Pure filesystem stats,
+    no LLM. No 24h dormant cutoff: an old-but-blocked kitchen must still get its
+    first `synopsis.json` so it can surface (§3 time-independence); the mtime
+    check alone keeps truly-abandoned kitchens (unchanging `sous.json`) out."""
     root = Path.home() / ".claude-kitchen"
     if not root.is_dir():
-        return
-    now = datetime.now(timezone.utc)
+        return []
+    changed = []
     for d in sorted(root.iterdir()):
         if not d.is_dir() or not (d / "kitchen.json").exists() or d.name == "overview":
             continue
@@ -1218,8 +1221,6 @@ def cmd_overview_changes(args):
         if not sous_path.exists():
             continue  # nothing has happened yet → nothing to summarize
         sous_mtime = sous_path.stat().st_mtime
-        if now - datetime.fromtimestamp(sous_mtime, tz=timezone.utc) > timedelta(hours=24):
-            continue  # dormant
         syn_path = d / "synopsis.json"
         if syn_path.exists() and syn_path.stat().st_mtime >= sous_mtime:
             continue  # synopsis already reflects the latest activity
@@ -1230,7 +1231,16 @@ def cmd_overview_changes(args):
         sid = sous.get("sous_session_id", "") or kj.get("sous_session_id", "") or ""
         cwd = kj.get("worktree") or kj.get("source")
         tpath = transcript_path_for(cwd, sid)
-        print(f"{d.name}\t{tpath or ''}\t{sid}")
+        changed.append((d.name, tpath or "", sid))
+    return changed
+
+
+def cmd_overview_changes(args):
+    """Print the overview loop's work list — one line per changed kitchen:
+    `<name>\\t<transcript_path>\\t<sous_session_id>`. CLI wrapper around
+    `_overview_changed_kitchens()`."""
+    for name, tpath, sid in _overview_changed_kitchens():
+        print(f"{name}\t{tpath}\t{sid}")
 
 
 def cmd_dashboard_server(args):

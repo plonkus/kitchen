@@ -294,18 +294,22 @@ class TestOverviewChanges:
         self._mk(tmp_path, "changed", sous_age=60, synopsis_age=600)
         # changed: no synopsis at all
         self._mk(tmp_path, "nosyn", sous_age=60)
+        # changed: old sous but no synopsis — no 24h skip, so an old-but-blocked
+        # kitchen must still get its first synopsis (§3 time-independence)
+        self._mk(tmp_path, "oldblocked", sous_age=30 * 3600)
         # unchanged: synopsis newer than sous
         self._mk(tmp_path, "current", sous_age=600, synopsis_age=60)
+        # unchanged: abandoned — old sous, but its synopsis already reflects it;
+        # the mtime check alone keeps it out (no 24h cutoff needed)
+        self._mk(tmp_path, "abandoned", sous_age=30 * 3600, synopsis_age=29 * 3600)
         # no sous.json yet → nothing to summarize
         self._mk(tmp_path, "fresh")
-        # dormant: sous.json > 24h old
-        self._mk(tmp_path, "dormant", sous_age=30 * 3600)
         # excluded: overview itself + a parent_kitchen sub-sous
         self._mk(tmp_path, "overview", sous_age=60)
         self._mk(tmp_path, "subby", kitchen={"source": "/p", "parent_kitchen": "x"}, sous_age=60)
 
         names = {ln.split("\t")[0] for ln in self._run(capsys)}
-        assert names == {"changed", "nosyn"}
+        assert names == {"changed", "nosyn", "oldblocked"}
 
     def test_output_format_with_transcript(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("HOME", str(tmp_path))
