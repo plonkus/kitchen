@@ -143,7 +143,7 @@ def _slug_from_toplevel(project_path: Path) -> str:
 def write_sous_json(base: Path, status: str, sous_session_id: str = ""):
     """Write the minimal per-kitchen sous status the overview loop + dashboard
     read. Atomic. Bumping this file's mtime is the change signal that
-    `kitchen overview-changes` diffs against `synopsis.md`."""
+    `kitchen overview-changes` diffs against `synopsis.json`."""
     atomic_write_json(base / "sous.json", {
         "status": status,
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

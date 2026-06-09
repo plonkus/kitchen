@@ -570,7 +570,7 @@ def cmd_hook(args):
     if name == "sous":
         # v2: write a minimal sous.json on each turn. Its mtime is the change
         # signal the overview loop's `kitchen overview-changes` diffs against
-        # synopsis.md, and its `status` feeds the dashboard's /state. No channel
+        # synopsis.json, and its `status` feeds the dashboard's /state. No channel
         # push in v2 (the dashboard is the surface). Sous is always Claude.
         if event == "UserPromptSubmit":
             # Head chef typed → working. Preserve any session_id from a prior Stop
@@ -1199,7 +1199,7 @@ def _close_overview():
 
 def cmd_overview_changes(args):
     """Print the overview loop's work list — kitchens whose `sous.json` is newer
-    than their `synopsis.md` (or have no synopsis yet). One line per kitchen:
+    than their `synopsis.json` (or have no synopsis yet). One line per kitchen:
     `<name>\\t<transcript_path>\\t<sous_session_id>`. Pure filesystem stats."""
     root = Path.home() / ".claude-kitchen"
     if not root.is_dir():
@@ -1220,7 +1220,7 @@ def cmd_overview_changes(args):
         sous_mtime = sous_path.stat().st_mtime
         if now - datetime.fromtimestamp(sous_mtime, tz=timezone.utc) > timedelta(hours=24):
             continue  # dormant
-        syn_path = d / "synopsis.md"
+        syn_path = d / "synopsis.json"
         if syn_path.exists() and syn_path.stat().st_mtime >= sous_mtime:
             continue  # synopsis already reflects the latest activity
         try:

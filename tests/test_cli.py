@@ -279,9 +279,9 @@ class TestOverviewChanges:
             t = time.time() - sous_age
             os.utime(d / "sous.json", (t, t))
         if synopsis_age is not None:
-            (d / "synopsis.md").write_text("old synopsis")
+            (d / "synopsis.json").write_text('{"line": "old"}')
             t = time.time() - synopsis_age
-            os.utime(d / "synopsis.md", (t, t))
+            os.utime(d / "synopsis.json", (t, t))
         return d
 
     def _run(self, capsys):
@@ -443,7 +443,7 @@ class TestCloseOverview:
         # synopsis files live in OTHER kitchens' dirs — must survive close
         other = tmp_path / ".claude-kitchen" / "plow-main"
         other.mkdir(parents=True)
-        (other / "synopsis.md").write_text("keep me")
+        (other / "synopsis.json").write_text('{"line": "keep me"}')
 
         args = MagicMock()
         args.kitchen = "overview"
@@ -453,7 +453,7 @@ class TestCloseOverview:
         assert any(c.args[:1] == ("kill-session",) for c in mock_tmux.call_args_list)
         assert not (base / "kitchen.json").exists()
         assert not (base / "sous.json").exists()
-        assert (other / "synopsis.md").read_text() == "keep me"  # cached state preserved
+        assert (other / "synopsis.json").read_text() == '{"line": "keep me"}'  # cached state preserved
 
 
 class TestTerminateOverviewServer:

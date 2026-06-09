@@ -3,7 +3,7 @@
 A small FastAPI app that renders a cross-kitchen status dashboard in a browser
 tab. It reads kitchen state straight off disk (`~/.claude-kitchen/<name>/`) on
 every `/state` request — one cheap filesystem scan, no daemon state to keep in
-sync. The `/loop` summarizer (Chunk 2) writes `synopsis.md` files and pushes a
+sync. The `/loop` summarizer writes `synopsis.json` files and pushes a
 `loop_tick` over the `/events` WebSocket; connected dashboards re-fetch `/state`.
 
 localhost only — binds 127.0.0.1, no auth, no TLS. Run standalone with:
