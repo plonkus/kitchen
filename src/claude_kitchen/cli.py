@@ -1366,7 +1366,7 @@ def cmd_overview_loop(args):
     fresh change-gated tick. Self-serializing: a long batch just delays the next
     tick, never overlaps. Each summary is a fresh, bounded one-shot — no 0.9M
     history re-chew, no compaction sawtooth, zero tokens when nothing changed."""
-    loop_min = float(os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "5"))
+    loop_min = float(os.environ.get("KITCHEN_OVERVIEW_LOOP_MIN", "2"))
     while True:
         _overview_loop_tick(_OVERVIEW_MODEL)
         time.sleep(loop_min * 60)

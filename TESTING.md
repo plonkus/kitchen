@@ -15,7 +15,7 @@ by the manual smokes below.
    paper, status-grouped spine: Waiting on you → Working → Booting → Idle, plus
    the dormant drawer toggle) populated from actual kitchen state.
 3. Idle tick costs nothing: with no kitchen activity, watch one loop interval
-   pass (default 5 min, tunable via `KITCHEN_OVERVIEW_LOOP_MIN`) and confirm no
+   pass (default 2 min, tunable via `KITCHEN_OVERVIEW_LOOP_MIN`) and confirm no
    `claude -p` process appears (`pgrep -f "claude -p"`). `kitchen
    overview-changes` printing nothing == the gate is empty.
 4. Type something in the test kitchen's sous (UserPromptSubmit fires, bumping
