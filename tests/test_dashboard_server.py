@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -10,10 +11,14 @@ from claude_kitchen.dashboard_server import app
 client = TestClient(app)
 
 
-def _mk(home, name, kitchen=None, sous=None, synopsis=None, age_s=None):
+def _mk(home, name, kitchen=None, sous=None, synopsis=None, age_s=None,
+        cooks=None):
     """Synthesize a kitchen state dir under <home>/.claude-kitchen/. `synopsis`
     is the dict written to synopsis.json (the structured contract). age_s
-    back-dates the sous.json mtime (or the dir mtime when there's no sous.json)."""
+    back-dates the sous.json mtime (or the dir mtime when there's no sous.json).
+    `cooks` is {name: (status, age_s)} → cooks/<name>.json with a back-dated
+    mtime and a deliberately ancient in-file `ts` (the classifier must judge
+    freshness by FILE mtime — the ts field lags the hook's rewrite)."""
     d = home / ".claude-kitchen" / name
     d.mkdir(parents=True)
     (d / "kitchen.json").write_text(json.dumps(kitchen or {"source": "/p/" + name}))
@@ -26,6 +31,14 @@ def _mk(home, name, kitchen=None, sous=None, synopsis=None, age_s=None):
     if age_s is not None:
         t = time.time() - age_s
         os.utime(target, (t, t))
+    for cook, (status, cook_age_s) in (cooks or {}).items():
+        cd = d / "cooks"
+        cd.mkdir(exist_ok=True)
+        f = cd / f"{cook}.json"
+        f.write_text(json.dumps(
+            {"status": status, "ts": "2020-01-01T00:00:00Z", "backend": "claude"}))
+        t = time.time() - cook_age_s
+        os.utime(f, (t, t))
     return d
 
 
@@ -175,6 +188,49 @@ def test_state_grouping_all_cases(tmp_path, monkeypatch):
         "c9_blocked_low_old",   # low, age 40h  (oldest)
         "c4_stale_working",     # low, age 20m  (newest)
     ]
+
+
+def test_working_cooks_count_as_working(tmp_path, monkeypatch):
+    """The sous idles between turns while its brigade grinds — a kitchen with a
+    fresh working cook is 'working', not 'idle'. block != null still wins
+    (needs-you outranks cooks-working), and the displayed age tracks the
+    freshest working cook, not the idle sous."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    # sous idle 5min ago, one cook actively working 30s ago → working,
+    # last_status_mtime reflects the COOK (≈30s old, not ≈300s)
+    _mk(tmp_path, "k1_cook_working", sous={"status": "idle"}, age_s=300,
+        synopsis=_syn(line="cooks grinding"),
+        cooks={"eng": ("working", 30), "qa": ("idle", 10)})
+    # blocked + a fresh working cook → STILL waiting_on_you
+    _mk(tmp_path, "k2_blocked_cook_working", sous={"status": "idle"}, age_s=300,
+        synopsis=_syn(block="approve the deploy", actions=["say go"]),
+        cooks={"eng": ("working", 30)})
+    # working cook gone STALE (>10min file mtime; in-file ts is ancient for all
+    # fixtures, so a ts-based classifier would misread k1 too) → idle
+    _mk(tmp_path, "k3_stale_cook", sous={"status": "idle"}, age_s=300,
+        synopsis=_syn(line="all quiet"),
+        cooks={"eng": ("working", 20 * 60)})
+    # only idle cooks → idle, age stays the sous's
+    _mk(tmp_path, "k4_idle_cooks", sous={"status": "idle"}, age_s=300,
+        synopsis=_syn(line="between tasks"), cooks={"eng": ("idle", 30)})
+
+    body = client.get("/state").json()
+    by = {k["name"]: k for k in body["kitchens"]}
+
+    def age_of(k):
+        dt = datetime.strptime(k["last_status_mtime"], "%Y-%m-%dT%H:%M:%SZ")
+        return time.time() - dt.replace(tzinfo=timezone.utc).timestamp()
+
+    k1 = by["k1_cook_working"]
+    assert k1["status"] == "working" and k1["dormant"] is False
+    assert age_of(k1) < 120      # cook's ~30s, not the sous's ~300s
+
+    assert by["k2_blocked_cook_working"]["status"] == "waiting_on_you"
+    assert by["k3_stale_cook"]["status"] == "idle"
+    k4 = by["k4_idle_cooks"]
+    assert k4["status"] == "idle"
+    assert 240 < age_of(k4) < 420    # sous's ~300s untouched by the idle cook
 
 
 def test_synopsis_generated_at_surfaced(tmp_path, monkeypatch):

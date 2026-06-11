@@ -77,21 +77,44 @@ def _read_synopsis(path: Path) -> dict:
     }
 
 
+def _working_cook_mtime(base: Path, now: datetime) -> Optional[datetime]:
+    """Freshest mtime among cooks whose status file says "working" and whose
+    FILE mtime is ≤ _IDLE_AFTER. The judged-by-mtime rule matches the sous: the
+    in-file `ts` field lags the hook's last rewrite, so it is never consulted.
+    None when no cook qualifies (incl. no cooks/ dir)."""
+    freshest = None
+    for f in (base / "cooks").glob("*.json"):
+        try:
+            if json.loads(f.read_text()).get("status") != "working":
+                continue
+            m = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if now - m <= _IDLE_AFTER and (freshest is None or m > freshest):
+            freshest = m
+    return freshest
+
+
 def _classify(has_sous: bool, sous_status: Optional[str],
-              block: Optional[str], age: timedelta) -> str:
+              block: Optional[str], age: timedelta, cook_working: bool) -> str:
     """Derive a dashboard status — time-independent for "waiting on you". A
     blocked kitchen (block != null) stays waiting_on_you at any age and is never
     swept to idle/dormant; recency only separates actively-working from idle
     among non-blocked kitchens. Order is significant:
       1. working sous, fresh (≤10min)            → working
       2. blocked on the head chef (any age)      → waiting_on_you  (also catches
-         a stale working sous that left a block — busy can't nag forever)
-      3. no sous yet, fresh (≤10min)             → booting (just spawned)
-      4. otherwise                               → idle"""
+         a stale working sous that left a block — busy can't nag forever; and
+         needs-you outranks cooks-still-working)
+      3. any cook working, fresh (≤10min)        → working (the sous idles
+         between turns while its brigade grinds — that kitchen is not idle)
+      4. no sous yet, fresh (≤10min)             → booting (just spawned)
+      5. otherwise                               → idle"""
     if sous_status == "working" and age <= _IDLE_AFTER:
         return "working"
     if block is not None:
         return "waiting_on_you"
+    if cook_working:
+        return "working"
     if not has_sous and age <= _IDLE_AFTER:
         return "booting"
     return "idle"
@@ -120,8 +143,16 @@ def _scan_kitchen(base: Path, now: datetime) -> Optional[dict]:
         return None
 
     age = now - mtime
+    cook_mtime = _working_cook_mtime(base, now)
     syn = _read_synopsis(base / "synopsis.json")
-    status = _classify(has_sous, sous.get("status"), syn["block"], age)
+    status = _classify(has_sous, sous.get("status"), syn["block"], age,
+                       cook_mtime is not None)
+    # The displayed age tracks the busiest signal: a kitchen whose cooks are
+    # mid-task shows their freshness, not "working · 45m" off an idle sous.
+    # (`age`/dormant stay sous-based: a fresh working cook forces status to
+    # working or waiting_on_you above, never idle, so dormant is unaffected.)
+    if cook_mtime is not None and cook_mtime > mtime:
+        mtime = cook_mtime
     return {
         "name": base.name,
         "status": status,
