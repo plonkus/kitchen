@@ -11,7 +11,7 @@ Every dependency below lists **why** kitchen needs it, a **verify** command to c
 - **tmux** — the entire orchestration runs in tmux windows; nothing works without it.
   - Verify: `tmux -V`
   - Install: `brew install tmux` (macOS) · `apt install tmux` / `dnf install tmux` (Linux)
-- **git** — kitchen derives a per-project state slug from `git remote origin` (falls back to the repo's absolute toplevel path for local-only repos), and `kitchen open --src` uses git worktrees. Almost always already installed.
+- **git** — kitchen derives a per-project state slug from `git remote origin` (falls back to the repo's absolute toplevel path for local-only repos), and `kitchen open <name>` uses git worktrees. Almost always already installed.
   - Verify: `git --version`
   - Install: `brew install git` (macOS) · distro package manager (Linux)
 - **[uv](https://docs.astral.sh/uv/)** — kitchen installs as a uv tool, and uv provides the Python 3.12+ runtime the CLI needs.
