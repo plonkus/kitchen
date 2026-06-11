@@ -212,8 +212,12 @@ def test_working_cooks_count_as_working(tmp_path, monkeypatch):
         synopsis=_syn(line="all quiet"),
         cooks={"eng": ("working", 20 * 60)})
     # only idle cooks → idle, age stays the sous's
-    _mk(tmp_path, "k4_idle_cooks", sous={"status": "idle"}, age_s=300,
-        synopsis=_syn(line="between tasks"), cooks={"eng": ("idle", 30)})
+    d4 = _mk(tmp_path, "k4_idle_cooks", sous={"status": "idle"}, age_s=300,
+             synopsis=_syn(line="between tasks"), cooks={"eng": ("idle", 30)})
+    # valid-but-non-dict cook JSON ([] / null) is skipped silently — must not
+    # 500 /state and must not affect classification
+    (d4 / "cooks" / "garbled.json").write_text("[]")
+    (d4 / "cooks" / "nullish.json").write_text("null")
 
     body = client.get("/state").json()
     by = {k["name"]: k for k in body["kitchens"]}

@@ -85,7 +85,9 @@ def _working_cook_mtime(base: Path, now: datetime) -> Optional[datetime]:
     freshest = None
     for f in (base / "cooks").glob("*.json"):
         try:
-            if json.loads(f.read_text()).get("status") != "working":
+            data = json.loads(f.read_text())
+            # valid JSON but [], null, a bare string, … — same guard as synopsis
+            if not isinstance(data, dict) or data.get("status") != "working":
                 continue
             m = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
         except (json.JSONDecodeError, OSError):
