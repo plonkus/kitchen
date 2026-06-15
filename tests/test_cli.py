@@ -1350,30 +1350,34 @@ class TestCmdStatuslineSegment:
     The count is scoped to live tmux windows (the same source brigade uses),
     NOT a glob over cooks/*.json — so it describes exactly the kitchen the
     attach target points at and isn't inflated by orphaned state files left
-    behind when a cook's window dies."""
+    behind when a cook's window dies. Because it's wired into the user's
+    prompt, it must degrade to empty/partial output and never raise."""
 
+    @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows")
     @patch("claude_kitchen.cli.list_sessions", return_value=[])
-    def test_no_kitchen_prints_nothing(self, mock_ls, mock_win, mock_status, monkeypatch, capsys):
+    def test_no_kitchen_prints_nothing(self, mock_ls, mock_win, mock_status, mock_has, monkeypatch, capsys):
         monkeypatch.delenv("AGENT_SESSION", raising=False)
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         assert capsys.readouterr().out == ""
 
+    @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows")
     @patch("claude_kitchen.cli.list_sessions", return_value=["ck-a", "ck-b"])
-    def test_ambiguous_without_agent_session_is_silent(self, mock_ls, mock_win, mock_status, monkeypatch, capsys):
+    def test_ambiguous_without_agent_session_is_silent(self, mock_ls, mock_win, mock_status, mock_has, monkeypatch, capsys):
         monkeypatch.delenv("AGENT_SESSION", raising=False)
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         assert capsys.readouterr().out == ""
 
+    @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows", return_value=["a", "b", "c", "d"])
     def test_with_agent_session_prints_attach_and_counts(
-        self, mock_win, mock_status, monkeypatch, capsys,
+        self, mock_win, mock_status, mock_has, monkeypatch, capsys,
     ):
         monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
         mock_status.side_effect = [
@@ -1386,11 +1390,12 @@ class TestCmdStatuslineSegment:
         assert out == "[ tmux attach -t ck-risotto ]  [ 2/4 agents active ]"
         mock_win.assert_called_once_with("ck-risotto")
 
+    @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status", return_value={"status": "working"})
     @patch("claude_kitchen.cli.list_windows", return_value=["cook0"])
     @patch("claude_kitchen.cli.list_sessions", return_value=["ck-solo"])
     def test_single_session_without_agent_session_omits_attach_hint(
-        self, mock_ls, mock_win, mock_status, monkeypatch, capsys,
+        self, mock_ls, mock_win, mock_status, mock_has, monkeypatch, capsys,
     ):
         """Called from outside sous (no AGENT_SESSION) but only one kitchen
         is running → segment still renders, but without the attach hint
@@ -1401,10 +1406,11 @@ class TestCmdStatuslineSegment:
         out = capsys.readouterr().out.rstrip("\n")
         assert out == "[ 1/1 agents active ]"
 
+    @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows", return_value=[])
     def test_no_live_windows_reports_zero_over_zero(
-        self, mock_win, mock_status, monkeypatch, capsys,
+        self, mock_win, mock_status, mock_has, monkeypatch, capsys,
     ):
         monkeypatch.setenv("AGENT_SESSION", "ck-empty")
         from claude_kitchen.cli import cmd_statusline_segment
@@ -1412,10 +1418,11 @@ class TestCmdStatuslineSegment:
         out = capsys.readouterr().out.rstrip("\n")
         assert out == "[ tmux attach -t ck-empty ]  [ 0/0 agents active ]"
 
+    @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows", return_value=["live0", "live1"])
     def test_orphaned_state_files_do_not_inflate_count(
-        self, mock_win, mock_status, monkeypatch, tmp_path, capsys,
+        self, mock_win, mock_status, mock_has, monkeypatch, tmp_path, capsys,
     ):
         """Regression: a kitchen with stale cooks/*.json for dead windows must
         still report only its LIVE cooks. Pre-fix this globbed every json file
@@ -1432,6 +1439,54 @@ class TestCmdStatuslineSegment:
 
             from claude_kitchen.cli import cmd_statusline_segment
             cmd_statusline_segment(MagicMock())
+        out = capsys.readouterr().out.rstrip("\n")
+        assert out == "[ tmux attach -t ck-r ]  [ 1/2 agents active ]"
+
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.list_windows")
+    def test_stale_agent_session_renders_nothing(
+        self, mock_win, mock_has, monkeypatch, capsys,
+    ):
+        """Regression: a dead/closed session referenced by AGENT_SESSION must
+        render empty and never raise — not an attach hint to a gone session,
+        and not a CalledProcessError from list_windows(check=True)."""
+        monkeypatch.setenv("AGENT_SESSION", "ck-ghost")
+        from claude_kitchen.cli import cmd_statusline_segment
+        cmd_statusline_segment(MagicMock())
+        assert capsys.readouterr().out == ""
+        mock_win.assert_not_called()
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.read_status")
+    @patch("claude_kitchen.cli.list_windows",
+           side_effect=subprocess.CalledProcessError(1, ["tmux", "list-windows"]))
+    def test_session_closing_during_listing_does_not_raise(
+        self, mock_win, mock_status, mock_has, monkeypatch, capsys,
+    ):
+        """Regression (TOCTOU): the session disappears between has_session and
+        list_windows. Must degrade to 0/0, never propagate the error."""
+        monkeypatch.setenv("AGENT_SESSION", "ck-closing")
+        from claude_kitchen.cli import cmd_statusline_segment
+        cmd_statusline_segment(MagicMock())
+        out = capsys.readouterr().out.rstrip("\n")
+        assert out == "[ tmux attach -t ck-closing ]  [ 0/0 agents active ]"
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.read_status")
+    @patch("claude_kitchen.cli.list_windows", return_value=["ok", "broken"])
+    def test_malformed_cook_json_counts_as_inactive(
+        self, mock_win, mock_status, mock_has, monkeypatch, capsys,
+    ):
+        """Regression: a cook file that fails to parse is counted inactive (but
+        still counted in the total), restoring the tolerance the old glob had.
+        Pre-fix the unguarded read_status raised and the statusline threw."""
+        monkeypatch.setenv("AGENT_SESSION", "ck-r")
+        mock_status.side_effect = [
+            {"status": "working"},
+            json.JSONDecodeError("Expecting value", "doc", 0),
+        ]
+        from claude_kitchen.cli import cmd_statusline_segment
+        cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
         assert out == "[ tmux attach -t ck-r ]  [ 1/2 agents active ]"
 

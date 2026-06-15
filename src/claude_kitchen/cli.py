@@ -243,6 +243,13 @@ def cmd_statusline_segment(args):
     if not kitchen:
         return
 
+    # A statusline is wired into the user's prompt — it must NEVER raise. A
+    # stale AGENT_SESSION (session already torn down) renders nothing rather
+    # than an attach hint to a session that's gone.
+    session = mc(kitchen)
+    if not has_session(session):
+        return
+
     # Count live tmux windows, not cooks/*.json files. State files for cooks
     # whose window is gone linger until the next `kitchen open`/`sweep`, so a
     # raw glob over-counts by every orphan — which is how a 9-cook kitchen
@@ -250,12 +257,18 @@ def cmd_statusline_segment(args):
     # uses, so the statusline count now matches brigade and describes exactly
     # the kitchen the attach target points at.
     base = state_dir(kitchen)
-    windows = list_windows(mc(kitchen))
-    total = len(windows)
-    active = sum(
-        1 for win in windows
-        if (read_status(base, win) or {}).get("status") in ("working", "booting")
-    )
+    total = active = 0
+    try:
+        windows = list_windows(session)
+    except subprocess.CalledProcessError:
+        windows = []  # session vanished between has_session and the listing
+    for win in windows:
+        total += 1
+        try:
+            if (read_status(base, win) or {}).get("status") in ("working", "booting"):
+                active += 1
+        except (json.JSONDecodeError, OSError):
+            pass  # malformed/unreadable cook file → count it inactive, not fatal
 
     segments = []
     if env:

@@ -112,13 +112,19 @@ def namespaced(project: Path, requested: str) -> str:
     The single source of truth for the namespaced-name formula, so the
     open path and the lookup probe (resolve_kitchen) always agree.
 
-    When `requested` already equals the slug — the common case of
-    `kitchen open` with no name from a repo root, where the directory
-    name matches the repo slug — collapse to the bare slug instead of
-    doubling it (`seed-domo`, not `seed-domo-seed-domo`).
+    Idempotent: a `requested` name that is already slug-scoped is returned
+    untouched, so the formula never stacks prefixes. This collapses the
+    common `kitchen open` no-name case (dir name == slug → `seed-domo`, not
+    `seed-domo-seed-domo`) and stops re-opens / opening from a worktree dir
+    already named for the kitchen from piling slug on slug (the on-disk
+    `racksmith-racksmith-racksmith-program-rx-bugs` triple). The `f"{slug}-"`
+    boundary keeps a mere prefix match (`racksmithy`) from being mistaken for
+    an already-scoped name.
     """
     slug = project_slug(project)
-    return slug if requested == slug else f"{slug}-{requested}"
+    if requested == slug or requested.startswith(f"{slug}-"):
+        return requested
+    return f"{slug}-{requested}"
 
 
 def _slug_from_toplevel(project_path: Path) -> str:
