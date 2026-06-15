@@ -208,6 +208,33 @@ class TestNamespaced:
         mock_run.return_value = self._git_remote("git@github.com:acme/b.git")
         assert namespaced(tmp_path, "foo") == "b-foo"
 
+    @patch("claude_kitchen.state.subprocess.run")
+    def test_collapses_when_requested_equals_slug(self, mock_run, tmp_path):
+        # `kitchen open` with no name from a repo root sets requested to the
+        # dir name, which usually equals the slug. Don't double it:
+        # `seed-domo`, not `seed-domo-seed-domo`.
+        mock_run.return_value = self._git_remote("git@github.com:acme/seed-domo.git")
+        assert namespaced(tmp_path, "seed-domo") == "seed-domo"
+        # A genuinely different requested name is still slug-scoped.
+        assert namespaced(tmp_path, "feature") == "seed-domo-feature"
+
+    @patch("claude_kitchen.state.subprocess.run")
+    def test_idempotent_for_already_prefixed_name(self, mock_run, tmp_path):
+        # An already slug-scoped name must not be re-prefixed — otherwise
+        # re-opening (or opening from a worktree dir already named for the
+        # kitchen) stacks the slug, the source of the on-disk
+        # racksmith-racksmith-racksmith-program-rx-bugs triple.
+        mock_run.return_value = self._git_remote("git@github.com:acme/racksmith.git")
+        once = namespaced(tmp_path, "program-rx-bugs")
+        assert once == "racksmith-program-rx-bugs"
+        # Feeding the namespaced name back in is a no-op, repeatedly.
+        twice = namespaced(tmp_path, once)
+        assert twice == "racksmith-program-rx-bugs"
+        assert namespaced(tmp_path, twice) == "racksmith-program-rx-bugs"
+        # A near-miss sharing the slug as a prefix but not at a `-` boundary
+        # is still scoped, not mistaken for already-namespaced.
+        assert namespaced(tmp_path, "racksmithy") == "racksmith-racksmithy"
+
 
 class TestWikiAndNotesDirs:
     def test_wiki_dir(self, tmp_path, monkeypatch):
