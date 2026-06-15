@@ -208,6 +208,16 @@ class TestNamespaced:
         mock_run.return_value = self._git_remote("git@github.com:acme/b.git")
         assert namespaced(tmp_path, "foo") == "b-foo"
 
+    @patch("claude_kitchen.state.subprocess.run")
+    def test_collapses_when_requested_equals_slug(self, mock_run, tmp_path):
+        # `kitchen open` with no name from a repo root sets requested to the
+        # dir name, which usually equals the slug. Don't double it:
+        # `seed-domo`, not `seed-domo-seed-domo`.
+        mock_run.return_value = self._git_remote("git@github.com:acme/seed-domo.git")
+        assert namespaced(tmp_path, "seed-domo") == "seed-domo"
+        # A genuinely different requested name is still slug-scoped.
+        assert namespaced(tmp_path, "feature") == "seed-domo-feature"
+
 
 class TestWikiAndNotesDirs:
     def test_wiki_dir(self, tmp_path, monkeypatch):

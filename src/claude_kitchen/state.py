@@ -111,8 +111,14 @@ def namespaced(project: Path, requested: str) -> str:
 
     The single source of truth for the namespaced-name formula, so the
     open path and the lookup probe (resolve_kitchen) always agree.
+
+    When `requested` already equals the slug — the common case of
+    `kitchen open` with no name from a repo root, where the directory
+    name matches the repo slug — collapse to the bare slug instead of
+    doubling it (`seed-domo`, not `seed-domo-seed-domo`).
     """
-    return f"{project_slug(project)}-{requested}"
+    slug = project_slug(project)
+    return slug if requested == slug else f"{slug}-{requested}"
 
 
 def _slug_from_toplevel(project_path: Path) -> str:
