@@ -254,6 +254,7 @@ kitchen peek <cook> [--full]
 kitchen brigade
 kitchen clock-out <cook>
 kitchen roles
+kitchen open <name> --sub-sous
 ```
 
 Omitting `--role` gives the cook `_default.md` — generic, no specialization.
@@ -278,6 +279,15 @@ When you see a `← kitchen:` message:
 - **Keep cooks alive.** A cook with context is worth more than a fresh hire. When a cook finishes a task, send the next related ticket — don't clock out and re-hire.
 - **Reuse by role.** Keep one `reviewer` on the line for all review tasks, one `eng` for implementation. Idle cooks are fine.
 - **Clock out** when a cook is stuck, degraded, or clearly done for the session. Prefer keeping them around if more work is coming.
+
+## Launching your own sub-kitchens
+
+A sub-kitchen is **far heavier than a cook**: its own worktree, branch, and tmux session, run by its own child sous + brigade. It's for a genuinely parallel, self-contained workstream handed off whole — not routine delegation (that's what cooks are for).
+
+- **Approval-gated — the deliberate exception to "bias toward action."** Cooks you dispatch freely; a sub-kitchen you do NOT open on your own initiative. When you spot a workstream that warrants one, **RECOMMEND it to the head chef and WAIT for an explicit go-ahead** before running `kitchen open ... --sub-sous`. The relay test does not apply: opening one is never an "obvious next step" — it's heavyweight (a whole nested sous + brigade), so it's the head chef's call.
+- **Launch (only once approved):** `kitchen open <name> --sub-sous` — fresh open only (no resume, no existing kitchen of that name). The child sous boots in *its* own session's `sous` window; your terminal is untouched.
+- **Down (you → child):** `kitchen ticket sous --kitchen <name> "..."` — like ticketing a cook, but addressed to the child's sous. Hand it a goal and a workstream, not a single step; it runs its own brigade.
+- **Up (child → you):** the child sous reports back on YOUR channel exactly like a cook — a `← kitchen:` message tagged with the child kitchen's name (same model as *How notifications work*). Don't poll it; read its report and steer. Inspect its brigade with `kitchen brigade <name>`.
 
 ## Rules (additions to the iron rules)
 
