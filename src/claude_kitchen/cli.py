@@ -797,6 +797,60 @@ def cmd_hook(args):
     send_to_socket(base / SOCK_NAME, push)
 
 
+def _agy_summary(payload: dict) -> str:
+    """Last non-empty PLANNER_RESPONSE.content from agy's transcript JSONL
+    (payload['transcriptPath']), or "" on any degraded case (missing path,
+    nonexistent/unreadable file, no usable line). Best-effort, never raises —
+    the channel still surfaces "cook finished" even when the message is
+    unrecoverable. Empty PLANNER_RESPONSE entries are placeholders interleaved
+    with tool-call events, so they're filtered out (POC: a simple try/except;
+    the full error table in the v2 spec is out of scope)."""
+    tp = payload.get("transcriptPath")
+    if not tp or not Path(tp).exists():
+        return ""
+    summary = ""
+    try:
+        with Path(tp).open() as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "PLANNER_RESPONSE" and obj.get("content"):
+                    summary = obj["content"].rstrip("\n")
+    except OSError:
+        return ""
+    return summary
+
+
+def cmd_hook_agy(args):
+    """Antigravity (gemini cook) Stop hook → channel notification. Reads the
+    Stop payload from stdin.
+
+    Standalone from cmd_hook — leaves cmd_hook and its sous carveout untouched.
+    Reuses _hook_gate for the AGENT_NAME/STATUS_DIR multi-tenancy guard: a bare
+    `agy` session the head chef runs has no AGENT_NAME, so the gate returns None
+    and this no-ops — kitchen never clobbers ad-hoc agy. gemini has no token
+    reader, so the push carries NO ctx (channel.py omits the attribute when the
+    key is absent)."""
+    gate = _hook_gate()
+    if not gate:
+        return
+    name, session, base = gate
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except (json.JSONDecodeError, ValueError):
+        return
+    summary = _agy_summary(payload)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # update_status (not write_status) preserves durable fields like `backend`
+    # (written "gemini" at hire) across this completion transition.
+    update_status(base, name, agent=name, session=session, status="idle",
+                  ts=ts, summary=summary, session_id=payload.get("conversationId", ""))
+    from claude_kitchen.channel import send_to_socket, SOCK_NAME
+    send_to_socket(base / SOCK_NAME, {"cook": name, "summary": summary, "ts": ts})
+
+
 def _claude_tokens_from_transcript(transcript_path):
     """Return {input, max} from the most recent assistant message in the
     transcript JSONL. None if the file is missing or has no assistant
@@ -1206,6 +1260,8 @@ def main():
     p_hook_codex = sub.add_parser("hook-codex", help="Codex hook handler (called by notify, not directly)")
     p_hook_codex.add_argument("json_payload", nargs="?", default="{}", help="JSON from Codex")
 
+    sub.add_parser("hook-agy", help="Antigravity/gemini hook handler (called by agy hooks via stdin, not directly)")
+
     sub.add_parser("setup", help="Check hook installation status")
 
     sub.add_parser(
@@ -1244,6 +1300,8 @@ def main():
         cmd_roles(args)
     elif args.command in ("hook", "hook-codex"):
         cmd_hook(args)
+    elif args.command == "hook-agy":
+        cmd_hook_agy(args)
     elif args.command == "channel-server":
         from claude_kitchen.channel import main as channel_main
         channel_main(args.kitchen)
