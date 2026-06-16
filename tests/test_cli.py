@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -693,6 +693,7 @@ class TestCmdOpen:
         args.project = "/tmp/myproject"
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
 
         cmd_open(args)
 
@@ -782,6 +783,7 @@ class TestCmdOpenNoOriginRepo:
         args.project = str(repo)
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
 
         state = tmp_path / "state"
         (state / "cooks").mkdir(parents=True)
@@ -819,6 +821,7 @@ class TestCmdOpenFailures:
         args.project = "/tmp/myproject"
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
         with patch("claude_kitchen.cli._PKG_DIR", tmp_path):
             with pytest.raises(SystemExit, match="sous-chef.md not found"):
                 cmd_open(args)
@@ -847,6 +850,7 @@ class TestCmdOpenWikiAndNotes:
         args.project = "/tmp/myproject"
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
 
         cmd_open(args)
 
@@ -887,6 +891,7 @@ class TestCmdOpenWikiAndNotes:
         args.project = "/tmp/myproject"
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
 
         cmd_open(args)
         assert (tmp_path / ".claude-kitchen" / "projects" / "widget" / "wiki" / "mistakes.md").exists()
@@ -921,6 +926,7 @@ class TestCmdOpenWikiAndNotes:
         args.project = "/tmp/myproject"
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
 
         with pytest.raises(SystemExit, match=r"Run `kitchen close renamed-risotto` and reopen\."):
             cmd_open(args)
@@ -964,6 +970,7 @@ class TestCmdOpenSoftCutover:
         args.project = str(proj)
         args.worktree_path = None
         args.resume = False
+        args.sub_sous = False
 
         with patch("claude_kitchen.cli.state_dir", side_effect=state_dir_for), \
              patch("claude_kitchen.cli.has_session", side_effect=has_session_for):
@@ -1519,4 +1526,244 @@ class TestBrigadeOutput:
         # Summary suffix removed (Chunk 4).
         assert "tests pass" not in out
         assert '-- "' not in out
+
+
+class TestSubSousFlagParsing:
+    """`--sub-sous` parses off the real argparse config (store_true, default
+    False). Dispatch is stubbed so only the parsed namespace is inspected."""
+
+    def test_flag_present_parses_true(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(sys, "argv", ["kitchen", "open", "child", "--sub-sous"])
+        with patch("claude_kitchen.cli.cmd_open",
+                   side_effect=lambda a: captured.update(sub_sous=a.sub_sous)):
+            main()
+        assert captured["sub_sous"] is True
+
+    def test_flag_absent_defaults_false(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(sys, "argv", ["kitchen", "open", "child"])
+        with patch("claude_kitchen.cli.cmd_open",
+                   side_effect=lambda a: captured.update(sub_sous=a.sub_sous)):
+            main()
+        assert captured["sub_sous"] is False
+
+
+class TestParentPushBase:
+    """The cmd_hook upward-push routing decision: where (if anywhere) a child
+    sous's Stop reports UP. Keyed on PARENT_STATUS_DIR, guarded against a
+    self-loop."""
+
+    def test_none_when_env_unset(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PARENT_STATUS_DIR", raising=False)
+        assert _parent_push_base(tmp_path) is None
+
+    def test_none_when_points_at_own_base(self, monkeypatch, tmp_path):
+        # Self-loop guard: a root sous whose PARENT_STATUS_DIR == its own base
+        # must NOT push (would echo its own Stop into its own channel).
+        monkeypatch.setenv("PARENT_STATUS_DIR", str(tmp_path))
+        assert _parent_push_base(tmp_path) is None
+
+    def test_returns_parent_when_distinct(self, monkeypatch, tmp_path):
+        parent = tmp_path / "parent"
+        child = tmp_path / "child"
+        monkeypatch.setenv("PARENT_STATUS_DIR", str(parent))
+        assert _parent_push_base(child) == parent
+
+
+class TestSubSousUpwardPush:
+    """Integration: a CHILD sous (PARENT_STATUS_DIR set) Stop pushes a channel
+    notification UP to the parent socket — and only there. A root sous (no
+    PARENT_STATUS_DIR) stays the pure no-op it is today."""
+
+    def test_child_sous_stop_pushes_to_parent_socket(self, monkeypatch, tmp_path):
+        child_base = tmp_path / "child"
+        parent_base = tmp_path / "parent"
+        child_base.mkdir()
+        parent_base.mkdir()
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-widget-child")
+        monkeypatch.setenv("STATUS_DIR", str(child_base))
+        monkeypatch.setenv("PARENT_STATUS_DIR", str(parent_base))
+        _stdin_payload(monkeypatch, hook_event_name="Stop",
+                       last_assistant_message="child phase done",
+                       session_id="sess-1")
+
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        mock_send.assert_called_once()
+        sock, push = mock_send.call_args[0]
+        assert sock == parent_base / "kitchen.sock"   # parent's socket, not own
+        assert push["cook"] == "child"                # base.name = child kitchen
+        assert push["summary"] == "child phase done"
+        # The sous is not a cook: no cook status file written.
+        assert not (child_base / "cooks").exists()
+
+    def test_root_sous_stop_does_not_push(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-root")
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path))
+        monkeypatch.delenv("PARENT_STATUS_DIR", raising=False)
+        _stdin_payload(monkeypatch, hook_event_name="Stop",
+                       last_assistant_message="root done", session_id="s")
+
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        mock_send.assert_not_called()
+
+    def test_self_loop_guard_blocks_push(self, monkeypatch, tmp_path):
+        # PARENT_STATUS_DIR == own base → guarded, no push.
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-x")
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path))
+        monkeypatch.setenv("PARENT_STATUS_DIR", str(tmp_path))
+        _stdin_payload(monkeypatch, hook_event_name="Stop",
+                       last_assistant_message="x", session_id="s")
+
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        mock_send.assert_not_called()
+
+    def test_child_sous_non_stop_event_does_not_push(self, monkeypatch, tmp_path):
+        """Only Stop reports up — a non-Stop sous event stays a no-op even
+        with PARENT_STATUS_DIR set."""
+        child_base = tmp_path / "child"
+        parent_base = tmp_path / "parent"
+        child_base.mkdir()
+        parent_base.mkdir()
+        monkeypatch.setenv("AGENT_NAME", "sous")
+        monkeypatch.setenv("AGENT_SESSION", "ck-widget-child")
+        monkeypatch.setenv("STATUS_DIR", str(child_base))
+        monkeypatch.setenv("PARENT_STATUS_DIR", str(parent_base))
+        _stdin_payload(monkeypatch, hook_event_name="UserPromptSubmit", prompt="hi")
+
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook"))
+
+        mock_send.assert_not_called()
+
+
+class TestCmdOpenSubSous:
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.spawn_sous_window")
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/child"))
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_launches_windowed_sous_and_waits(
+        self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has,
+        mock_spawn_sous, mock_spawn_win, mock_wait, mock_slug, mock_ns,
+        tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # Caller is a parent sous → its STATUS_DIR is inherited here.
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path / "parent"))
+        mock_resolve.return_value = Path("/tmp/myproject")
+        mock_state.return_value = tmp_path / "state"
+        mock_tmux.return_value = MagicMock(returncode=0)
+
+        args = MagicMock()
+        args.name = "child"
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = True
+
+        cmd_open(args)
+
+        # Windowed sous launched; the in-place execvp sous is NOT used.
+        mock_spawn_sous.assert_not_called()
+        mock_spawn_win.assert_called_once()
+        ca = mock_spawn_win.call_args
+        assert ca.args[0] == "widget-child"            # namespaced name
+        assert ca.args[1] == tmp_path / "state"         # this kitchen's base
+        # parent_base wired from the inherited STATUS_DIR.
+        assert ca.kwargs["parent_base"] == tmp_path / "parent"
+        # Readiness barrier on the `sous` window before returning.
+        mock_wait.assert_called_once_with("ck-widget-child", "sous", "claude")
+
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.spawn_sous_window")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/child"))
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_no_parent_status_dir_passes_none(
+        self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has,
+        mock_spawn_win, mock_wait, mock_slug, mock_ns, tmp_path, monkeypatch,
+    ):
+        """Run by hand (no parent sous) → parent_base is None, child runs
+        standalone."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("STATUS_DIR", raising=False)
+        mock_resolve.return_value = Path("/tmp/myproject")
+        mock_state.return_value = tmp_path / "state"
+        mock_tmux.return_value = MagicMock(returncode=0)
+
+        args = MagicMock()
+        args.name = "child"
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = True
+
+        cmd_open(args)
+        assert mock_spawn_win.call_args.kwargs["parent_base"] is None
+
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_rejects_existing_session(
+        self, mock_resolve, mock_state, mock_has, mock_ns, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_resolve.return_value = Path("/tmp/myproject")
+        mock_state.return_value = tmp_path / "state"
+        args = MagicMock()
+        args.name = "child"
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = True
+        with pytest.raises(SystemExit, match="fresh-open only"):
+            cmd_open(args)
+
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_rejects_resume(
+        self, mock_resolve, mock_state, mock_has, mock_ns, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_resolve.return_value = Path("/tmp/myproject")
+        base = tmp_path / "state"
+        base.mkdir(parents=True)
+        (base / "kitchen.json").write_text(json.dumps({
+            "source": "/tmp/myproject", "slug": "widget", "sous_session_id": "s1",
+        }) + "\n")
+        mock_state.return_value = base
+        args = MagicMock()
+        args.name = "child"
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = True
+        args.sub_sous = True
+        with pytest.raises(SystemExit, match="fresh-open only"):
+            cmd_open(args)
 

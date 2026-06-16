@@ -18,7 +18,7 @@ from claude_kitchen.state import (
     project_slug, namespaced, wiki_dir, notes_dir,
 )
 from claude_kitchen.models import max_context_for
-from claude_kitchen.spawn import spawn_window, spawn_sous
+from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window
 
 _PKG_DIR = Path(__file__).parent
 
@@ -336,6 +336,16 @@ def cmd_open(args):
     session = mc(name)
     resuming = kitchen_file.exists()
 
+    # --sub-sous is fresh-open only (POC v0): it stands up a brand-new child
+    # kitchen with the sous living in that kitchen's own tmux session. Resume
+    # and reattach paths assume the execvp sous in the caller's terminal, so
+    # reject the combination loudly rather than half-wire it.
+    if args.sub_sous and (args.resume or resuming or has_session(session)):
+        sys.exit(
+            f"--sub-sous is fresh-open only: it can't combine with --resume or "
+            f"reattach an existing kitchen/session (\"{name}\")."
+        )
+
     sous_session_id = None
     if args.resume:
         if not resuming:
@@ -402,6 +412,21 @@ def cmd_open(args):
     sous_md = _PKG_DIR / "sous-chef.md"
     if not sous_md.exists():
         sys.exit(f"sous-chef.md not found at {sous_md}")
+
+    if args.sub_sous:
+        # A parent sous's env carries STATUS_DIR=<parent base>; inherited by
+        # this Bash subprocess, it's how the child learns who to report UP to.
+        # Absent (run by hand) → the child sous just runs standalone.
+        parent = os.environ.get("STATUS_DIR")
+        spawn_sous_window(name, base, sous_md, project, slug=slug,
+                          parent_base=Path(parent) if parent else None)
+        # Mirror cmd_hire's readiness barrier so the parent's first
+        # `kitchen ticket sous --kitchen <name>` doesn't land in a booting pane.
+        if not wait_for_prompt(session, "sous", "claude"):
+            print(f"Warning: child sous didn't reach its prompt in time; "
+                  f"attach with `tmux attach -t {session}` to check.",
+                  file=sys.stderr)
+        return
 
     spawn_sous(name, base, sous_md.read_text(), project, slug=slug,
                resume_session_id=sous_session_id)
@@ -550,6 +575,20 @@ def _hook_gate() -> tuple[str, str, Path] | None:
     return name, session, Path(status)
 
 
+def _parent_push_base(base: Path) -> Path | None:
+    """The parent kitchen's base dir a child sous should report UP to on its
+    Stop, or None. None when PARENT_STATUS_DIR is unset (a root sous), OR when
+    it resolves to this sous's own base — the self-loop guard that keeps the
+    sous Stop no-op from pushing a sous's own completion into its own channel."""
+    parent = os.environ.get("PARENT_STATUS_DIR")
+    if not parent:
+        return None
+    parent_base = Path(parent)
+    if parent_base.resolve() == base.resolve():
+        return None
+    return parent_base
+
+
 def cmd_hook(args):
     """Handle hook events from Claude Code (stdin) or Codex (--message arg)."""
     ctx = _hook_gate()
@@ -579,6 +618,20 @@ def cmd_hook(args):
                 if kj.get("sous_session_id") != sid:
                     kj["sous_session_id"] = sid
                     kj_file.write_text(json.dumps(kj) + "\n")
+            # Second carveout: a CHILD sous (PARENT_STATUS_DIR set) reports its
+            # own Stop UP to the parent kitchen's channel — the only way a
+            # sub-sous surfaces to its parent. Targets the parent socket, never
+            # its own (the self-loop guard in _parent_push_base), so no echo
+            # loop. cook=<this kitchen's name> tells the parent which child it is.
+            parent_base = _parent_push_base(base)
+            if parent_base is not None:
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                from claude_kitchen.channel import send_to_socket, SOCK_NAME
+                send_to_socket(parent_base / SOCK_NAME, {
+                    "cook": base.name,
+                    "summary": payload.get("last_assistant_message", ""),
+                    "ts": ts,
+                })
         return
 
     if not codex:
@@ -1027,6 +1080,7 @@ def main():
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
+    p_open.add_argument("--sub-sous", action="store_true", help="Launch the sous inside the new kitchen's own tmux session (window 'sous'), not this terminal — for a parent sous spinning up a child kitchen. Fresh opens only.")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")

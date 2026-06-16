@@ -86,3 +86,31 @@ class TestCapturePane:
         assert capture_pane("ck-risotto", "eng") is None
 
 
+class TestWaitForPrompt:
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_confirms_dev_channels_dialog_for_claude(self, mock_cap, mock_tmux, mock_sleep):
+        """A claude sous launched with --dangerously-load-development-channels
+        shows a confirmation dialog before its welcome banner; wait_for_prompt
+        must auto-confirm it (bare Enter on the pre-selected option 1)."""
+        from claude_kitchen.tmux import wait_for_prompt
+        mock_cap.side_effect = [
+            "WARNING: Loading development channels\n  ❯ 1. I am using this for local development",
+            "Claude Code v2.1.120",
+        ]
+        assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
+        sent = [c.args for c in mock_tmux.call_args_list]
+        assert ("send-keys", "-t", "ck-x:sous", "Enter") in sent
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_no_dialog_no_keystrokes_for_claude(self, mock_cap, mock_tmux, mock_sleep):
+        """Welcome banner already up → no dialog → no keystrokes sent."""
+        from claude_kitchen.tmux import wait_for_prompt
+        mock_cap.side_effect = ["Claude Code v2.1.120"]
+        assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
+        mock_tmux.assert_not_called()
+
+

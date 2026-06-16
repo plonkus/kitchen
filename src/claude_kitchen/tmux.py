@@ -78,6 +78,12 @@ def wait_for_prompt(session: str, window: str, backend: str, timeout: int = 60) 
     # when a new version is published. Dismiss it once with `3` (= "Skip
     # until next version") + Enter so the welcome marker can appear.
     update_dismissed = False
+    # A claude agent launched with --dangerously-load-development-channels
+    # (the sous) shows a one-time "Loading development channels" confirmation
+    # before its welcome banner. Option 1 ("I am using this for local
+    # development") is pre-selected, so a bare Enter confirms it. Only the
+    # sous loads dev channels, so this never fires for cooks.
+    channels_confirmed = False
     while time.time() < deadline:
         content = capture_pane(session, window)
         if content and marker in content:
@@ -88,6 +94,10 @@ def wait_for_prompt(session: str, window: str, backend: str, timeout: int = 60) 
             tmux("send-keys", "-t", f"{session}:{window}", "3", "Enter",
                  check=True)
             update_dismissed = True
+        if (backend == "claude" and not channels_confirmed and content
+                and "Loading development channels" in content):
+            tmux("send-keys", "-t", f"{session}:{window}", "Enter", check=True)
+            channels_confirmed = True
         time.sleep(1)
     return False
 
