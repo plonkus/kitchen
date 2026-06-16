@@ -113,4 +113,17 @@ class TestWaitForPrompt:
         assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
         mock_tmux.assert_not_called()
 
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_tolerates_transient_tmux_timeout(self, mock_cap, mock_tmux, mock_sleep):
+        """A TimeoutExpired from tmux under launch load is transient: the wait
+        loop must swallow it and keep polling, not crash the open."""
+        from claude_kitchen.tmux import wait_for_prompt
+        mock_cap.side_effect = [
+            subprocess.TimeoutExpired(cmd="tmux", timeout=15),
+            "Claude Code v2.1.120",
+        ]
+        assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
+
 

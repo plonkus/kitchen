@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-TIMEOUT = 5
+# Per-call tmux timeout. Generous enough that fast queries (has-session,
+# new-session, list-windows) don't spuriously time out when the tmux server is
+# briefly serialized behind another kitchen launching at the same time — the
+# `kitchen open --sub-sous` x2 race that used to crash both opens at 5s.
+TIMEOUT = 15
 CK_PREFIX = "ck-"
 
 _buffer_counter = itertools.count()
@@ -85,19 +89,25 @@ def wait_for_prompt(session: str, window: str, backend: str, timeout: int = 60) 
     # sous loads dev channels, so this never fires for cooks.
     channels_confirmed = False
     while time.time() < deadline:
-        content = capture_pane(session, window)
-        if content and marker in content:
-            return True
-        if (backend == "codex" and not update_dismissed and content
-                and ("Update available!" in content
-                     or "Press enter to continue" in content)):
-            tmux("send-keys", "-t", f"{session}:{window}", "3", "Enter",
-                 check=True)
-            update_dismissed = True
-        if (backend == "claude" and not channels_confirmed and content
-                and "Loading development channels" in content):
-            tmux("send-keys", "-t", f"{session}:{window}", "Enter", check=True)
-            channels_confirmed = True
+        # tmux can stall briefly when another kitchen is launching at the same
+        # moment; a TimeoutExpired here is transient, not fatal — swallow it and
+        # retry on the next tick instead of crashing the open mid-flight.
+        try:
+            content = capture_pane(session, window)
+            if content and marker in content:
+                return True
+            if (backend == "codex" and not update_dismissed and content
+                    and ("Update available!" in content
+                         or "Press enter to continue" in content)):
+                tmux("send-keys", "-t", f"{session}:{window}", "3", "Enter",
+                     check=True)
+                update_dismissed = True
+            if (backend == "claude" and not channels_confirmed and content
+                    and "Loading development channels" in content):
+                tmux("send-keys", "-t", f"{session}:{window}", "Enter", check=True)
+                channels_confirmed = True
+        except subprocess.TimeoutExpired:
+            pass
         time.sleep(1)
     return False
 

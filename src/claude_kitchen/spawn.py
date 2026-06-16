@@ -1,6 +1,7 @@
 """Spawn logic for claude-kitchen agents."""
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -166,10 +167,23 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
 
     Used by `kitchen open --sub-sous` instead of spawn_sous's in-place
     os.execvp, so the caller (a parent sous's Bash tool subprocess) keeps its
-    own process. Returns True if the sous window spawned."""
+    own process. Returns True if the sous window spawned; False lets cmd_open
+    tear the half-created kitchen down."""
     session = mc(name)
     cmd = build_sous_cmd(name, base, sous_md_path, slug=slug, parent_base=parent_base)
-    ok = tmux("new-window", "-t", session, "-n", "sous", "-c", str(project),
-              cmd).returncode == 0
-    tmux("kill-window", "-t", f"{session}:_placeholder")
-    return ok
+    if tmux("new-window", "-t", session, "-n", "sous", "-c", str(project),
+            cmd).returncode != 0:
+        return False
+    # The placeholder kill is cosmetic (the window is `_`-hidden from brigade);
+    # a transient stall under launch load must not fail an otherwise-good launch.
+    try:
+        tmux("kill-window", "-t", f"{session}:_placeholder")
+    except subprocess.TimeoutExpired:
+        pass
+    # Record the sous pane's PID (parity with the execvp sous's sous.pid). It's
+    # the pane's root process — a liveness handle that lets a later non-sub-sous
+    # `kitchen open` of this kitchen detect the running sous (dup protection).
+    panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}")
+    if panes.returncode == 0 and panes.stdout.strip():
+        (base / "sous.pid").write_text(panes.stdout.strip().splitlines()[0] + "\n")
+    return True

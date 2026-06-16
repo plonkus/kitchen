@@ -309,6 +309,32 @@ def _legacy_bare_kitchen(requested: str, project: Path):
     return requested, base, kitchen_file
 
 
+def _abort_sub_sous(name: str, base: Path, kj: dict):
+    """Tear down a half-created --sub-sous kitchen after a failed launch, so a
+    failed open never leaves a sous-less 'open' kitchen, an orphan tmux session,
+    a stray worktree, or a dangling branch. Best-effort: a slow/again-timing-out
+    tmux must not block the rest of the cleanup."""
+    try:
+        tmux("kill-session", "-t", mc(name))
+    except subprocess.TimeoutExpired:
+        pass
+    worktree = kj.get("worktree")
+    if worktree and Path(worktree).exists():
+        wt = Path(worktree)
+        # Capture the branch before removing the worktree, then delete it. A
+        # fresh --sub-sous open's branch holds no work, and a leftover branch
+        # makes a same-name retry fail (`git worktree add -b <name>`).
+        branch = subprocess.run(
+            ["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        remove_worktree(wt, force=True)
+        if branch and branch != "HEAD":
+            subprocess.run(["git", "-C", kj["source"], "branch", "-D", branch],
+                           capture_output=True)
+    shutil.rmtree(base, ignore_errors=True)
+
+
 def cmd_open(args):
     project = resolve_project(args.project)
     requested = args.name or project.name
@@ -405,6 +431,11 @@ def cmd_open(args):
 
     if resuming:
         print(f"Kitchen \"{name}\" — sous chef back on the line.")
+    elif args.sub_sous:
+        # Print the attach target up front so the head chef can watch the child
+        # sous boot in its own session; the "open" confirmation waits for the
+        # readiness barrier below so we never claim success on a failed launch.
+        print(f"Kitchen \"{name}\" — child sous booting in its own session.")
     else:
         print(f"Kitchen \"{name}\" is open. Sous chef on the line.")
     print(f"   tmux attach -t {session}")
@@ -418,14 +449,24 @@ def cmd_open(args):
         # this Bash subprocess, it's how the child learns who to report UP to.
         # Absent (run by hand) → the child sous just runs standalone.
         parent = os.environ.get("STATUS_DIR")
-        spawn_sous_window(name, base, sous_md, project, slug=slug,
-                          parent_base=Path(parent) if parent else None)
-        # Mirror cmd_hire's readiness barrier so the parent's first
-        # `kitchen ticket sous --kitchen <name>` doesn't land in a booting pane.
-        if not wait_for_prompt(session, "sous", "claude"):
-            print(f"Warning: child sous didn't reach its prompt in time; "
-                  f"attach with `tmux attach -t {session}` to check.",
-                  file=sys.stderr)
+        # Tolerate a brief tmux stall under launch load (TimeoutExpired); on any
+        # genuine failure tear the half-created kitchen down so we never leave a
+        # sous-less "open" kitchen with an orphan session/worktree/state.
+        failure = None
+        try:
+            if not spawn_sous_window(name, base, sous_md, project, slug=slug,
+                                     parent_base=Path(parent) if parent else None):
+                failure = "tmux could not launch the sous window"
+            # Mirror cmd_hire's readiness barrier so the parent's first
+            # `kitchen ticket sous --kitchen <name>` doesn't hit a booting pane.
+            elif not wait_for_prompt(session, "sous", "claude"):
+                failure = "the child sous never reached its prompt"
+        except subprocess.TimeoutExpired:
+            failure = "tmux stayed unresponsive under launch load"
+        if failure:
+            _abort_sub_sous(name, base, kj)
+            sys.exit(f"--sub-sous: {failure}; cleaned up kitchen \"{name}\".")
+        print(f"Kitchen \"{name}\" is open. Sous chef on the line.")
         return
 
     spawn_sous(name, base, sous_md.read_text(), project, slug=slug,

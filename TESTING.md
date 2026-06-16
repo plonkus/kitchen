@@ -6,7 +6,7 @@ Unit tests:
 uv run pytest -q
 ```
 
-## Manual smoke: `kitchen open --sub-sous` (parent ↔ child both ways)
+## `kitchen open --sub-sous` — parent ↔ child, both ways
 
 `--sub-sous` launches a child kitchen whose sous runs **inside the child's own
 tmux session** (window `sous`, the `_placeholder` window removed) instead of
@@ -14,80 +14,119 @@ replacing the caller's terminal. A parent sous spins one up from a Bash tool
 call; the two talk both ways:
 
 - **down** (parent → child): `kitchen ticket sous --kitchen <child> '<msg>'`
-  reaches the child sous window (reuses `resolve_kitchen` + `send_keys`; no new
-  command).
+  reaches the child sous window (reuses `resolve_kitchen` + `send_keys`).
 - **up** (child → parent): the child sous's Stop hook pushes a `<channel>`
-  notification to the **parent** kitchen's socket. The wiring is the
-  `PARENT_STATUS_DIR` env var the parent injects into the child sous; the
-  `cmd_hook` sous carveout forwards the child's Stop there (guarded so a sous
-  never pushes to its own socket). `STATUS_DIR` stays the child's own base, so
-  the child's own cooks + resume-session capture are unaffected.
+  notification to the **parent** kitchen's socket, via the `PARENT_STATUS_DIR`
+  env var the parent injects (the `cmd_hook` sous carveout, guarded so a sous
+  never pushes to its own socket). `STATUS_DIR` stays the child's own base.
 
-### Smoke procedure (use a THROWAWAY parent socket — never the live sous)
+Fresh opens only (rejects `--resume` / an existing kitchen/session). On a
+genuine launch failure the half-created kitchen is torn down (session +
+worktree + branch + state) — it never leaves a sous-less "open" kitchen.
 
-To avoid spamming a real channel, point the child at a scratch parent socket
-backed by a tiny listener, not a live kitchen's `kitchen.sock`.
+### Smoke procedure (THROWAWAY parent socket — never the live sous)
 
-1. **Scratch project** — a git repo with one commit:
-   ```
-   rm -rf /tmp/subsous-smoke && mkdir /tmp/subsous-smoke && cd /tmp/subsous-smoke
-   git init -q && git commit -q --allow-empty -m init
-   ```
+Point the child at a scratch parent socket backed by a tiny listener so a real
+channel is never spammed:
 
-2. **Throwaway parent listener** — bind a unix socket and log what arrives:
-   ```
-   PARENT=/tmp/subsous-parent && rm -rf "$PARENT" && mkdir -p "$PARENT"
-   python3 - "$PARENT/kitchen.sock" "$PARENT/recv.log" <<'PY' &
-   import socket, os, sys
-   sock, log = sys.argv[1], sys.argv[2]
-   try: os.unlink(sock)
-   except FileNotFoundError: pass
-   s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sock); s.listen(8)
-   with open(log, "a") as f:
-       f.write("LISTENER UP\n"); f.flush()
-       while True:
-           c, _ = s.accept(); data = b""
-           while (ch := c.recv(4096)): data += ch
-           c.close(); f.write("RECV " + data.decode("utf8","replace").strip() + "\n"); f.flush()
-   PY
-   ```
+```
+# scratch project + throwaway parent listener
+rm -rf /tmp/subsous-smoke && mkdir /tmp/subsous-smoke && cd /tmp/subsous-smoke
+git init -q && git commit -q --allow-empty -m init
+PARENT=/tmp/subsous-parent && rm -rf "$PARENT" && mkdir -p "$PARENT"
+python3 - "$PARENT/kitchen.sock" "$PARENT/recv.log" <<'PY' &
+import socket, os, sys
+sock, log = sys.argv[1], sys.argv[2]
+try: os.unlink(sock)
+except FileNotFoundError: pass
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sock); s.listen(8)
+with open(log, "a") as f:
+    f.write("LISTENER UP\n"); f.flush()
+    while True:
+        c, _ = s.accept(); data = b""
+        while (ch := c.recv(4096)): data += ch
+        c.close(); f.write("RECV " + data.decode("utf8","replace").strip() + "\n"); f.flush()
+PY
 
-3. **Open the child with the sous inside its own session** — `STATUS_DIR`
-   points at the throwaway parent base so the child reports UP there:
-   ```
-   STATUS_DIR="$PARENT" kitchen open --sub-sous
-   ```
-   Expect: prints `Kitchen "<name>" is open.` + `tmux attach -t ck-<name>`
-   (the attach session name the head chef can observe). Blocks until the child
-   sous reaches its prompt, then returns.
+# open the child with its sous inside its own session; report UP to $PARENT
+STATUS_DIR="$PARENT" kitchen open --sub-sous
 
-4. **Verify the session shape** — `sous` window present, `_placeholder` gone:
-   ```
-   tmux list-windows -t ck-<name> -F '#{window_name}'   # → sous
-   ```
+# down: ticket the child sous cross-kitchen, then watch the reply
+kitchen ticket sous --kitchen <name> 'Liveness check from the head chef. No cooks, no tools — reply with exactly the word PONG, then stop.'
+kitchen peek sous --kitchen <name>
 
-5. **Down**: ticket the child sous (it lives in the child session, reached
-   cross-kitchen by `--kitchen`):
-   ```
-   kitchen ticket sous --kitchen <name> 'Liveness check from the head chef. No cooks, no tools — reply with exactly the word PONG, then stop.'
-   kitchen peek sous --kitchen <name>     # see the message land + the reply
-   ```
+# up: the child's Stop pushes to the parent socket
+cat "$PARENT/recv.log"
 
-6. **Up**: when the child sous finishes that turn it Stops; its hook pushes to
-   the parent socket. Confirm:
-   ```
-   cat "$PARENT/recv.log"   # → RECV {"cook": "<name>", "summary": "...PONG...", ...}
-   ```
-   `cook` is the child kitchen's name; `summary` is the child sous's last
-   message.
+# cleanup
+kitchen close <name> --force; kill %1; rm -rf /tmp/subsous-smoke /tmp/subsous-parent
+```
 
-7. **Cleanup** — close the child kitchen and stop the listener:
-   ```
-   kitchen close <name> --force
-   kill %1                       # the listener
-   rm -rf /tmp/subsous-smoke /tmp/subsous-parent
-   ```
+### Captured run (real output)
 
-A passing smoke shows: the attach session name printed (3), `sous` window with
-no `_placeholder` (4), the ticket landing in the child sous pane (5), and a
-`RECV` line on the parent socket carrying the child's reply (6).
+`kitchen open --sub-sous` (attach session name printed; reaches prompt):
+
+```
+Kitchen "private-tmp-subsous-smoke-subsous-smoke" is open. Sous chef on the line.
+   tmux attach -t ck-private-tmp-subsous-smoke-subsous-smoke
+```
+
+Window shape — `sous` present, `_placeholder` gone
+(`tmux list-windows -t ck-private-tmp-subsous-smoke-subsous-smoke`):
+
+```
+2:sous
+```
+
+**Down** — `kitchen ticket sous --kitchen <name> '…PONG…'` lands in the child
+sous pane and it replies (`kitchen peek sous --kitchen <name>`):
+
+```
+❯ Liveness check from the head chef — do NOT hire cooks, do NOT run tools or bash. Just reply with exactly the single word PONG, then stop.
+⏺ PONG
+✻ Crunched for 2s
+```
+
+**Up** — the child sous's Stop pushed to the throwaway parent socket
+(`cat $PARENT/recv.log`):
+
+```
+RECV {"cook": "private-tmp-subsous-smoke-subsous-smoke", "summary": "PONG", "ts": "2026-06-16T00:38:48Z"}
+```
+
+`cook` is the child kitchen's name; `summary` is the child sous's last message.
+
+## Fail-clean & concurrency (hardening)
+
+Two `kitchen open --sub-sous` at once used to crash both at the hard 5s tmux
+timeout, leaving a half-open kitchen. Now: the per-call tmux timeout is 15s,
+`wait_for_prompt` swallows a transient `TimeoutExpired` and retries, and any
+genuine failure tears the half-created kitchen down. Verified:
+
+**Genuine-failure teardown** — drive `cmd_open --sub-sous` with
+`wait_for_prompt` forced to `False` so a real session + worktree + branch +
+state are created, then must all be removed:
+
+```
+SYSTEMEXIT: --sub-sous: the child sous never reached its prompt; cleaned up kitchen "private-tmp-subsous2-failinj".
+✓ no session    ✓ no worktree dir    ✓ no branch    ✓ no state dir    ✓ no stray process
+```
+
+**Two sequential opens** — each fully succeeds (`sous` window, `sous.pid`
+alive):
+
+```
+Kitchen "private-tmp-subsous2-seqa" is open. Sous chef on the line.
+Kitchen "private-tmp-subsous2-seqb" is open. Sous chef on the line.
+  seqa: windows=sous  sous.pid ALIVE
+  seqb: windows=sous  sous.pid ALIVE
+```
+
+**Two near-simultaneous opens** (separate repos, shared tmux server — the crash
+scenario) — both fully succeed, neither crashes or leaves junk:
+
+```
+Kitchen "private-tmp-subsous2-subsous2" is open. Sous chef on the line.   EXIT=0
+Kitchen "private-tmp-subsous3-subsous3" is open. Sous chef on the line.   EXIT=0
+  both: windows=sous  sous.pid ALIVE
+```

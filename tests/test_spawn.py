@@ -277,16 +277,29 @@ class TestBuildSousCmd:
 
 class TestSpawnSousWindow:
     @patch("claude_kitchen.spawn.tmux")
-    def test_spawns_sous_window_and_kills_placeholder(self, mock_tmux, tmp_path):
-        mock_tmux.return_value = MagicMock(returncode=0)
+    def test_spawns_window_kills_placeholder_writes_pid(self, mock_tmux, tmp_path):
+        mock_tmux.return_value = MagicMock(returncode=0, stdout="4242\n")
         ok = spawn_sous_window("widget-child", tmp_path, tmp_path / "s.md",
                                Path("/tmp/child"))
         assert ok is True
-        calls = mock_tmux.call_args_list
-        # First tmux call: new-window named `sous` in the kitchen's session.
-        assert calls[0].args[0] == "new-window"
-        assert "ck-widget-child" in calls[0].args
-        assert "sous" in calls[0].args
-        # Then the _placeholder window is removed.
-        assert calls[1].args[0] == "kill-window"
-        assert "ck-widget-child:_placeholder" in calls[1].args
+        first = mock_tmux.call_args_list[0]
+        assert first.args[0] == "new-window"
+        assert "ck-widget-child" in first.args
+        assert "sous" in first.args
+        kinds = [c.args[0] for c in mock_tmux.call_args_list]
+        # _placeholder removed; pane pid queried for sous.pid.
+        assert "kill-window" in kinds
+        assert "list-panes" in kinds
+        assert (tmp_path / "sous.pid").read_text().strip() == "4242"
+
+    @patch("claude_kitchen.spawn.tmux")
+    def test_returns_false_when_new_window_fails(self, mock_tmux, tmp_path):
+        """new-window failure → False (cmd_open then tears the kitchen down),
+        no placeholder kill, no sous.pid."""
+        mock_tmux.return_value = MagicMock(returncode=1, stdout="")
+        ok = spawn_sous_window("widget-child", tmp_path, tmp_path / "s.md",
+                               Path("/tmp/child"))
+        assert ok is False
+        assert not (tmp_path / "sous.pid").exists()
+        # Bailed right after the failed new-window — no kill/list-panes.
+        assert [c.args[0] for c in mock_tmux.call_args_list] == ["new-window"]
