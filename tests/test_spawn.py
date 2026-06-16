@@ -1,11 +1,12 @@
 """Tests for spawn logic."""
 import os
 import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock
-from claude_kitchen.spawn import build_shell_cmd, spawn_sous
+from claude_kitchen.spawn import build_shell_cmd, spawn_sous, build_sous_cmd, spawn_sous_window
 
 
 def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
@@ -207,3 +208,115 @@ class TestSpawnSous:
         # Register post-spawn values with monkeypatch so its teardown restores them
         monkeypatch.setenv("KITCHEN_WIKI", os.environ["KITCHEN_WIKI"])
         monkeypatch.setenv("KITCHEN_NOTES", os.environ["KITCHEN_NOTES"])
+
+
+def _sous_argv_from_cmd(cmd: str) -> list[str]:
+    """Reproduce claude's argv from build_sous_cmd's `bash -lc '<inner>'`.
+    Inner is `export ...; exec claude <args>` — return what follows `exec`."""
+    outer = shlex.split(cmd)
+    assert outer[:2] == ["bash", "-lc"], f"unexpected outer shape: {outer[:2]}"
+    inner = shlex.split(outer[2])
+    i = inner.index("exec")
+    return inner[i + 1:]
+
+
+class TestBuildSousCmd:
+    def test_core_claude_flags(self, tmp_path):
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "sous-chef.md")
+        argv = _sous_argv_from_cmd(cmd)
+        assert argv[0] == "claude"
+        assert "--dangerously-skip-permissions" in argv
+        # Channel server loaded so the child can RECEIVE its own cooks.
+        i = argv.index("--dangerously-load-development-channels")
+        assert argv[i + 1] == "server:kitchen"
+        # MCP config points at THIS kitchen's own .mcp.json.
+        j = argv.index("--mcp-config")
+        assert argv[j + 1] == str(tmp_path / ".mcp.json")
+
+    def test_prompt_via_file_not_inlined(self, tmp_path):
+        """Sous prompt arrives as a file path (cook role-file pattern), never
+        inlined — same shell-quoting-safety rationale as cook roles."""
+        sous_md = tmp_path / "sous-chef.md"
+        argv = _sous_argv_from_cmd(build_sous_cmd("c", tmp_path, sous_md))
+        k = argv.index("--append-system-prompt-file")
+        assert argv[k + 1] == str(sous_md)
+        assert "--append-system-prompt" not in argv  # the bare (inlining) form
+
+    def test_no_remote_control(self, tmp_path):
+        """POC decision: the child sous does NOT get --remote-control."""
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
+        assert "--remote-control" not in cmd
+        assert "--remote-control-session-name-prefix" not in cmd
+
+    def test_identity_env(self, tmp_path):
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
+        assert "AGENT_NAME=sous" in cmd
+        assert "AGENT_SESSION=ck-widget-child" in cmd
+        # STATUS_DIR stays THIS kitchen's base (not the parent's).
+        assert f"STATUS_DIR={shlex.quote(str(tmp_path))}" in cmd
+
+    def test_parent_status_dir_exported_when_given(self, tmp_path):
+        parent = tmp_path / "parent"
+        cmd = build_sous_cmd("c", tmp_path, tmp_path / "s.md", parent_base=parent)
+        assert f"PARENT_STATUS_DIR={shlex.quote(str(parent))}" in cmd
+
+    def test_parent_status_dir_omitted_when_none(self, tmp_path):
+        cmd = build_sous_cmd("c", tmp_path, tmp_path / "s.md")
+        assert "PARENT_STATUS_DIR" not in cmd
+
+    def test_wiki_notes_env_when_slug(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md", slug="widget")
+        assert "KITCHEN_WIKI=" in cmd
+        assert "KITCHEN_NOTES=" in cmd
+
+    def test_wiki_notes_env_omitted_without_slug(self, tmp_path):
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
+        assert "KITCHEN_WIKI=" not in cmd
+        assert "KITCHEN_NOTES=" not in cmd
+
+
+class TestSpawnSousWindow:
+    @patch("claude_kitchen.spawn.tmux")
+    def test_spawns_window_kills_placeholder_writes_pid(self, mock_tmux, tmp_path):
+        mock_tmux.return_value = MagicMock(returncode=0, stdout="4242\n")
+        ok = spawn_sous_window("widget-child", tmp_path, tmp_path / "s.md",
+                               Path("/tmp/child"))
+        assert ok is True
+        first = mock_tmux.call_args_list[0]
+        assert first.args[0] == "new-window"
+        assert "ck-widget-child" in first.args
+        assert "sous" in first.args
+        kinds = [c.args[0] for c in mock_tmux.call_args_list]
+        # _placeholder removed; pane pid queried for sous.pid.
+        assert "kill-window" in kinds
+        assert "list-panes" in kinds
+        assert (tmp_path / "sous.pid").read_text().strip() == "4242"
+
+    @patch("claude_kitchen.spawn.tmux")
+    def test_returns_false_when_new_window_fails(self, mock_tmux, tmp_path):
+        """new-window failure → False (cmd_open then tears the kitchen down),
+        no placeholder kill, no sous.pid."""
+        mock_tmux.return_value = MagicMock(returncode=1, stdout="")
+        ok = spawn_sous_window("widget-child", tmp_path, tmp_path / "s.md",
+                               Path("/tmp/child"))
+        assert ok is False
+        assert not (tmp_path / "sous.pid").exists()
+        # Bailed right after the failed new-window — no kill/list-panes.
+        assert [c.args[0] for c in mock_tmux.call_args_list] == ["new-window"]
+
+    @patch("claude_kitchen.spawn.tmux")
+    def test_list_panes_timeout_does_not_fail_launch(self, mock_tmux, tmp_path):
+        """A TimeoutExpired on the list-panes pid query — AFTER new-window
+        succeeded — must NOT propagate (cmd_open would treat it as a launch
+        failure and tear down a live window). The sous already launched; the
+        pid is best-effort, so swallow it and still return True."""
+        def side(*args, **kwargs):
+            if args[0] == "list-panes":
+                raise subprocess.TimeoutExpired(cmd="tmux", timeout=15)
+            return MagicMock(returncode=0, stdout="")
+        mock_tmux.side_effect = side
+        ok = spawn_sous_window("widget-child", tmp_path, tmp_path / "s.md",
+                               Path("/tmp/child"))
+        assert ok is True                        # launch stands despite the timeout
+        assert not (tmp_path / "sous.pid").exists()  # pid skipped, best-effort

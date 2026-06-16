@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-TIMEOUT = 5
+# Per-call tmux timeout. Generous enough that fast queries (has-session,
+# new-session, list-windows) don't spuriously time out when the tmux server is
+# briefly serialized behind another kitchen launching at the same time — the
+# `kitchen open --sub-sous` x2 race that used to crash both opens at 5s.
+TIMEOUT = 15
 CK_PREFIX = "ck-"
 
 _buffer_counter = itertools.count()
@@ -71,23 +75,57 @@ _PROMPT_MARKERS = {
 }
 
 
-def wait_for_prompt(session: str, window: str, backend: str, timeout: int = 60) -> bool:
+def wait_for_prompt(session: str, window: str, backend: str,
+                    timeout: int = 180, stall_timeout: int = 45) -> bool:
+    """Wait until the agent's welcome banner appears, then return True.
+
+    Progress-based, not a flat cap: under heavy machine load the whole boot
+    (window → dialog → confirm → render the banner) can take far longer than any
+    fixed deadline — diagnosed live on a load-50 box, where a healthy child sous
+    simply booted slowly. So keep waiting as long as the pane keeps CHANGING
+    (making progress) and give up only after `stall_timeout` seconds of NO change
+    (truly stuck / crashed) or the `timeout` hard ceiling. Returns False on
+    either give-up condition.
+    """
     marker = _PROMPT_MARKERS[backend]
-    deadline = time.time() + timeout
-    # Codex shows an "Update available!" picker before its welcome banner
-    # when a new version is published. Dismiss it once with `3` (= "Skip
-    # until next version") + Enter so the welcome marker can appear.
+    hard_deadline = time.time() + timeout
+    # Codex shows an "Update available!" picker before its welcome banner when a
+    # new version is published. Dismiss it once with `3` (= "Skip until next
+    # version") + Enter so the welcome marker can appear.
     update_dismissed = False
-    while time.time() < deadline:
-        content = capture_pane(session, window)
-        if content and marker in content:
-            return True
-        if (backend == "codex" and not update_dismissed and content
-                and ("Update available!" in content
-                     or "Press enter to continue" in content)):
-            tmux("send-keys", "-t", f"{session}:{window}", "3", "Enter",
-                 check=True)
-            update_dismissed = True
+    # A claude agent launched with --dangerously-load-development-channels (the
+    # sous) shows a one-time "Loading development channels" confirmation before
+    # its welcome banner. Option 1 ("I am using this for local development") is
+    # pre-selected, so a bare Enter confirms it. Only the sous loads dev
+    # channels, so this never fires for cooks.
+    channels_confirmed = False
+    last = None
+    last_change = time.time()
+    while time.time() < hard_deadline:
+        # tmux can stall briefly when another kitchen is launching at the same
+        # moment; a TimeoutExpired here is transient, not fatal — swallow it and
+        # retry on the next tick instead of crashing the open mid-flight.
+        try:
+            content = capture_pane(session, window)
+            if content:
+                if marker in content:
+                    return True
+                if (backend == "codex" and not update_dismissed
+                        and ("Update available!" in content
+                             or "Press enter to continue" in content)):
+                    tmux("send-keys", "-t", f"{session}:{window}", "3", "Enter",
+                         check=True)
+                    update_dismissed = True
+                if (backend == "claude" and not channels_confirmed
+                        and "Loading development channels" in content):
+                    tmux("send-keys", "-t", f"{session}:{window}", "Enter", check=True)
+                    channels_confirmed = True
+                if content != last:
+                    last, last_change = content, time.time()
+                elif time.time() - last_change > stall_timeout:
+                    return False  # pane frozen → stuck/crashed, not slow boot
+        except subprocess.TimeoutExpired:
+            pass
         time.sleep(1)
     return False
 

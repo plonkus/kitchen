@@ -1,6 +1,7 @@
 """Spawn logic for claude-kitchen agents."""
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -117,3 +118,78 @@ def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: st
         result = tmux("new-session", "-d", "-s", session, "-n", name, "-c", cwd, cmd)
 
     return result.returncode == 0
+
+
+def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
+                   slug: str = None, parent_base: Path = None) -> str:
+    """Build the `bash -lc` command that launches a child sous in a tmux
+    window — the windowed analogue of spawn_sous's in-place execvp argv.
+
+    Two deliberate differences from a root sous (spawn_sous): NO
+    --remote-control (POC scope), and the sous prompt is delivered via
+    --append-system-prompt-file (the cook role-file pattern) rather than
+    --append-system-prompt, keeping the multi-line prompt out of the
+    shell-quoted command string.
+
+    STATUS_DIR stays THIS kitchen's own base so the child's own cooks +
+    resume-session capture keep working. parent_base, when set, is exported
+    separately as PARENT_STATUS_DIR so the child sous's Stop hook reports UP
+    to the parent kitchen's channel socket (see the cmd_hook sous carveout).
+    """
+    q = shlex.quote
+    session = mc(name)
+    parts = [
+        "AGENT_NAME=sous",
+        f"AGENT_SESSION={q(session)}",
+        f"STATUS_DIR={q(str(base))}",
+    ]
+    if slug:
+        from claude_kitchen.state import wiki_dir, notes_dir
+        parts.append(f"KITCHEN_WIKI={q(str(wiki_dir(slug)))}")
+        parts.append(f"KITCHEN_NOTES={q(str(notes_dir(name)))}")
+    if parent_base is not None:
+        parts.append(f"PARENT_STATUS_DIR={q(str(parent_base))}")
+    env = "export " + " ".join(parts)
+    claude = (
+        "exec claude --dangerously-skip-permissions "
+        "--dangerously-load-development-channels server:kitchen "
+        f"--mcp-config {q(str(base / '.mcp.json'))} "
+        f"--append-system-prompt-file {q(str(sous_md_path))}"
+    )
+    return f'bash -lc {q(f"{env}; {claude}")}'
+
+
+def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
+                      slug: str = None, parent_base: Path = None) -> bool:
+    """Launch a child sous in window `sous` of the kitchen's own tmux session,
+    then drop the `_placeholder` window cmd_open created. The whole child
+    kitchen (its sous + its future cooks) lives in this one session.
+
+    Used by `kitchen open --sub-sous` instead of spawn_sous's in-place
+    os.execvp, so the caller (a parent sous's Bash tool subprocess) keeps its
+    own process. Returns True if the sous window spawned; False lets cmd_open
+    tear the half-created kitchen down."""
+    session = mc(name)
+    cmd = build_sous_cmd(name, base, sous_md_path, slug=slug, parent_base=parent_base)
+    if tmux("new-window", "-t", session, "-n", "sous", "-c", str(project),
+            cmd).returncode != 0:
+        return False
+    # The placeholder kill is cosmetic (the window is `_`-hidden from brigade);
+    # a transient stall under launch load must not fail an otherwise-good launch.
+    try:
+        tmux("kill-window", "-t", f"{session}:_placeholder")
+    except subprocess.TimeoutExpired:
+        pass
+    # Record the sous pane's PID (parity with the execvp sous's sous.pid). It's
+    # the pane's root process — a liveness handle that lets a later non-sub-sous
+    # `kitchen open` of this kitchen detect the running sous (dup protection).
+    # Best-effort: the window already launched, so a TimeoutExpired here must NOT
+    # propagate (cmd_open would read it as a launch failure and tear the window
+    # down) — just skip the pid.
+    try:
+        panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}")
+        if panes.returncode == 0 and panes.stdout.strip():
+            (base / "sous.pid").write_text(panes.stdout.strip().splitlines()[0] + "\n")
+    except subprocess.TimeoutExpired:
+        pass
+    return True

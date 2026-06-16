@@ -18,7 +18,7 @@ from claude_kitchen.state import (
     project_slug, namespaced, wiki_dir, notes_dir,
 )
 from claude_kitchen.models import max_context_for
-from claude_kitchen.spawn import spawn_window, spawn_sous
+from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window
 
 _PKG_DIR = Path(__file__).parent
 
@@ -309,6 +309,55 @@ def _legacy_bare_kitchen(requested: str, project: Path):
     return requested, base, kitchen_file
 
 
+def _sub_sous_worktree_collision(project: Path, requested: str,
+                                 worktree_path: str | None) -> bool:
+    """True if the worktree dir this --sub-sous open would create already exists,
+    or a branch named `requested` already exists. Keeps --sub-sous fresh-open-
+    only at the git layer: otherwise create_worktree reuses the existing worktree
+    and a later failed launch's _abort_sub_sous would force-remove a worktree +
+    delete a branch this open never created."""
+    root = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    if root.returncode != 0:
+        return False
+    wt = Path(worktree_path) if worktree_path else Path(root.stdout.strip()).parent / requested
+    if wt.exists():
+        return True
+    return subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--verify", "--quiet",
+         f"refs/heads/{requested}"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def _abort_sub_sous(name: str, base: Path, kj: dict):
+    """Tear down a half-created --sub-sous kitchen after a failed launch, so a
+    failed open never leaves a sous-less 'open' kitchen, an orphan tmux session,
+    a stray worktree, or a dangling branch. Best-effort: a slow/again-timing-out
+    tmux must not block the rest of the cleanup."""
+    try:
+        tmux("kill-session", "-t", mc(name))
+    except subprocess.TimeoutExpired:
+        pass
+    worktree = kj.get("worktree")
+    if worktree and Path(worktree).exists():
+        wt = Path(worktree)
+        # Capture the branch before removing the worktree, then delete it. A
+        # fresh --sub-sous open's branch holds no work, and a leftover branch
+        # makes a same-name retry fail (`git worktree add -b <name>`).
+        branch = subprocess.run(
+            ["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        remove_worktree(wt, force=True)
+        if branch and branch != "HEAD":
+            subprocess.run(["git", "-C", kj["source"], "branch", "-D", branch],
+                           capture_output=True)
+    shutil.rmtree(base, ignore_errors=True)
+
+
 def cmd_open(args):
     project = resolve_project(args.project)
     requested = args.name or project.name
@@ -335,6 +384,26 @@ def cmd_open(args):
 
     session = mc(name)
     resuming = kitchen_file.exists()
+
+    # --sub-sous is fresh-open only (POC v0): it stands up a brand-new child
+    # kitchen with the sous living in that kitchen's own tmux session. Resume
+    # and reattach paths assume the execvp sous in the caller's terminal, so
+    # reject the combination loudly rather than half-wire it.
+    if args.sub_sous:
+        if args.resume or resuming or has_session(session):
+            sys.exit(
+                f"--sub-sous is fresh-open only: it can't combine with --resume "
+                f"or reattach an existing kitchen/session (\"{name}\")."
+            )
+        # Also fresh-open-only at the git layer: refuse if the worktree or branch
+        # this open would create already exists. Otherwise create_worktree reuses
+        # the existing worktree and a later failed launch's _abort_sub_sous would
+        # force-remove a worktree + delete a branch this open never created.
+        if args.name and _sub_sous_worktree_collision(project, requested, args.worktree_path):
+            sys.exit(
+                f"--sub-sous is fresh-open only: a worktree or branch named "
+                f"\"{requested}\" already exists — remove it or choose another name."
+            )
 
     sous_session_id = None
     if args.resume:
@@ -395,6 +464,11 @@ def cmd_open(args):
 
     if resuming:
         print(f"Kitchen \"{name}\" — sous chef back on the line.")
+    elif args.sub_sous:
+        # Print the attach target up front so the head chef can watch the child
+        # sous boot in its own session; the "open" confirmation waits for the
+        # readiness barrier below so we never claim success on a failed launch.
+        print(f"Kitchen \"{name}\" — child sous booting in its own session.")
     else:
         print(f"Kitchen \"{name}\" is open. Sous chef on the line.")
     print(f"   tmux attach -t {session}")
@@ -402,6 +476,31 @@ def cmd_open(args):
     sous_md = _PKG_DIR / "sous-chef.md"
     if not sous_md.exists():
         sys.exit(f"sous-chef.md not found at {sous_md}")
+
+    if args.sub_sous:
+        # A parent sous's env carries STATUS_DIR=<parent base>; inherited by
+        # this Bash subprocess, it's how the child learns who to report UP to.
+        # Absent (run by hand) → the child sous just runs standalone.
+        parent = os.environ.get("STATUS_DIR")
+        # Tolerate a brief tmux stall under launch load (TimeoutExpired); on any
+        # genuine failure tear the half-created kitchen down so we never leave a
+        # sous-less "open" kitchen with an orphan session/worktree/state.
+        failure = None
+        try:
+            if not spawn_sous_window(name, base, sous_md, project, slug=slug,
+                                     parent_base=Path(parent) if parent else None):
+                failure = "tmux could not launch the sous window"
+            # Mirror cmd_hire's readiness barrier so the parent's first
+            # `kitchen ticket sous --kitchen <name>` doesn't hit a booting pane.
+            elif not wait_for_prompt(session, "sous", "claude"):
+                failure = "the child sous never reached its prompt"
+        except subprocess.TimeoutExpired:
+            failure = "tmux stayed unresponsive under launch load"
+        if failure:
+            _abort_sub_sous(name, base, kj)
+            sys.exit(f"--sub-sous: {failure}; cleaned up kitchen \"{name}\".")
+        print(f"Kitchen \"{name}\" is open. Sous chef on the line.")
+        return
 
     spawn_sous(name, base, sous_md.read_text(), project, slug=slug,
                resume_session_id=sous_session_id)
@@ -550,6 +649,20 @@ def _hook_gate() -> tuple[str, str, Path] | None:
     return name, session, Path(status)
 
 
+def _parent_push_base(base: Path) -> Path | None:
+    """The parent kitchen's base dir a child sous should report UP to on its
+    Stop, or None. None when PARENT_STATUS_DIR is unset (a root sous), OR when
+    it resolves to this sous's own base — the self-loop guard that keeps the
+    sous Stop no-op from pushing a sous's own completion into its own channel."""
+    parent = os.environ.get("PARENT_STATUS_DIR")
+    if not parent:
+        return None
+    parent_base = Path(parent)
+    if parent_base.resolve() == base.resolve():
+        return None
+    return parent_base
+
+
 def cmd_hook(args):
     """Handle hook events from Claude Code (stdin) or Codex (--message arg)."""
     ctx = _hook_gate()
@@ -579,6 +692,20 @@ def cmd_hook(args):
                 if kj.get("sous_session_id") != sid:
                     kj["sous_session_id"] = sid
                     kj_file.write_text(json.dumps(kj) + "\n")
+            # Second carveout: a CHILD sous (PARENT_STATUS_DIR set) reports its
+            # own Stop UP to the parent kitchen's channel — the only way a
+            # sub-sous surfaces to its parent. Targets the parent socket, never
+            # its own (the self-loop guard in _parent_push_base), so no echo
+            # loop. cook=<this kitchen's name> tells the parent which child it is.
+            parent_base = _parent_push_base(base)
+            if parent_base is not None:
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                from claude_kitchen.channel import send_to_socket, SOCK_NAME
+                send_to_socket(parent_base / SOCK_NAME, {
+                    "cook": base.name,
+                    "summary": payload.get("last_assistant_message", ""),
+                    "ts": ts,
+                })
         return
 
     if not codex:
@@ -1027,6 +1154,7 @@ def main():
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
+    p_open.add_argument("--sub-sous", action="store_true", help="Launch the sous inside the new kitchen's own tmux session (window 'sous'), not this terminal — for a parent sous spinning up a child kitchen. Fresh opens only.")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")
