@@ -68,6 +68,18 @@ _CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "max": "xhigh
 # Per-launch notify override appended to every codex cook. TOML array literal.
 _CODEX_NOTIFY_OVERRIDE = 'notify=["kitchen","hook-codex"]'
 
+# Appended to the inlined role for a gemini cook. agy's `-i` submits its
+# argument as the first USER turn (not a system prompt), so without this agy
+# acts on the role immediately — exploring/running tools instead of idling.
+# This clamps it to "acknowledge and wait", the gemini analogue of cli's
+# _ROLE_ACK_FOOTER for codex (which has the same role-as-first-message shape).
+_GEMINI_ROLE_FOOTER = (
+    "\n\n---\n"
+    "The text above is your standing ROLE, not a task. Do NOT run any tools, "
+    "commands, or investigation now. Reply with one short line (\"Ready, chef.\") "
+    "and then wait silently — your actual ticket arrives as the next message.\n"
+)
+
 
 def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
                     effort: str = None, role_path: Path = None) -> str:
@@ -102,6 +114,15 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # touching global state. Value is a TOML array literal.
         notify_flag = f' -c {q(_CODEX_NOTIFY_OVERRIDE)}'
         return f'bash -lc {q(f"{env}; exec codex --dangerously-bypass-approvals-and-sandbox{effort_flag}{notify_flag}")}'
+    elif backend == "gemini":
+        # agy (Antigravity CLI) drives Gemini. No --append-system-prompt-file
+        # equivalent, so the role is INLINED as the first interactive turn via
+        # -i (shlex-quoted; a ~2.4KB role is well under the argv limit). The
+        # `< /dev/null` redirect is load-bearing: agy reads stdin even with the
+        # prompt on argv and hangs on launch without it. agy honors no --effort
+        # flag, so effort is silently dropped (POC).
+        role_flag = f" -i {q(role_path.read_text() + _GEMINI_ROLE_FOOTER)}" if role_path else ""
+        return f'bash -lc {q(f"{env}; exec agy{role_flag} --dangerously-skip-permissions < /dev/null")}'
     else:
         raise ValueError(f"Unknown backend: {backend}")
 

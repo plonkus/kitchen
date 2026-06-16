@@ -521,9 +521,21 @@ def cmd_hire(args):
         valid = sorted(p.stem for p in (_PKG_DIR / "roles").glob("*.md"))
         sys.exit(f"Unknown role '{role}'. Valid roles: {', '.join(valid)}")
 
-    # Claude takes the role as a system prompt file; Codex gets it as a
-    # first message via send_keys after the prompt appears.
-    role_to_pass = role_path if backend == "claude" else None
+    # Gemini-only fail-fast: agy must be on PATH before we write a booting
+    # status or spawn the tmux window. Gated to backend=="gemini" so claude,
+    # codex, `kitchen open`, and every other command NEVER reference agy — agy
+    # is fully optional; the kitchen works without it. The install command is
+    # given directly (the POC has no `kitchen setup` agy automation).
+    if backend == "gemini" and shutil.which("agy") is None:
+        sys.exit(
+            "agy not on PATH — install Antigravity CLI: "
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        )
+
+    # Claude (file flag) and Gemini (inlined via agy -i) take the role at
+    # launch; Codex gets it as a first message via send_keys after the prompt
+    # appears. build_shell_cmd reads role_path for the gemini branch.
+    role_to_pass = role_path if backend in ("claude", "gemini") else None
 
     write_status(base, name, {"status": "booting", "agent": name, "backend": backend})
 
@@ -1158,7 +1170,7 @@ def main():
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")
-    p_hire.add_argument("--backend", default="claude", choices=["claude", "codex"])
+    p_hire.add_argument("--backend", default="claude", choices=["claude", "codex", "gemini"])
     p_hire.add_argument("--kitchen", help="Target kitchen")
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (Claude only)")
