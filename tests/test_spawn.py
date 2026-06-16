@@ -1,6 +1,7 @@
 """Tests for spawn logic."""
 import os
 import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -303,3 +304,19 @@ class TestSpawnSousWindow:
         assert not (tmp_path / "sous.pid").exists()
         # Bailed right after the failed new-window — no kill/list-panes.
         assert [c.args[0] for c in mock_tmux.call_args_list] == ["new-window"]
+
+    @patch("claude_kitchen.spawn.tmux")
+    def test_list_panes_timeout_does_not_fail_launch(self, mock_tmux, tmp_path):
+        """A TimeoutExpired on the list-panes pid query — AFTER new-window
+        succeeded — must NOT propagate (cmd_open would treat it as a launch
+        failure and tear down a live window). The sous already launched; the
+        pid is best-effort, so swallow it and still return True."""
+        def side(*args, **kwargs):
+            if args[0] == "list-panes":
+                raise subprocess.TimeoutExpired(cmd="tmux", timeout=15)
+            return MagicMock(returncode=0, stdout="")
+        mock_tmux.side_effect = side
+        ok = spawn_sous_window("widget-child", tmp_path, tmp_path / "s.md",
+                               Path("/tmp/child"))
+        assert ok is True                        # launch stands despite the timeout
+        assert not (tmp_path / "sous.pid").exists()  # pid skipped, best-effort

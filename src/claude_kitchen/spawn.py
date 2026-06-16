@@ -183,7 +183,13 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     # Record the sous pane's PID (parity with the execvp sous's sous.pid). It's
     # the pane's root process — a liveness handle that lets a later non-sub-sous
     # `kitchen open` of this kitchen detect the running sous (dup protection).
-    panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}")
-    if panes.returncode == 0 and panes.stdout.strip():
-        (base / "sous.pid").write_text(panes.stdout.strip().splitlines()[0] + "\n")
+    # Best-effort: the window already launched, so a TimeoutExpired here must NOT
+    # propagate (cmd_open would read it as a launch failure and tear the window
+    # down) — just skip the pid.
+    try:
+        panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}")
+        if panes.returncode == 0 and panes.stdout.strip():
+            (base / "sous.pid").write_text(panes.stdout.strip().splitlines()[0] + "\n")
+    except subprocess.TimeoutExpired:
+        pass
     return True

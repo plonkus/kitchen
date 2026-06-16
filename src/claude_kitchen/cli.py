@@ -309,6 +309,29 @@ def _legacy_bare_kitchen(requested: str, project: Path):
     return requested, base, kitchen_file
 
 
+def _sub_sous_worktree_collision(project: Path, requested: str,
+                                 worktree_path: str | None) -> bool:
+    """True if the worktree dir this --sub-sous open would create already exists,
+    or a branch named `requested` already exists. Keeps --sub-sous fresh-open-
+    only at the git layer: otherwise create_worktree reuses the existing worktree
+    and a later failed launch's _abort_sub_sous would force-remove a worktree +
+    delete a branch this open never created."""
+    root = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    if root.returncode != 0:
+        return False
+    wt = Path(worktree_path) if worktree_path else Path(root.stdout.strip()).parent / requested
+    if wt.exists():
+        return True
+    return subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--verify", "--quiet",
+         f"refs/heads/{requested}"],
+        capture_output=True,
+    ).returncode == 0
+
+
 def _abort_sub_sous(name: str, base: Path, kj: dict):
     """Tear down a half-created --sub-sous kitchen after a failed launch, so a
     failed open never leaves a sous-less 'open' kitchen, an orphan tmux session,
@@ -366,11 +389,21 @@ def cmd_open(args):
     # kitchen with the sous living in that kitchen's own tmux session. Resume
     # and reattach paths assume the execvp sous in the caller's terminal, so
     # reject the combination loudly rather than half-wire it.
-    if args.sub_sous and (args.resume or resuming or has_session(session)):
-        sys.exit(
-            f"--sub-sous is fresh-open only: it can't combine with --resume or "
-            f"reattach an existing kitchen/session (\"{name}\")."
-        )
+    if args.sub_sous:
+        if args.resume or resuming or has_session(session):
+            sys.exit(
+                f"--sub-sous is fresh-open only: it can't combine with --resume "
+                f"or reattach an existing kitchen/session (\"{name}\")."
+            )
+        # Also fresh-open-only at the git layer: refuse if the worktree or branch
+        # this open would create already exists. Otherwise create_worktree reuses
+        # the existing worktree and a later failed launch's _abort_sub_sous would
+        # force-remove a worktree + delete a branch this open never created.
+        if args.name and _sub_sous_worktree_collision(project, requested, args.worktree_path):
+            sys.exit(
+                f"--sub-sous is fresh-open only: a worktree or branch named "
+                f"\"{requested}\" already exists — remove it or choose another name."
+            )
 
     sous_session_id = None
     if args.resume:

@@ -1767,6 +1767,52 @@ class TestCmdOpenSubSous:
         with pytest.raises(SystemExit, match="fresh-open only"):
             cmd_open(args)
 
+    @patch("claude_kitchen.cli.spawn_sous_window", return_value=False)
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    def test_rejects_preexisting_worktree_and_leaves_it_untouched(
+        self, mock_state, mock_tmux, mock_has, mock_spawn_win, tmp_path, monkeypatch,
+    ):
+        """fresh-open-only at the git layer: if a worktree/branch named <name>
+        already exists, --sub-sous must REJECT (not reuse it) — otherwise a
+        failed launch's _abort_sub_sous force-removes a worktree + branch this
+        open never created. Real git so the destructive path is exercised."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("STATUS_DIR", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {**__import__("os").environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"],
+                       check=True, env=env)
+        # A pre-existing worktree + branch at the path this open would target
+        # (create_worktree defaults to <repo-parent>/<name>).
+        existing_wt = tmp_path / "child"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", str(existing_wt), "-b", "child"],
+                       check=True, env=env)
+        mock_state.return_value = tmp_path / "state"
+        mock_tmux.return_value = MagicMock(returncode=0, stdout="")
+
+        args = MagicMock()
+        args.name = "child"
+        args.project = str(repo)
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = True
+
+        with patch("claude_kitchen.cli.resolve_project", return_value=repo):
+            with pytest.raises(SystemExit, match="already exists"):
+                cmd_open(args)
+
+        # The pre-existing worktree + branch are UNTOUCHED.
+        assert existing_wt.exists(), "pre-existing worktree must not be removed"
+        assert subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "refs/heads/child"],
+            capture_output=True,
+        ).returncode == 0, "pre-existing branch must not be deleted"
+
     @patch("claude_kitchen.cli.remove_worktree")
     @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
     @patch("claude_kitchen.cli.project_slug", return_value="widget")

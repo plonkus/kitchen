@@ -126,4 +126,42 @@ class TestWaitForPrompt:
         ]
         assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
 
+    @patch("claude_kitchen.tmux.time")
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_gives_up_on_stall_not_full_ceiling(self, mock_cap, mock_tmux, mock_time):
+        """An unchanging pane (no marker) is truly stuck → give up after
+        stall_timeout, WITHOUT waiting the (much larger) hard ceiling."""
+        from claude_kitchen.tmux import wait_for_prompt
+        clock = [0]
+        def now():
+            clock[0] += 10
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.return_value = "booting… (no banner, frozen)"
+        # Hard ceiling 100000 so the STALL (not the ceiling) is what returns.
+        assert wait_for_prompt("ck-x", "sous", "claude",
+                               timeout=100000, stall_timeout=45) is False
+        assert clock[0] < 1000, "should give up at the stall, not crawl to the ceiling"
+
+    @patch("claude_kitchen.tmux.time")
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_slow_but_progressing_boot_reaches_prompt(self, mock_cap, mock_tmux, mock_time):
+        """A pane that keeps CHANGING is making progress (slow boot under load):
+        the wait must NOT give up before the banner finally appears — even across
+        many ticks that a flat short cap would have killed."""
+        from claude_kitchen.tmux import wait_for_prompt
+        clock = [0]
+        def now():
+            clock[0] += 10  # 10s per call → tens of seconds pass between frames
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        # Distinct frames (progress) for a long time, then the welcome marker.
+        mock_cap.side_effect = [f"boot frame {i}" for i in range(8)] + ["Claude Code v2.1.178"]
+        assert wait_for_prompt("ck-x", "sous", "claude",
+                               timeout=100000, stall_timeout=45) is True
+
 

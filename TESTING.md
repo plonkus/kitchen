@@ -101,7 +101,21 @@ RECV {"cook": "private-tmp-subsous-smoke-subsous-smoke", "summary": "PONG", "ts"
 Two `kitchen open --sub-sous` at once used to crash both at the hard 5s tmux
 timeout, leaving a half-open kitchen. Now: the per-call tmux timeout is 15s,
 `wait_for_prompt` swallows a transient `TimeoutExpired` and retries, and any
-genuine failure tears the half-created kitchen down. Verified:
+genuine failure tears the half-created kitchen down.
+
+`wait_for_prompt` is also **progress-based**: under heavy machine load the whole
+child-sous boot (window → dev-channels confirm dialog → bare-Enter → render the
+banner) can far exceed any flat cap — diagnosed live on a load-50 box where a
+healthy sous simply booted slowly (the dialog IS dismissed by the Enter; it's
+not auth/crash). So it now waits as long as the pane keeps changing (progress)
+and gives up only after `stall_timeout` of no change (truly stuck) or a generous
+hard ceiling, instead of a fixed 60s.
+
+Two `--sub-sous` guards protect the abort path: `--sub-sous` refuses when a
+worktree/branch named `<name>` already exists (so `_abort_sub_sous` can never
+force-remove a worktree/branch it didn't create), and a `list-panes` timeout
+after a successful `new-window` no longer tears down a live sous (the pid write
+is best-effort). Verified:
 
 **Genuine-failure teardown** — drive `cmd_open --sub-sous` with
 `wait_for_prompt` forced to `False` so a real session + worktree + branch +
