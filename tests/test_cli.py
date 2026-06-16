@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -1894,4 +1894,43 @@ class TestCmdOpenSubSous:
         assert not base.exists()
         mock_rmwt.assert_called_once()
         assert any(c.args[0] == "kill-session" for c in mock_tmux.call_args_list)
+
+
+class TestAgySummary:
+    """_agy_summary gates the gemini Stop notification, so it must NEVER raise.
+    Regression: a non-string PLANNER_RESPONSE.content (schema drift) used to hit
+    `.rstrip` and AttributeError straight past the OSError guard, so the hook
+    failed to mark the cook idle or send the notification."""
+
+    def _payload(self, tmp_path, lines):
+        p = tmp_path / "transcript.jsonl"
+        p.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+        return {"transcriptPath": str(p)}
+
+    def test_non_string_content_does_not_raise(self, tmp_path):
+        # list / dict content (not str). Buggy code: `.rstrip` -> AttributeError.
+        payload = self._payload(tmp_path, [
+            {"type": "PLANNER_RESPONSE", "content": ["a", "b"]},
+            {"type": "PLANNER_RESPONSE", "content": {"x": 1}},
+        ])
+        assert _agy_summary(payload) == ""   # skipped, no raise
+
+    def test_skips_non_string_keeps_last_valid_string(self, tmp_path):
+        # A non-string entry interleaved between valid strings must be skipped,
+        # keeping the last valid string (not crash before reaching it).
+        payload = self._payload(tmp_path, [
+            {"type": "PLANNER_RESPONSE", "content": "first valid"},
+            {"type": "PLANNER_RESPONSE", "content": ["junk", 2]},
+            {"type": "PLANNER_RESPONSE", "content": "last valid\n"},
+        ])
+        assert _agy_summary(payload) == "last valid"
+
+    def test_well_formed_returns_last_nonempty_planner_response(self, tmp_path):
+        # Sanity: normal transcript — empty placeholders filtered, last wins.
+        payload = self._payload(tmp_path, [
+            {"type": "USER_INPUT", "content": "ignored"},
+            {"type": "PLANNER_RESPONSE", "content": ""},
+            {"type": "PLANNER_RESPONSE", "content": "the answer\n"},
+        ])
+        assert _agy_summary(payload) == "the answer"
 

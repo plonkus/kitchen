@@ -816,8 +816,13 @@ def _agy_summary(payload: dict) -> str:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") == "PLANNER_RESPONSE" and obj.get("content"):
-                    summary = obj["content"].rstrip("\n")
+                # `content` must be a non-empty str: under schema drift a
+                # PLANNER_RESPONSE could carry a list/obj, and `.rstrip` on that
+                # would AttributeError out of the OSError guard, breaking the
+                # "never raises" contract. Skip non-string entries.
+                content = obj.get("content")
+                if obj.get("type") == "PLANNER_RESPONSE" and isinstance(content, str) and content:
+                    summary = content.rstrip("\n")
     except OSError:
         return ""
     return summary
@@ -1227,7 +1232,7 @@ def main():
     p_hire.add_argument("--backend", default="claude", choices=["claude", "codex", "gemini"])
     p_hire.add_argument("--kitchen", help="Target kitchen")
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
-    p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (Claude only)")
+    p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
 
     p_ticket = sub.add_parser("ticket", help="Send a ticket to a cook")
