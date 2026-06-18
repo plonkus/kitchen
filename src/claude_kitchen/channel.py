@@ -157,12 +157,22 @@ def main(kitchen: str):
 
 
 def send_to_socket(sock_path: Path, data: dict):
-    """Send a JSON line to the kitchen socket. Fails silently if unavailable."""
+    """Send a JSON line to the kitchen socket.
+
+    Loud, not fatal: a wedged/hijacked/dead socket is surfaced to stderr (path +
+    errno) so the failure is immediately diagnosable, but never crashes the
+    calling cook hook — a dead channel must not break the cook.
+    """
     try:
         s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
         s.connect(str(sock_path))
         s.sendall(json.dumps(data).encode() + b"\n")
         s.shutdown(sock_mod.SHUT_WR)
         s.close()
-    except (ConnectionError, FileNotFoundError, OSError):
-        pass
+    except OSError as e:
+        # ConnectionError / FileNotFoundError are OSError subclasses.
+        print(
+            f"kitchen channel: failed to notify sous via {sock_path}: "
+            f"[errno {e.errno}] {e.strerror or e}",
+            file=sys.stderr,
+        )

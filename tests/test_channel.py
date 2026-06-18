@@ -92,9 +92,15 @@ class TestSendToSocket:
             assert len(received) == 1
             assert received[0]["cook"] == "eng"
 
-    def test_silent_on_missing_socket(self, tmp_path):
-        # Should not raise — fails silently per spec
-        send_to_socket(tmp_path / "nonexistent.sock", {"cook": "eng", "summary": "done"})
+    def test_dead_socket_is_loud_but_not_fatal(self, tmp_path, capsys):
+        # A send to a non-listening socket must NOT raise (the cook hook keeps
+        # running) but MUST surface a visible error naming the path + errno.
+        dead = tmp_path / "nonexistent.sock"
+        send_to_socket(dead, {"cook": "eng", "summary": "done"})  # does not raise
+        err = capsys.readouterr().err
+        assert "failed to notify sous" in err
+        assert str(dead) in err
+        assert "errno" in err
 
 
 class TestClaimSocket:
