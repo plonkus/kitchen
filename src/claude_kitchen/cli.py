@@ -16,6 +16,7 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir,
+    MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window
@@ -460,7 +461,10 @@ def cmd_open(args):
             }
         }
     }
-    (base / ".mcp.json").write_text(json.dumps(mcp_config, indent=2) + "\n")
+    (base / MCP_CONFIG_NAME).write_text(json.dumps(mcp_config, indent=2) + "\n")
+    # Self-heal kitchens opened before the rename: a legacy base/.mcp.json is
+    # cook-discoverable and would still auto-spawn a channel-server.
+    (base / LEGACY_MCP_CONFIG_NAME).unlink(missing_ok=True)
 
     if resuming:
         print(f"Kitchen \"{name}\" — sous chef back on the line.")
@@ -521,9 +525,21 @@ def cmd_hire(args):
         valid = sorted(p.stem for p in (_PKG_DIR / "roles").glob("*.md"))
         sys.exit(f"Unknown role '{role}'. Valid roles: {', '.join(valid)}")
 
-    # Claude takes the role as a system prompt file; Codex gets it as a
-    # first message via send_keys after the prompt appears.
-    role_to_pass = role_path if backend == "claude" else None
+    # Gemini-only fail-fast: agy must be on PATH before we write a booting
+    # status or spawn the tmux window. Gated to backend=="gemini" so claude,
+    # codex, `kitchen open`, and every other command NEVER reference agy — agy
+    # is fully optional; the kitchen works without it. The install command is
+    # given directly (the POC has no `kitchen setup` agy automation).
+    if backend == "gemini" and shutil.which("agy") is None:
+        sys.exit(
+            "agy not on PATH — install Antigravity CLI: "
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        )
+
+    # Claude (file flag) and Gemini (inlined via agy -i) take the role at
+    # launch; Codex gets it as a first message via send_keys after the prompt
+    # appears. build_shell_cmd reads role_path for the gemini branch.
+    role_to_pass = role_path if backend in ("claude", "gemini") else None
 
     write_status(base, name, {"status": "booting", "agent": name, "backend": backend})
 
@@ -783,6 +799,65 @@ def cmd_hook(args):
 
     from claude_kitchen.channel import send_to_socket, SOCK_NAME
     send_to_socket(base / SOCK_NAME, push)
+
+
+def _agy_summary(payload: dict) -> str:
+    """Last non-empty PLANNER_RESPONSE.content from agy's transcript JSONL
+    (payload['transcriptPath']), or "" on any degraded case (missing path,
+    nonexistent/unreadable file, no usable line). Best-effort, never raises —
+    the channel still surfaces "cook finished" even when the message is
+    unrecoverable. Empty PLANNER_RESPONSE entries are placeholders interleaved
+    with tool-call events, so they're filtered out (POC: a simple try/except;
+    the full error table in the v2 spec is out of scope)."""
+    tp = payload.get("transcriptPath")
+    if not tp or not Path(tp).exists():
+        return ""
+    summary = ""
+    try:
+        with Path(tp).open() as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # `content` must be a non-empty str: under schema drift a
+                # PLANNER_RESPONSE could carry a list/obj, and `.rstrip` on that
+                # would AttributeError out of the OSError guard, breaking the
+                # "never raises" contract. Skip non-string entries.
+                content = obj.get("content")
+                if obj.get("type") == "PLANNER_RESPONSE" and isinstance(content, str) and content:
+                    summary = content.rstrip("\n")
+    except OSError:
+        return ""
+    return summary
+
+
+def cmd_hook_agy(args):
+    """Antigravity (gemini cook) Stop hook → channel notification. Reads the
+    Stop payload from stdin.
+
+    Standalone from cmd_hook — leaves cmd_hook and its sous carveout untouched.
+    Reuses _hook_gate for the AGENT_NAME/STATUS_DIR multi-tenancy guard: a bare
+    `agy` session the head chef runs has no AGENT_NAME, so the gate returns None
+    and this no-ops — kitchen never clobbers ad-hoc agy. gemini has no token
+    reader, so the push carries NO ctx (channel.py omits the attribute when the
+    key is absent)."""
+    gate = _hook_gate()
+    if not gate:
+        return
+    name, session, base = gate
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except (json.JSONDecodeError, ValueError):
+        return
+    summary = _agy_summary(payload)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # update_status (not write_status) preserves durable fields like `backend`
+    # (written "gemini" at hire) across this completion transition.
+    update_status(base, name, agent=name, session=session, status="idle",
+                  ts=ts, summary=summary, session_id=payload.get("conversationId", ""))
+    from claude_kitchen.channel import send_to_socket, SOCK_NAME
+    send_to_socket(base / SOCK_NAME, {"cook": name, "summary": summary, "ts": ts})
 
 
 def _claude_tokens_from_transcript(transcript_path):
@@ -1091,6 +1166,19 @@ def cmd_setup(args):
         print(f'     "statusLine": {richer}')
         print()
 
+    # --- stray root-level .mcp.json (auto-remove; §Design.4 landmine) ---
+    # A `.mcp.json` at the state root is an ancestor of every cook cwd, so a
+    # cook walking up the tree auto-discovers it and spawns a rogue
+    # channel-server (cooks launch with --dangerously-skip-permissions, so the
+    # MCP approval gate doesn't protect them). Layer 1 stops it being recreated;
+    # this removes a stale one left from before the fix. Only the literal
+    # state-root `.mcp.json` is touched — per-kitchen `kitchen-mcp.json` configs
+    # are left alone.
+    root_mcp = Path.home() / ".claude-kitchen" / ".mcp.json"
+    if root_mcp.exists():
+        root_mcp.unlink()
+        print(f"✅ Removed stray root-level MCP config: {root_mcp}")
+
     # --- legacy 'projects' kitchen collision ---
     legacy = Path.home() / ".claude-kitchen" / "projects" / "kitchen.json"
     if legacy.exists():
@@ -1133,7 +1221,7 @@ def cmd_close(args):
     tmux("kill-session", "-t", session)
 
     # Clean up mcp config, socket, pid, and stale cook state
-    for f in (".mcp.json", "kitchen.sock", "sous.pid"):
+    for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
         (base / f).unlink(missing_ok=True)
     cooks_dir = base / "cooks"
     if cooks_dir.is_dir():
@@ -1158,10 +1246,10 @@ def main():
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")
-    p_hire.add_argument("--backend", default="claude", choices=["claude", "codex"])
+    p_hire.add_argument("--backend", default="claude", choices=["claude", "codex", "gemini"])
     p_hire.add_argument("--kitchen", help="Target kitchen")
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
-    p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (Claude only)")
+    p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
 
     p_ticket = sub.add_parser("ticket", help="Send a ticket to a cook")
@@ -1193,6 +1281,8 @@ def main():
 
     p_hook_codex = sub.add_parser("hook-codex", help="Codex hook handler (called by notify, not directly)")
     p_hook_codex.add_argument("json_payload", nargs="?", default="{}", help="JSON from Codex")
+
+    sub.add_parser("hook-agy", help="Antigravity/gemini hook handler (called by agy hooks via stdin, not directly)")
 
     sub.add_parser("setup", help="Check hook installation status")
 
@@ -1232,6 +1322,8 @@ def main():
         cmd_roles(args)
     elif args.command in ("hook", "hook-codex"):
         cmd_hook(args)
+    elif args.command == "hook-agy":
+        cmd_hook_agy(args)
     elif args.command == "channel-server":
         from claude_kitchen.channel import main as channel_main
         channel_main(args.kitchen)

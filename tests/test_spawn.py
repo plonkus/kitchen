@@ -229,9 +229,10 @@ class TestBuildSousCmd:
         # Channel server loaded so the child can RECEIVE its own cooks.
         i = argv.index("--dangerously-load-development-channels")
         assert argv[i + 1] == "server:kitchen"
-        # MCP config points at THIS kitchen's own .mcp.json.
+        # MCP config points at THIS kitchen's own renamed config (NOT a
+        # discoverable .mcp.json — see state.MCP_CONFIG_NAME).
         j = argv.index("--mcp-config")
-        assert argv[j + 1] == str(tmp_path / ".mcp.json")
+        assert argv[j + 1] == str(tmp_path / "kitchen-mcp.json")
 
     def test_prompt_via_file_not_inlined(self, tmp_path):
         """Sous prompt arrives as a file path (cook role-file pattern), never

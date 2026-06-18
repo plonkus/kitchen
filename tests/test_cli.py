@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX
 
@@ -697,9 +697,11 @@ class TestCmdOpen:
 
         cmd_open(args)
 
-        # .mcp.json written to state dir
-        mcp_config = tmp_path / ".mcp.json"
+        # renamed MCP config written to state dir (NOT a discoverable
+        # .mcp.json — cooks must never auto-discover it)
+        mcp_config = tmp_path / "kitchen-mcp.json"
         assert mcp_config.exists()
+        assert not (tmp_path / ".mcp.json").exists()
         config = json.loads(mcp_config.read_text())
         assert "kitchen" in config["mcpServers"]
 
@@ -710,6 +712,41 @@ class TestCmdOpen:
         assert call_args[0][0] == "widget-risotto"
         assert call_args[0][1] == tmp_path
         assert call_args[0][3] == Path("/tmp/risotto")
+
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/risotto"))
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_open_self_heals_legacy_mcp_config(self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has, mock_spawn, mock_slug, mock_ns, tmp_path, monkeypatch):
+        # A kitchen opened before the rename has a stale, cook-discoverable
+        # base/.mcp.json. Opening (and resuming — the writer/unlink runs
+        # unconditionally before the resume branch) must delete it.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_resolve.return_value = Path("/tmp/myproject")
+        mock_state.return_value = tmp_path
+        mock_tmux.return_value = MagicMock(returncode=0)
+        legacy = tmp_path / ".mcp.json"
+        legacy.write_text('{"mcpServers": {}}')
+        # pre-existing kitchen.json => resuming=True path
+        (tmp_path / "kitchen.json").write_text(
+            json.dumps({"source": "/tmp/myproject", "slug": "widget"})
+        )
+
+        args = MagicMock()
+        args.name = "risotto"
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = False
+
+        cmd_open(args)
+
+        assert not legacy.exists(), "legacy .mcp.json must be self-healed on open/resume"
+        assert (tmp_path / "kitchen-mcp.json").exists()
 
 
 class TestSweepCooks:
@@ -1164,10 +1201,18 @@ class TestCmdClose:
         cooks = tmp_path / "cooks"
         cooks.mkdir()
         (cooks / "eng.json").write_text("{}")
+        # both the renamed config AND any legacy .mcp.json must be cleaned up
+        # on close (no cook-discoverable leftover under base/)
+        mcp_config = tmp_path / "kitchen-mcp.json"
+        mcp_config.write_text("{}")
+        legacy_config = tmp_path / ".mcp.json"
+        legacy_config.write_text("{}")
         args = MagicMock()
         args.kitchen = "risotto"
         cmd_close(args)
         assert not cooks.exists()
+        assert not mcp_config.exists()
+        assert not legacy_config.exists()
 
 
 class TestCmdCloseWipesNotesNotWiki:
@@ -1348,6 +1393,82 @@ class TestCmdSetupStatusline:
         from claude_kitchen.cli import _PKG_DIR
         body = (_PKG_DIR / "statusline-command.sh").read_text()
         assert "kitchen statusline-segment" in body
+
+
+class TestCmdSetupRootMcp:
+    """`kitchen setup` auto-removes a stray state-root .mcp.json (§Design.4)."""
+
+    def _green_home(self, tmp_path):
+        # Minimal env so cmd_setup reaches the root-.mcp.json check and exits 0.
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text(json.dumps({
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "kitchen hook"}]}],
+                "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "kitchen hook"}]}],
+            }
+        }))
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text(
+            '[features]\nhooks = true\nnotify = ["kitchen", "hook-codex"]\n'
+        )
+        (tmp_path / ".claude" / "plugins" / "cache" / "superpowers-marketplace" / "superpowers").mkdir(parents=True)
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_removes_stray_root_mcp_json(self, mock_run, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._green_home(tmp_path)
+        root_mcp = tmp_path / ".claude-kitchen" / ".mcp.json"
+        root_mcp.parent.mkdir(parents=True)
+        root_mcp.write_text('{"mcpServers": {}}')
+
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())
+
+        assert not root_mcp.exists(), "stray root .mcp.json must be removed"
+        out = capsys.readouterr().out
+        assert "Removed stray root-level MCP config" in out
+        assert str(root_mcp) in out
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_noop_when_absent_idempotent(self, mock_run, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._green_home(tmp_path)
+        (tmp_path / ".claude-kitchen").mkdir(parents=True)
+
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())  # no .mcp.json present
+        cmd_setup(MagicMock())  # second run — still a clean no-op
+        out = capsys.readouterr().out
+        assert "Removed stray root-level MCP config" not in out
+        assert not (tmp_path / ".claude-kitchen" / ".mcp.json").exists()
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_does_not_touch_per_kitchen_config(self, mock_run, monkeypatch, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._green_home(tmp_path)
+        root = tmp_path / ".claude-kitchen"
+        root.mkdir(parents=True)
+        (root / ".mcp.json").write_text("{}")
+        # files that must survive: root-level kitchen-mcp.json and a per-kitchen
+        # config under a kitchen dir
+        root_kitchen_cfg = root / "kitchen-mcp.json"
+        root_kitchen_cfg.write_text("{}")
+        per_kitchen = root / "risotto"
+        per_kitchen.mkdir()
+        per_kitchen_cfg = per_kitchen / "kitchen-mcp.json"
+        per_kitchen_cfg.write_text("{}")
+
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())
+
+        assert not (root / ".mcp.json").exists(), "root .mcp.json removed"
+        assert root_kitchen_cfg.exists(), "root kitchen-mcp.json must be untouched"
+        assert per_kitchen_cfg.exists(), "per-kitchen config must be untouched"
 
 
 class TestCmdStatuslineSegment:
@@ -1894,4 +2015,43 @@ class TestCmdOpenSubSous:
         assert not base.exists()
         mock_rmwt.assert_called_once()
         assert any(c.args[0] == "kill-session" for c in mock_tmux.call_args_list)
+
+
+class TestAgySummary:
+    """_agy_summary gates the gemini Stop notification, so it must NEVER raise.
+    Regression: a non-string PLANNER_RESPONSE.content (schema drift) used to hit
+    `.rstrip` and AttributeError straight past the OSError guard, so the hook
+    failed to mark the cook idle or send the notification."""
+
+    def _payload(self, tmp_path, lines):
+        p = tmp_path / "transcript.jsonl"
+        p.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+        return {"transcriptPath": str(p)}
+
+    def test_non_string_content_does_not_raise(self, tmp_path):
+        # list / dict content (not str). Buggy code: `.rstrip` -> AttributeError.
+        payload = self._payload(tmp_path, [
+            {"type": "PLANNER_RESPONSE", "content": ["a", "b"]},
+            {"type": "PLANNER_RESPONSE", "content": {"x": 1}},
+        ])
+        assert _agy_summary(payload) == ""   # skipped, no raise
+
+    def test_skips_non_string_keeps_last_valid_string(self, tmp_path):
+        # A non-string entry interleaved between valid strings must be skipped,
+        # keeping the last valid string (not crash before reaching it).
+        payload = self._payload(tmp_path, [
+            {"type": "PLANNER_RESPONSE", "content": "first valid"},
+            {"type": "PLANNER_RESPONSE", "content": ["junk", 2]},
+            {"type": "PLANNER_RESPONSE", "content": "last valid\n"},
+        ])
+        assert _agy_summary(payload) == "last valid"
+
+    def test_well_formed_returns_last_nonempty_planner_response(self, tmp_path):
+        # Sanity: normal transcript — empty placeholders filtered, last wins.
+        payload = self._payload(tmp_path, [
+            {"type": "USER_INPUT", "content": "ignored"},
+            {"type": "PLANNER_RESPONSE", "content": ""},
+            {"type": "PLANNER_RESPONSE", "content": "the answer\n"},
+        ])
+        assert _agy_summary(payload) == "the answer"
 

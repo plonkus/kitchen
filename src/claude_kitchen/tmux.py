@@ -72,6 +72,7 @@ def capture_pane(session: str, window: str, full: bool = False) -> Optional[str]
 _PROMPT_MARKERS = {
     "claude": "Claude Code v",
     "codex": "OpenAI Codex (v",
+    "gemini": "? for shortcuts",  # agy TUI footer, present when input is editable
 }
 
 
