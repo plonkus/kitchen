@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Optional
 
 
+# Per-kitchen MCP config filename. Deliberately NOT ".mcp.json": Claude Code
+# auto-discovers any file named ".mcp.json" by walking up from a cook's cwd,
+# which made cooks spawn their own channel-server. This name is handed to the
+# sous explicitly via --mcp-config and is never auto-discovered.
+MCP_CONFIG_NAME = "kitchen-mcp.json"
+
+
 def state_dir(kitchen: str) -> Path:
     return Path.home() / ".claude-kitchen" / kitchen
 

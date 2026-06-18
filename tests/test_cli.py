@@ -697,9 +697,11 @@ class TestCmdOpen:
 
         cmd_open(args)
 
-        # .mcp.json written to state dir
-        mcp_config = tmp_path / ".mcp.json"
+        # renamed MCP config written to state dir (NOT a discoverable
+        # .mcp.json — cooks must never auto-discover it)
+        mcp_config = tmp_path / "kitchen-mcp.json"
         assert mcp_config.exists()
+        assert not (tmp_path / ".mcp.json").exists()
         config = json.loads(mcp_config.read_text())
         assert "kitchen" in config["mcpServers"]
 
@@ -1164,10 +1166,14 @@ class TestCmdClose:
         cooks = tmp_path / "cooks"
         cooks.mkdir()
         (cooks / "eng.json").write_text("{}")
+        # renamed MCP config must be cleaned up on close (no leftover under base/)
+        mcp_config = tmp_path / "kitchen-mcp.json"
+        mcp_config.write_text("{}")
         args = MagicMock()
         args.kitchen = "risotto"
         cmd_close(args)
         assert not cooks.exists()
+        assert not mcp_config.exists()
 
 
 class TestCmdCloseWipesNotesNotWiki:

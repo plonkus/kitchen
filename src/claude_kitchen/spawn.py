@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from claude_kitchen.tmux import tmux, has_session, mc
+from claude_kitchen.state import MCP_CONFIG_NAME
 
 
 def _check_sous_pid(state_dir: Path):
@@ -47,7 +48,7 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
         "claude",
         "--dangerously-skip-permissions",
         "--dangerously-load-development-channels", "server:kitchen",
-        "--mcp-config", str(state_dir / ".mcp.json"),
+        "--mcp-config", str(state_dir / MCP_CONFIG_NAME),
         "--remote-control",
         "--remote-control-session-name-prefix", kitchen,
     ]
@@ -174,7 +175,7 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
     claude = (
         "exec claude --dangerously-skip-permissions "
         "--dangerously-load-development-channels server:kitchen "
-        f"--mcp-config {q(str(base / '.mcp.json'))} "
+        f"--mcp-config {q(str(base / MCP_CONFIG_NAME))} "
         f"--append-system-prompt-file {q(str(sous_md_path))}"
     )
     return f'bash -lc {q(f"{env}; {claude}")}'

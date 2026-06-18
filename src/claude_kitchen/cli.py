@@ -15,7 +15,7 @@ from claude_kitchen.tmux import (
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, namespaced, wiki_dir, notes_dir,
+    project_slug, namespaced, wiki_dir, notes_dir, MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window
@@ -460,7 +460,7 @@ def cmd_open(args):
             }
         }
     }
-    (base / ".mcp.json").write_text(json.dumps(mcp_config, indent=2) + "\n")
+    (base / MCP_CONFIG_NAME).write_text(json.dumps(mcp_config, indent=2) + "\n")
 
     if resuming:
         print(f"Kitchen \"{name}\" — sous chef back on the line.")
@@ -1204,7 +1204,7 @@ def cmd_close(args):
     tmux("kill-session", "-t", session)
 
     # Clean up mcp config, socket, pid, and stale cook state
-    for f in (".mcp.json", "kitchen.sock", "sous.pid"):
+    for f in (MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
         (base / f).unlink(missing_ok=True)
     cooks_dir = base / "cooks"
     if cooks_dir.is_dir():
