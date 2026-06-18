@@ -158,6 +158,73 @@ class TestClaimSocket:
             _claim_socket(sock_path)  # returns cleanly, no exit
             assert not sock_path.exists(), "stale socket must be unlinked"
 
+            # And a real server can now bind+listen at the path (no regression
+            # to cold start after recovery).
+            fresh = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+            fresh.bind(str(sock_path))
+            fresh.listen(1)
+            assert sock_path.exists()
+            fresh.close()
+
+    def test_concurrent_stale_no_orphaning_toctou(self):
+        # TOCTOU: server B probes a STALE socket (ECONNREFUSED) but, before B
+        # unlinks, server A wins the race — unlinks the stale file and binds a
+        # fresh LIVE socket at the same path (new inode). B must NOT unlink A's
+        # live socket (that orphans it); it must notice the inode changed,
+        # re-probe, find A live, and stand down cleanly.
+        with tempfile.TemporaryDirectory(dir="/tmp") as td:
+            sock_path = Path(td) / "k.sock"
+            # Start with a stale socket file (bound then closed → ECONNREFUSED).
+            stale = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+            stale.bind(str(sock_path))
+            stale.close()
+            stale_ino = sock_path.stat().st_ino
+            live_holder = []
+            real_socket = sock_mod.socket  # unpatched constructor for A
+
+            class RacingSock:
+                """Probe that simulates server A winning the race on first connect."""
+                def __init__(self):
+                    self.calls = 0
+
+                def connect(self, _):
+                    self.calls += 1
+                    if self.calls == 1:
+                        # A wins: replace the stale file with a fresh LIVE socket
+                        # at the same path between B's probe and B's unlink.
+                        sock_path.unlink(missing_ok=True)
+                        a = real_socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+                        a.bind(str(sock_path))
+                        a.listen(1)
+                        live_holder.append(a)
+                        raise ConnectionRefusedError("probed the stale one")
+                    # Second probe: A's live socket now owns the path → succeeds.
+                    return
+
+                def close(self):
+                    pass
+
+            racing = RacingSock()
+            with patch("claude_kitchen.channel.sock_mod.socket", return_value=racing):
+                with pytest.raises(SystemExit) as exc:
+                    _claim_socket(sock_path)
+            assert exc.value.code == 0, "B must stand down, not stomp A"
+            assert racing.calls == 2, "B must re-probe after inode changed"
+
+            # A's live socket is intact (NOT orphaned): path inode is A's, not
+            # the stale one, and A still accepts a round-trip.
+            assert sock_path.exists()
+            assert sock_path.stat().st_ino != stale_ino
+            a = live_holder[0]
+            client = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+            client.connect(str(sock_path))
+            conn, _ = a.accept()
+            client.sendall(b"ping\n")
+            assert conn.recv(16) == b"ping\n"
+            conn.close()
+            client.close()
+            a.close()
+
     def test_other_oserror_fails_loud_no_unlink(self, tmp_path, capsys):
         # An unexpected OSError on probe (e.g. EACCES / ENOTSOCK) must NOT
         # unlink (could destroy something we don't understand) and must fail

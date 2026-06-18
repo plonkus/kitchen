@@ -28,7 +28,7 @@ async def handle_connection(reader: asyncio.StreamReader, writer, notify):
             writer.close()
 
 
-def _claim_socket(sock_path: Path):
+def _claim_socket(sock_path: Path, _max_probes: int = 8):
     """Prepare sock_path for binding, refusing to stomp a live owner.
 
     Connect-probes an existing socket and branches on the EXACT outcome —
@@ -38,31 +38,61 @@ def _claim_socket(sock_path: Path):
     - ECONNREFUSED / ENOENT → genuinely stale/dead → unlink and let caller bind.
     - any other OSError     → unknown state (EACCES, ENOTSOCK, not-a-socket) →
                               do NOT unlink, fail loud (exit 1).
+
+    TOCTOU guard: two servers probing the same STALE socket both see
+    ECONNREFUSED; if both blindly unlink+bind, the second unlinks the first's
+    now-LIVE socket and orphans it (last-writer-wins reopens). So we capture the
+    file's inode identity BEFORE probing and only unlink if the path STILL refers
+    to that exact inode. If it changed under us (someone rebound), we re-probe;
+    the loop converges (the winner answers and we stand down).
     """
-    if not sock_path.exists():
-        return
-    probe = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
-    try:
-        probe.connect(str(sock_path))
-    except (ConnectionRefusedError, FileNotFoundError):
-        sock_path.unlink(missing_ok=True)
-        return
-    except OSError as e:
-        print(
-            f"kitchen channel-server: refusing to bind {sock_path}: unexpected "
-            f"error probing existing socket ({e!r}); leaving it untouched.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    else:
-        print(
-            f"kitchen channel-server: {sock_path} already has a live owner; "
-            f"standing down.",
-            file=sys.stderr,
-        )
-        raise SystemExit(0)
-    finally:
-        probe.close()
+    for _ in range(_max_probes):
+        try:
+            before = sock_path.stat()
+        except FileNotFoundError:
+            return  # nothing there → cold start, let caller bind
+        probe = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+        try:
+            probe.connect(str(sock_path))
+        except (ConnectionRefusedError, FileNotFoundError):
+            # Stale candidate — but only unlink if it's STILL the same inode we
+            # just probed. If it changed, a peer rebound a live socket here; do
+            # NOT unlink (that would orphan it) → re-probe.
+            try:
+                now = sock_path.stat()
+            except FileNotFoundError:
+                return  # peer cleared it for us → bind
+            if (now.st_ino, now.st_dev) != (before.st_ino, before.st_dev):
+                continue
+            sock_path.unlink(missing_ok=True)
+            return
+        except OSError as e:
+            print(
+                f"kitchen channel-server: refusing to bind {sock_path}: unexpected "
+                f"error probing existing socket ({e!r}); leaving it untouched.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        else:
+            # We don't name the owner pid: peer-pid lookup over AF_UNIX is not
+            # portable (Linux SO_PEERCRED vs macOS LOCAL_PEERPID), and §Design.2
+            # explicitly says not to rely on it — the path identifies the socket.
+            print(
+                f"kitchen channel-server: {sock_path} already has a live owner; "
+                f"standing down.",
+                file=sys.stderr,
+            )
+            raise SystemExit(0)
+        finally:
+            probe.close()
+    # The path kept getting rebound under us across every probe — rather than
+    # risk orphaning whoever currently owns it, stand down cleanly.
+    print(
+        f"kitchen channel-server: {sock_path} kept changing under probe; "
+        f"standing down.",
+        file=sys.stderr,
+    )
+    raise SystemExit(0)
 
 
 async def run_server(kitchen: str):
