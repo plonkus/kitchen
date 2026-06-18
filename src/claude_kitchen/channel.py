@@ -2,6 +2,7 @@
 import asyncio
 import json
 import socket as sock_mod
+import sys
 from pathlib import Path
 
 from mcp.server.lowlevel import NotificationOptions, Server
@@ -27,6 +28,43 @@ async def handle_connection(reader: asyncio.StreamReader, writer, notify):
             writer.close()
 
 
+def _claim_socket(sock_path: Path):
+    """Prepare sock_path for binding, refusing to stomp a live owner.
+
+    Connect-probes an existing socket and branches on the EXACT outcome —
+    "any connect failure == stale" is the bug we are fixing:
+    - connect succeeds      → a live listener owns it → stand down (exit 0),
+                              do NOT unlink/bind (idempotent /mcp reconnects).
+    - ECONNREFUSED / ENOENT → genuinely stale/dead → unlink and let caller bind.
+    - any other OSError     → unknown state (EACCES, ENOTSOCK, not-a-socket) →
+                              do NOT unlink, fail loud (exit 1).
+    """
+    if not sock_path.exists():
+        return
+    probe = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+    try:
+        probe.connect(str(sock_path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        sock_path.unlink(missing_ok=True)
+        return
+    except OSError as e:
+        print(
+            f"kitchen channel-server: refusing to bind {sock_path}: unexpected "
+            f"error probing existing socket ({e!r}); leaving it untouched.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    else:
+        print(
+            f"kitchen channel-server: {sock_path} already has a live owner; "
+            f"standing down.",
+            file=sys.stderr,
+        )
+        raise SystemExit(0)
+    finally:
+        probe.close()
+
+
 async def run_server(kitchen: str):
     """Run the MCP channel server with a unix socket listener."""
     from claude_kitchen.state import state_dir
@@ -34,7 +72,7 @@ async def run_server(kitchen: str):
     base = state_dir(kitchen)
     base.mkdir(parents=True, exist_ok=True)
     sock_path = base / SOCK_NAME
-    sock_path.unlink(missing_ok=True)
+    _claim_socket(sock_path)
 
     server = Server("kitchen")
     init_options = server.create_initialization_options(
