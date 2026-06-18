@@ -1166,6 +1166,19 @@ def cmd_setup(args):
         print(f'     "statusLine": {richer}')
         print()
 
+    # --- stray root-level .mcp.json (auto-remove; §Design.4 landmine) ---
+    # A `.mcp.json` at the state root is an ancestor of every cook cwd, so a
+    # cook walking up the tree auto-discovers it and spawns a rogue
+    # channel-server (cooks launch with --dangerously-skip-permissions, so the
+    # MCP approval gate doesn't protect them). Layer 1 stops it being recreated;
+    # this removes a stale one left from before the fix. Only the literal
+    # state-root `.mcp.json` is touched — per-kitchen `kitchen-mcp.json` configs
+    # are left alone.
+    root_mcp = Path.home() / ".claude-kitchen" / ".mcp.json"
+    if root_mcp.exists():
+        root_mcp.unlink()
+        print(f"✅ Removed stray root-level MCP config: {root_mcp}")
+
     # --- legacy 'projects' kitchen collision ---
     legacy = Path.home() / ".claude-kitchen" / "projects" / "kitchen.json"
     if legacy.exists():

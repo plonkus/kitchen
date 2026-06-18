@@ -1395,6 +1395,82 @@ class TestCmdSetupStatusline:
         assert "kitchen statusline-segment" in body
 
 
+class TestCmdSetupRootMcp:
+    """`kitchen setup` auto-removes a stray state-root .mcp.json (§Design.4)."""
+
+    def _green_home(self, tmp_path):
+        # Minimal env so cmd_setup reaches the root-.mcp.json check and exits 0.
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text(json.dumps({
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "kitchen hook"}]}],
+                "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "kitchen hook"}]}],
+            }
+        }))
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text(
+            '[features]\nhooks = true\nnotify = ["kitchen", "hook-codex"]\n'
+        )
+        (tmp_path / ".claude" / "plugins" / "cache" / "superpowers-marketplace" / "superpowers").mkdir(parents=True)
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_removes_stray_root_mcp_json(self, mock_run, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._green_home(tmp_path)
+        root_mcp = tmp_path / ".claude-kitchen" / ".mcp.json"
+        root_mcp.parent.mkdir(parents=True)
+        root_mcp.write_text('{"mcpServers": {}}')
+
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())
+
+        assert not root_mcp.exists(), "stray root .mcp.json must be removed"
+        out = capsys.readouterr().out
+        assert "Removed stray root-level MCP config" in out
+        assert str(root_mcp) in out
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_noop_when_absent_idempotent(self, mock_run, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._green_home(tmp_path)
+        (tmp_path / ".claude-kitchen").mkdir(parents=True)
+
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())  # no .mcp.json present
+        cmd_setup(MagicMock())  # second run — still a clean no-op
+        out = capsys.readouterr().out
+        assert "Removed stray root-level MCP config" not in out
+        assert not (tmp_path / ".claude-kitchen" / ".mcp.json").exists()
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_does_not_touch_per_kitchen_config(self, mock_run, monkeypatch, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._green_home(tmp_path)
+        root = tmp_path / ".claude-kitchen"
+        root.mkdir(parents=True)
+        (root / ".mcp.json").write_text("{}")
+        # files that must survive: root-level kitchen-mcp.json and a per-kitchen
+        # config under a kitchen dir
+        root_kitchen_cfg = root / "kitchen-mcp.json"
+        root_kitchen_cfg.write_text("{}")
+        per_kitchen = root / "risotto"
+        per_kitchen.mkdir()
+        per_kitchen_cfg = per_kitchen / "kitchen-mcp.json"
+        per_kitchen_cfg.write_text("{}")
+
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())
+
+        assert not (root / ".mcp.json").exists(), "root .mcp.json removed"
+        assert root_kitchen_cfg.exists(), "root kitchen-mcp.json must be untouched"
+        assert per_kitchen_cfg.exists(), "per-kitchen config must be untouched"
+
+
 class TestCmdStatuslineSegment:
     """`kitchen statusline-segment` soft-resolves the current kitchen, prints
     one line, and is silent when outside any kitchen.
