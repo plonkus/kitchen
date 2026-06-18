@@ -713,6 +713,41 @@ class TestCmdOpen:
         assert call_args[0][1] == tmp_path
         assert call_args[0][3] == Path("/tmp/risotto")
 
+    @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
+    @patch("claude_kitchen.cli.project_slug", return_value="widget")
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.create_worktree", return_value=Path("/tmp/risotto"))
+    @patch("claude_kitchen.cli.resolve_project")
+    def test_open_self_heals_legacy_mcp_config(self, mock_resolve, mock_wt, mock_state, mock_tmux, mock_has, mock_spawn, mock_slug, mock_ns, tmp_path, monkeypatch):
+        # A kitchen opened before the rename has a stale, cook-discoverable
+        # base/.mcp.json. Opening (and resuming — the writer/unlink runs
+        # unconditionally before the resume branch) must delete it.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_resolve.return_value = Path("/tmp/myproject")
+        mock_state.return_value = tmp_path
+        mock_tmux.return_value = MagicMock(returncode=0)
+        legacy = tmp_path / ".mcp.json"
+        legacy.write_text('{"mcpServers": {}}')
+        # pre-existing kitchen.json => resuming=True path
+        (tmp_path / "kitchen.json").write_text(
+            json.dumps({"source": "/tmp/myproject", "slug": "widget"})
+        )
+
+        args = MagicMock()
+        args.name = "risotto"
+        args.project = "/tmp/myproject"
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = False
+
+        cmd_open(args)
+
+        assert not legacy.exists(), "legacy .mcp.json must be self-healed on open/resume"
+        assert (tmp_path / "kitchen-mcp.json").exists()
+
 
 class TestSweepCooks:
     def _populate(self, base, names):
@@ -1166,14 +1201,18 @@ class TestCmdClose:
         cooks = tmp_path / "cooks"
         cooks.mkdir()
         (cooks / "eng.json").write_text("{}")
-        # renamed MCP config must be cleaned up on close (no leftover under base/)
+        # both the renamed config AND any legacy .mcp.json must be cleaned up
+        # on close (no cook-discoverable leftover under base/)
         mcp_config = tmp_path / "kitchen-mcp.json"
         mcp_config.write_text("{}")
+        legacy_config = tmp_path / ".mcp.json"
+        legacy_config.write_text("{}")
         args = MagicMock()
         args.kitchen = "risotto"
         cmd_close(args)
         assert not cooks.exists()
         assert not mcp_config.exists()
+        assert not legacy_config.exists()
 
 
 class TestCmdCloseWipesNotesNotWiki:
