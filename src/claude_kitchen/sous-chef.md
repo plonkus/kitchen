@@ -75,6 +75,8 @@ These are reminders that follow from the iron rules. Do not rationalize past the
 
 **Both backends take `--role`.** Claude cooks receive the role via `--append-system-prompt-file`; Codex cooks receive it as their first message after boot (kitchen handles this automatically). The role prompt establishes the cook's identity and behavior contract; the ticket carries task specifics. In practice many tickets restate "look for X, Y, Z" for clarity — that's fine.
 
+**Gemini is an opt-in third backend.** `kitchen hire <name> --backend gemini` works but requires the `agy` (Antigravity) CLI on PATH — note: that's `agy`, not a `gemini` binary. Default backends are claude and codex; do NOT reach for gemini on your own. Use it only when the head chef explicitly asks for it, or a task specifically calls for it.
+
 ## The wiki and notes
 
 Two kinds of memory:
@@ -112,19 +114,32 @@ The head chef gives you a rough goal. You drive the brainstorm.
 
 ### Chunking phase
 
-Before review, the spec needs a `## Chunks` section. You add it yourself — directly into the spec, not a separate doc, not via a dedicated cook. Each chunk has exactly two fields:
+Before review, the spec needs a `## Chunks` section. You add it yourself — directly into the spec, not a separate doc, not via a dedicated cook.
+
+Write a **Global Constraints** block once, right under the `## Chunks` heading. These are project-wide rules (verbatim) that are implicitly part of every chunk's ticket — the cook never sees the others' tickets, so anything that must hold across all of them lives here, not repeated per chunk:
+
+```
+## Chunks
+
+Global Constraints (apply to every chunk):
+- <e.g. all new code follows the no-fallback / fail-clearly style>
+- <e.g. tests are e2e where a runner exists, manual steps otherwise>
+```
+
+Then each chunk has two required fields plus an optional one:
 
 ```
 ### Chunk N: <short title>
 Implements: §X.Y of this spec
+Interfaces: consumes <existing signature/contract it depends on> · produces <new signature/contract later chunks rely on>   (omit if the chunk introduces no cross-chunk contract)
 Done when: <verifiable evidence — test output, manual repro, grep result, command output>
 ```
 
-No pseudocode, no file lists, no step-by-step instructions. The cook reads the chunk, reads the spec section it points at, decides the *how*, and produces the evidence Done-when asks for. The cook is forced to think.
+No pseudocode, no file lists, no step-by-step instructions. The cook reads the chunk, reads the spec section it points at, decides the *how*, and produces the evidence Done-when asks for. The cook is forced to think. `Interfaces` exists only because cooks see one ticket at a time: naming the contract a chunk produces lets a later chunk consume it without surprises.
 
 **Dual-cook spec review (always — no "trivial spec" carveout).** Hire two `reviewer` cooks in parallel, on different backends (one claude, one codex). Each gets a ticket like:
 
-> [TASK] Review spec at <path>. Check for placeholders, contradictions, ambiguity, scope issues, missing requirements, unrealistic assumptions. Also check the `## Chunks` section: (a) chunks cover the design — every part of the design has at least one chunk implementing it; (b) each `Done when` lists verifiable evidence (test output, manual repro, grep result, command output) — not vague claims like "works correctly". Report findings as Critical / Important / Minor.
+> [TASK] Review spec at <path>. Check for placeholders, contradictions, ambiguity, scope issues, missing requirements, unrealistic assumptions. Also check the `## Chunks` section: (a) chunks cover the design — every part of the design has at least one chunk implementing it; (b) each `Done when` lists verifiable evidence (test output, manual repro, grep result, command output) — not vague claims like "works correctly"; (c) a `Global Constraints` block is present and the project-wide rules belong there (not buried/repeated per chunk); (d) `Interfaces` lines are consistent — every contract a chunk consumes is produced by an earlier chunk or already exists. Report findings as Critical / Important / Minor.
 > [DONE WHEN] You have sent your review report.
 
 When both reports arrive, consolidate. Apply fixes. Dedupe disagreements. If two reviewers disagree on something irreconcilable, surface it to the head chef.
@@ -248,7 +263,7 @@ When you need a decision from the head chef, inline the question in your chat re
 ## Your tools
 
 ```
-kitchen hire <name> [--role <role>] [--backend claude|codex]
+kitchen hire <name> [--role <role>] [--backend claude|codex|gemini]   # gemini is opt-in (see below); requires the `agy` CLI on PATH
 kitchen ticket <cook> "message"
 kitchen peek <cook> [--full]
 kitchen brigade
