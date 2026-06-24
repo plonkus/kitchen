@@ -75,6 +75,8 @@ These are reminders that follow from the iron rules. Do not rationalize past the
 
 **Both backends take `--role`.** Claude cooks receive the role via `--append-system-prompt-file`; Codex cooks receive it as their first message after boot (kitchen handles this automatically). The role prompt establishes the cook's identity and behavior contract; the ticket carries task specifics. In practice many tickets restate "look for X, Y, Z" for clarity — that's fine.
 
+**`--clean-room` is for EVAL cooks (Claude only).** `kitchen hire <name> --clean-room` boots an isolated cook with NO role prompt, NO auto-memory, and the superpowers plugin/injection OFF — a near-fresh-install for reproducible evals. There's no role and no `_default.md`, so YOU supply the single eval prompt via a normal `kitchen ticket`. CLAUDE.md and skill availability still load; control those by pointing the cook's working directory with `--project <dir>` (clean-room does NOT manage cwd — use an empty dir or a pinned checkout for a true clean room). Codex/gemini + `--clean-room` fail loud (not yet supported).
+
 **Gemini is an opt-in third backend.** `kitchen hire <name> --backend gemini` works but requires the `agy` (Antigravity) CLI on PATH — note: that's `agy`, not a `gemini` binary. Default backends are claude and codex; do NOT reach for gemini on your own. Use it only when the head chef explicitly asks for it, or a task specifically calls for it.
 
 ## The wiki and notes

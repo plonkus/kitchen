@@ -1,4 +1,5 @@
 """Tests for spawn logic."""
+import json
 import os
 import shlex
 import subprocess
@@ -119,23 +120,44 @@ class TestBuildShellCmd:
         assert "KITCHEN_" not in cmd
 
 
-class TestNoMemory:
-    def test_no_memory_sets_disable_env_on_claude(self):
-        """--no-memory wires CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 as a temp env
-        assignment on the exec'd claude (verified to suppress the MEMORY.md
-        injection while keeping subscription auth + hooks)."""
+def _claude_inner_tokens(cmd: str) -> list[str]:
+    """Tokens of the `bash -lc '<inner>'` payload for a claude cook, parsed
+    through shell rules — same approach as the codex argv helper, so assertions
+    survive the shell-quoting layer instead of matching raw substrings."""
+    outer = shlex.split(cmd)
+    assert outer[:2] == ["bash", "-lc"], f"unexpected outer shape: {outer[:2]}"
+    return shlex.split(outer[2])
+
+
+class TestCleanRoom:
+    def test_clean_room_disables_memory_and_superpowers_no_role(self):
+        """--clean-room wires the auto-memory env knob (before exec) AND the
+        superpowers-disabling --settings (after exec), and passes NO role
+        prompt — the three exclusions verified to give MEM=NO + SP=NO while
+        subscription auth + the kitchen Stop hook stay intact."""
         cmd = build_shell_cmd(
             backend="claude", name="eval1", session="ck-r",
-            status_dir="/tmp/state", no_memory=True,
+            status_dir="/tmp/state", clean_room=True,
         )
-        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 exec claude" in cmd
+        toks = _claude_inner_tokens(cmd)
+        # auto-memory env var is a temp assignment immediately before `exec`
+        ei = toks.index("exec")
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" in toks[:ei]
+        # superpowers plugin disabled via a --settings JSON arg (parsed, not substring)
+        si = toks.index("--settings")
+        settings = json.loads(toks[si + 1])
+        assert settings["enabledPlugins"]["superpowers@superpowers-marketplace"] is False
+        # clean-room cooks boot bare — no role prompt
+        assert "--append-system-prompt-file" not in toks
 
-    def test_default_omits_disable_env(self):
+    def test_default_is_not_clean_room(self):
         cmd = build_shell_cmd(
             backend="claude", name="eng", session="ck-r",
             status_dir="/tmp/state",
         )
-        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in cmd
+        toks = _claude_inner_tokens(cmd)
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" not in toks
+        assert "--settings" not in toks
 
 
 class TestRoleInjection:

@@ -519,17 +519,22 @@ def cmd_hire(args):
     cwd = args.project or os.getcwd()
     cwd = str(resolve_project(cwd))
 
-    no_memory = getattr(args, "no_memory", False)
-    # v1 isolation is Claude-only. Codex/gemini auto-memory suppression is a
+    clean_room = getattr(args, "clean_room", False)
+    # Clean-room isolation is Claude-only. Codex/gemini isolation is a
     # documented follow-up — fail clearly rather than silently no-op.
-    if no_memory and backend != "claude":
-        sys.exit(f"--no-memory is only supported for Claude cooks, not '{backend}' (not yet implemented).")
+    if clean_room and backend != "claude":
+        sys.exit(f"--clean-room is only supported for Claude cooks, not '{backend}' (not yet implemented).")
 
-    role = getattr(args, "role", None) or "_default"
-    role_path = _PKG_DIR / "roles" / f"{role}.md"
-    if not role_path.exists():
-        valid = sorted(p.stem for p in (_PKG_DIR / "roles").glob("*.md"))
-        sys.exit(f"Unknown role '{role}'. Valid roles: {', '.join(valid)}")
+    # Clean-room cooks boot bare — NO role prompt. The sous sends the single
+    # eval prompt via a ticket. Otherwise resolve the role file as usual.
+    if clean_room:
+        role_path = None
+    else:
+        role = getattr(args, "role", None) or "_default"
+        role_path = _PKG_DIR / "roles" / f"{role}.md"
+        if not role_path.exists():
+            valid = sorted(p.stem for p in (_PKG_DIR / "roles").glob("*.md"))
+            sys.exit(f"Unknown role '{role}'. Valid roles: {', '.join(valid)}")
 
     # Gemini-only fail-fast: agy must be on PATH before we write a booting
     # status or spawn the tmux window. Gated to backend=="gemini" so claude,
@@ -553,7 +558,7 @@ def cmd_hire(args):
     ok = spawn_window(
         session=session, name=name, cwd=cwd,
         backend=backend, status_dir=str(base),
-        effort=effort, role_path=role_to_pass, no_memory=no_memory,
+        effort=effort, role_path=role_to_pass, clean_room=clean_room,
     )
     if not ok:
         # update_status preserves durable fields (the booting write above
@@ -1257,7 +1262,7 @@ def main():
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
-    p_hire.add_argument("--no-memory", action="store_true", help="Disable auto-memory for this cook (isolated/eval hire; Claude only)")
+    p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude only): no auto-memory, no superpowers plugin/injection, no role prompt. Sous supplies the one eval prompt via a ticket.")
 
     p_ticket = sub.add_parser("ticket", help="Send a ticket to a cook")
     p_ticket.add_argument("cook", help="Cook name")

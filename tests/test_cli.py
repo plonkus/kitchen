@@ -632,7 +632,7 @@ class TestStatusPreservationAcrossNonStopWriters:
         args.project = None
         args.role = None
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         with pytest.raises(SystemExit):
             cmd_hire(args)
         data = json.loads((tmp_path / "cooks" / "eng.json").read_text())
@@ -1070,7 +1070,7 @@ class TestCmdHireFailures:
         args.project = None
         args.role = None
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
             with pytest.raises(SystemExit, match="didn't show prompt"):
                 cmd_hire(args)
@@ -1095,7 +1095,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "ghost"
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         with pytest.raises(SystemExit, match="Unknown role.*ghost"):
             cmd_hire(args)
 
@@ -1115,7 +1115,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "reviewer"
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
         assert kwargs["role_path"] is not None
@@ -1139,7 +1139,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "reviewer"
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         cmd_hire(args)
         # Codex doesn't get a --append-system-prompt-file flag
         assert mock_spawn.call_args.kwargs["role_path"] is None
@@ -1170,7 +1170,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = None
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         cmd_hire(args)
         mock_send.assert_called_once()
         assert "_default — generic cook" in mock_send.call_args.args[2]
@@ -1193,9 +1193,58 @@ class TestCmdHireRole:
         args.project = None
         args.role = "eng"
         args.effort = None
-        args.no_memory = False
+        args.clean_room = False
         cmd_hire(args)
         mock_send.assert_not_called()
+
+
+class TestCmdHireCleanRoom:
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    def test_clean_room_forwarded_and_no_role(
+        self, mock_rp, mock_rk, mock_state, mock_wait, mock_spawn, tmp_path,
+    ):
+        """--clean-room must reach spawn_window as clean_room=True, and the cook
+        boots bare — no role file resolved or passed."""
+        mock_state.return_value = tmp_path
+        args = MagicMock()
+        args.kitchen = "risotto"
+        args.name = "eval1"
+        args.backend = "claude"
+        args.project = None
+        args.role = None
+        args.effort = None
+        args.clean_room = True
+        cmd_hire(args)
+        kwargs = mock_spawn.call_args.kwargs
+        assert kwargs["clean_room"] is True
+        assert kwargs["role_path"] is None
+
+    @pytest.mark.parametrize("backend", ["codex", "gemini"])
+    @patch("claude_kitchen.cli.spawn_window")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    def test_clean_room_non_claude_fails_loud(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, backend, tmp_path,
+    ):
+        """Clean-room is Claude-only; codex AND gemini must fail loud before
+        spawning anything."""
+        mock_state.return_value = tmp_path
+        args = MagicMock()
+        args.kitchen = "risotto"
+        args.name = "x"
+        args.backend = backend
+        args.project = None
+        args.role = None
+        args.effort = None
+        args.clean_room = True
+        with pytest.raises(SystemExit, match="only supported for Claude"):
+            cmd_hire(args)
+        mock_spawn.assert_not_called()
 
 
 class TestCmdClose:
