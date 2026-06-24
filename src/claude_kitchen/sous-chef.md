@@ -75,7 +75,14 @@ These are reminders that follow from the iron rules. Do not rationalize past the
 
 **Both backends take `--role`.** Claude cooks receive the role via `--append-system-prompt-file`; Codex cooks receive it as their first message after boot (kitchen handles this automatically). The role prompt establishes the cook's identity and behavior contract; the ticket carries task specifics. In practice many tickets restate "look for X, Y, Z" for clarity — that's fine.
 
-**`--clean-room` is for EVAL cooks (Claude only).** `kitchen hire <name> --clean-room` boots an isolated cook with NO role prompt, NO auto-memory, and the superpowers plugin/injection OFF — a near-fresh-install for reproducible evals. There's no role and no `_default.md`, so YOU supply the single eval prompt via a normal `kitchen ticket`. CLAUDE.md and skill availability still load; control those by pointing the cook's working directory with `--project <dir>` (clean-room does NOT manage cwd — use an empty dir or a pinned checkout for a true clean room). Codex/gemini + `--clean-room` fail loud (not yet supported).
+**`--clean-room` is for EVAL cooks (Claude only).** `kitchen hire <name> --clean-room` boots a near-fresh-install cook for reproducible evals. Know exactly what it does and doesn't:
+
+- **Disables:** auto-memory (no `MEMORY.md`/memory injection), the superpowers plugin (no "You have superpowers" startup injection), and the role prompt (no `_default.md`, no role at all).
+- **Does NOT touch:** `CLAUDE.md` and any other files on disk — the cook can still read them and CLAUDE.md is still auto-discovered from cwd — and skill *availability* (skills still resolve; only superpowers' startup injection is gone). So clean-room is not hermetic on its own.
+- **cwd is your lever** for that project-local context: CLAUDE.md discovery walks up from cwd and auto-memory is keyed by cwd's project path, so hire with `--project <dir>` pointed at an **empty dir or a pinned checkout** for a true clean room. Clean-room does NOT manage cwd.
+- **No role = YOU send the prompt.** Because there's no role prompt, the cook boots idle; deliver the single eval/task prompt yourself via a normal `kitchen ticket`.
+
+Example: `kitchen hire eval1 --clean-room --project /abs/eval-dir`, then `kitchen ticket eval1 "<the eval prompt>"`. Codex/gemini + `--clean-room` fail loud (not yet supported).
 
 **Gemini is an opt-in third backend.** `kitchen hire <name> --backend gemini` works but requires the `agy` (Antigravity) CLI on PATH — note: that's `agy`, not a `gemini` binary. Default backends are claude and codex; do NOT reach for gemini on your own. Use it only when the head chef explicitly asks for it, or a task specifically calls for it.
 
