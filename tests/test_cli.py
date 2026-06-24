@@ -632,6 +632,7 @@ class TestStatusPreservationAcrossNonStopWriters:
         args.project = None
         args.role = None
         args.effort = None
+        args.no_memory = False
         with pytest.raises(SystemExit):
             cmd_hire(args)
         data = json.loads((tmp_path / "cooks" / "eng.json").read_text())
@@ -1069,6 +1070,7 @@ class TestCmdHireFailures:
         args.project = None
         args.role = None
         args.effort = None
+        args.no_memory = False
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
             with pytest.raises(SystemExit, match="didn't show prompt"):
                 cmd_hire(args)
@@ -1093,6 +1095,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "ghost"
         args.effort = None
+        args.no_memory = False
         with pytest.raises(SystemExit, match="Unknown role.*ghost"):
             cmd_hire(args)
 
@@ -1112,6 +1115,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "reviewer"
         args.effort = None
+        args.no_memory = False
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
         assert kwargs["role_path"] is not None
@@ -1135,6 +1139,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "reviewer"
         args.effort = None
+        args.no_memory = False
         cmd_hire(args)
         # Codex doesn't get a --append-system-prompt-file flag
         assert mock_spawn.call_args.kwargs["role_path"] is None
@@ -1165,6 +1170,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = None
         args.effort = None
+        args.no_memory = False
         cmd_hire(args)
         mock_send.assert_called_once()
         assert "_default — generic cook" in mock_send.call_args.args[2]
@@ -1187,6 +1193,7 @@ class TestCmdHireRole:
         args.project = None
         args.role = "eng"
         args.effort = None
+        args.no_memory = False
         cmd_hire(args)
         mock_send.assert_not_called()
 

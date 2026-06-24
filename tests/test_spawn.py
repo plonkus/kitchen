@@ -119,6 +119,25 @@ class TestBuildShellCmd:
         assert "KITCHEN_" not in cmd
 
 
+class TestNoMemory:
+    def test_no_memory_sets_disable_env_on_claude(self):
+        """--no-memory wires CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 as a temp env
+        assignment on the exec'd claude (verified to suppress the MEMORY.md
+        injection while keeping subscription auth + hooks)."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eval1", session="ck-r",
+            status_dir="/tmp/state", no_memory=True,
+        )
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 exec claude" in cmd
+
+    def test_default_omits_disable_env(self):
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in cmd
+
+
 class TestRoleInjection:
     def test_claude_role_passes_file_path(self, tmp_path):
         role_file = tmp_path / "roles" / "eng.md"

@@ -83,7 +83,8 @@ _GEMINI_ROLE_FOOTER = (
 
 
 def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
-                    effort: str = None, role_path: Path = None) -> str:
+                    effort: str = None, role_path: Path = None,
+                    no_memory: bool = False) -> str:
     q = shlex.quote
     parts = [
         f"AGENT_NAME={q(name)}",
@@ -97,10 +98,15 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # Pass the file path, not the contents — the file form avoids
         # shell-quoting fragility for multi-line role prompts.
         role_flag = f" --append-system-prompt-file {q(str(role_path))}" if role_path else ""
+        # Isolated/eval cooks (--no-memory): disable auto-memory via env var so no
+        # MEMORY.md / memory-file <system-reminder> is injected. Rides the existing
+        # `export` line as a temp assignment on the exec'd claude — subscription
+        # auth, the kitchen Stop hook, CLAUDE.md, and skills are all untouched.
+        mem = "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 " if no_memory else ""
         # Block AskUserQuestion: it renders an interactive picker in the cook's
         # TUI that fires no hook and blocks forever — the sous never learns of
         # it. Cooks surface questions via NEEDS_CONTEXT instead (see role prompts).
-        return f'bash -lc {q(f"{env}; exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{role_flag}")}'
+        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{role_flag}")}'
     elif backend == "codex":
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
@@ -129,10 +135,11 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
 
 
 def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: str,
-                 effort: str = None, role_path: Path = None) -> bool:
+                 effort: str = None, role_path: Path = None,
+                 no_memory: bool = False) -> bool:
     """Spawn a new tmux window with an agent. Returns True on success."""
     cmd = build_shell_cmd(backend, name, session, status_dir,
-                          effort=effort, role_path=role_path)
+                          effort=effort, role_path=role_path, no_memory=no_memory)
 
     if has_session(session):
         result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd)

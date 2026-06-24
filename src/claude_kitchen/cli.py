@@ -519,6 +519,12 @@ def cmd_hire(args):
     cwd = args.project or os.getcwd()
     cwd = str(resolve_project(cwd))
 
+    no_memory = getattr(args, "no_memory", False)
+    # v1 isolation is Claude-only. Codex/gemini auto-memory suppression is a
+    # documented follow-up — fail clearly rather than silently no-op.
+    if no_memory and backend != "claude":
+        sys.exit(f"--no-memory is only supported for Claude cooks, not '{backend}' (not yet implemented).")
+
     role = getattr(args, "role", None) or "_default"
     role_path = _PKG_DIR / "roles" / f"{role}.md"
     if not role_path.exists():
@@ -547,7 +553,7 @@ def cmd_hire(args):
     ok = spawn_window(
         session=session, name=name, cwd=cwd,
         backend=backend, status_dir=str(base),
-        effort=effort, role_path=role_to_pass,
+        effort=effort, role_path=role_to_pass, no_memory=no_memory,
     )
     if not ok:
         # update_status preserves durable fields (the booting write above
@@ -1251,6 +1257,7 @@ def main():
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
+    p_hire.add_argument("--no-memory", action="store_true", help="Disable auto-memory for this cook (isolated/eval hire; Claude only)")
 
     p_ticket = sub.add_parser("ticket", help="Send a ticket to a cook")
     p_ticket.add_argument("cook", help="Cook name")
