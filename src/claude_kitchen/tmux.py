@@ -227,7 +227,21 @@ def _cursor_col(session: str, window: str) -> int:
     (and the cursor) where it was. So a return to the pre-paste empty column is
     POSITIVE proof the input was accepted, not merely that a row repainted/
     wrapped/expanded a "[Pasted N]" stub. Routed through the tmux() wrapper so
-    the per-call TIMEOUT applies. Returns -1 if the column can't be read."""
+    the per-call TIMEOUT applies. Returns -1 if the column can't be read.
+
+    Soundness of the column-only accept signal (cursor_x == empty_col ⟺ composer
+    empty ⟺ accepted): a NON-EMPTY payload always parks the cursor at column
+    >= empty_col + 1 — content occupies at least one column past the prompt, and
+    a wrapped continuation line lands no lower than that. Verified empirically on
+    real codex AND claude cooks across both 80-col wrap boundaries and short
+    multi-line tails: the cursor floor for any content is empty_col+1; the wrap
+    jumps straight from the right edge to empty_col+1, never onto empty_col. The
+    one way to get cursor_x == empty_col WITH text is a trailing newline (empty
+    final row) — and send_keys rstrips those before pasting. So a column
+    collision with a still-present payload (a residual false-positive, or a
+    false-"did not land") does not occur in practice; if it ever did on some
+    exotic backend/width, the landed precondition fails LOUD (raise), never a
+    silent loss."""
     target = f"{session}:{window}"
     out = tmux("display-message", "-t", target, "-p", "#{cursor_x}").stdout.strip()
     return int(out) if out.isdigit() else -1

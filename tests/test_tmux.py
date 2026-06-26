@@ -558,3 +558,46 @@ class TestSendKeysVerifiedSubmit:
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", "DOTHING\nsecond line\n\n", backend="codex")
         assert fake.state["pasted_text"] == "DOTHING\nsecond line"
+
+    # ---- cycle-3: pin the two residual column-predicate edges ----
+    # Both proven non-reproducible on real cooks (codex + claude): a NON-EMPTY
+    # payload always parks the cursor at column >= empty_col + 1 (content floor,
+    # verified across both 80-col wrap boundaries and short multi-line tails),
+    # so the cursor never collides with empty_col while text is present. These
+    # two tests pin the boundary so it stays explicit.
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_text_remaining_is_not_false_accepted(self, mock_cap, mock_tmux, mock_sleep):
+        # EDGE 2 (residual false-positive / silent-loss class): a swallowed Enter
+        # leaves the payload in the composer. "Text remains" means the cursor
+        # stays at a CONTENT column — even the closest content can get to empty,
+        # the floor empty_col+1 (a 1-char / wrapped tail) — never AT empty_col.
+        # So the predicate must NOT accept: it keeps Entering and ultimately
+        # raises, never declaring a still-unsent ticket delivered.
+        from claude_kitchen.tmux import send_keys, _SUBMIT_ATTEMPTS
+        floor = _EMPTY_COL + 1  # the lowest column real content ever occupies
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, floor] + [floor] * _SUBMIT_ATTEMPTS)
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="never left the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == _SUBMIT_ATTEMPTS
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_landing_at_empty_col_fails_loud(self, mock_cap, mock_tmux, mock_sleep):
+        # EDGE 1 (landing false-negative): IF a real payload ever landed reading
+        # cursor_x == empty_col (a hypothetical exact wrap-to-empty-col that the
+        # floor invariant says doesn't happen), the landed precondition raises
+        # "did not land" — fail LOUD, send NO Enter. The sous sees the error and
+        # retries; the ticket is never blindly submitted or silently lost.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _EMPTY_COL])  # post-settle cursor still at empty col
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="did not land in the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 0
