@@ -97,6 +97,14 @@ _BUSY_MARKERS = {
     "gemini": r"esc to (cancel|interrupt)",
 }
 
+# Backends whose busy marker is NOT shown for the whole turn. This Claude build
+# renders the spinner only at turn start, then streams text under a footer
+# byte-identical to idle — so a marker-miss is inconclusive and pane_busy falls
+# back to change-detection. Every OTHER backend shows a persistent busy footer
+# (codex "esc to interrupt", gemini "esc to cancel"), so for them a marker-miss
+# is authoritatively idle — no fallback, no sleep.
+_NO_STREAMING_MARKER = {"claude"}
+
 
 def _pane_tail(session: str, window: str) -> list[str]:
     """Last 40 non-blank lines of the pane — the busy/idle comparison surface
@@ -105,27 +113,47 @@ def _pane_tail(session: str, window: str) -> list[str]:
     return [ln for ln in content.splitlines() if ln.strip()][-40:]
 
 
+def _busy_marker_hit(tail: list[str], backend: str) -> bool:
+    """True if `backend`'s busy marker matches any of the last ~6 non-blank tail
+    lines. Raises ValueError on an unknown backend (e.g. a mutated status file)
+    so the bad value is diagnosable rather than a raw KeyError."""
+    try:
+        pattern = _BUSY_MARKERS[backend]
+    except KeyError:
+        raise ValueError(f"pane_busy: unknown backend {backend!r}")
+    return any(re.search(pattern, ln, re.IGNORECASE) for ln in tail[-6:])
+
+
 def pane_busy(session: str, window: str, backend: str, settle: float = 0.35) -> bool:
     """True if the cook is mid-turn, False if idle at the prompt (or empty pane).
 
-    Two OR'd signals — a genuinely idle pane has neither:
-      1. the backend's busy marker is present in the last ~6 non-blank tail lines
-         (codex's persistent "esc to interrupt" footer; claude's start-of-turn
-         spinner). Instant, no sleep — covers codex for its whole turn.
-      2. the pane is actively REPAINTING (two tails captured ~`settle` apart
-         differ). This is required for a claude cook STREAMING a long reply:
-         this Claude build shows the spinner only at turn start, and during text
-         streaming the footer is byte-identical to idle — the only live signal is
-         the growing transcript. Verified: idle panes are stable across `settle`,
-         so this does not false-positive.
+    Contract: `True` means the backend's busy MARKER is present, OR — for a
+    backend with no persistent streaming marker (claude) — the pane is actively
+    REPAINTING. So `True` is NOT always "the backend emitted a busy footer": a
+    streaming claude reports busy purely from its growing transcript. A consumer
+    (B1) must not assume a footer was seen.
 
-    `backend` is REQUIRED — markers are backend-specific and tmux.py has no
-    state-dir context to infer it; callers pass it (send_keys already has
-    `backend`; peek reads it from the cook's state file)."""
+    Resolution:
+      1. busy marker in the last ~6 non-blank tail lines → True immediately, no
+         sleep (covers codex/gemini for the whole turn, claude at turn start).
+      2. marker-miss:
+         - markerless backend (claude): capture a second tail ~`settle` later;
+           busy iff it differs from the first. Required because a streaming
+           claude's footer is byte-identical to idle — the only live signal is
+           the growing transcript. Idle panes are stable across `settle`
+           (verified), so this does not false-positive.
+         - any other backend: False, with NO extra sleep — its busy footer is
+           persistent, so a marker-miss is authoritatively idle.
+
+    `backend` is REQUIRED (markers are backend-specific and tmux.py has no
+    state-dir context to infer it) — callers pass it (send_keys already has
+    `backend`; peek reads it from the cook's state file). Unknown backend raises
+    ValueError."""
     first = _pane_tail(session, window)
-    if any(re.search(_BUSY_MARKERS[backend], ln, re.IGNORECASE)
-           for ln in first[-6:]):
+    if _busy_marker_hit(first, backend):
         return True
+    if backend not in _NO_STREAMING_MARKER:
+        return False
     time.sleep(settle)
     return _pane_tail(session, window) != first
 
