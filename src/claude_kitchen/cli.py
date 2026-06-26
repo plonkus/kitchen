@@ -11,7 +11,7 @@ from pathlib import Path
 
 from claude_kitchen.tmux import (
     mc, bare, list_sessions, list_windows, has_session,
-    capture_pane, send_keys, tmux, wait_for_prompt,
+    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy,
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
@@ -594,11 +594,18 @@ def cmd_ticket(args):
 def cmd_peek(args):
     kitchen = resolve_kitchen(args.kitchen)
     session = mc(kitchen)
+    base = state_dir(kitchen)
     content = capture_pane(session, args.cook, full=args.full)
     if content:
         print(content)
     else:
         print("(screen is empty)")
+    # Surface live busy/idle from the pane tail. backend comes from the cook's
+    # state file (pane_busy needs it — markers are backend-specific).
+    backend = (read_status(base, args.cook) or {}).get("backend")
+    if backend:
+        state = "busy" if pane_busy(session, args.cook, backend) else "idle"
+        print(f"\n[{args.cook}: {state}]")
 
 
 def cmd_roles(args):

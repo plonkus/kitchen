@@ -2,6 +2,7 @@
 import itertools
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -74,6 +75,59 @@ _PROMPT_MARKERS = {
     "codex": "OpenAI Codex (v",
     "gemini": "? for shortcuts",  # agy TUI footer, present when input is editable
 }
+
+# Busy markers: a regex present in the pane tail while the agent is mid-turn,
+# gone when it's idle at the prompt. Backend-specific and confirmed empirically
+# against real cooks (matched case-insensitively against each non-blank tail
+# line). See notes/brief-chunk1-b3 evidence for the captured pane tails.
+#
+#   claude — the working spinner: a rotating asterisk glyph (U+2722–U+273F, or
+#     "·"/"*") followed by a gerund and a "…" ellipsis, e.g. "✻ Crafting…",
+#     "✶ Fluttering… (1s · ↓ 1 tokens)". This Claude build shows NO "esc to
+#     interrupt" text (verified absent). The ellipsis is what separates the live
+#     spinner from the idle completion line "✻ Churned for 54s" (same glyph, no
+#     "…") — so the ellipsis is required, not just the glyph.
+#   codex — the "esc to interrupt" footer shown while a turn runs
+#     ("• Working (2s • esc to interrupt)").
+#   gemini — the "esc to cancel" footer shown while an agy turn runs (alongside
+#     a "⣾ Working..." spinner); confirmed against a real agy cook.
+_BUSY_MARKERS = {
+    "claude": r"[·*✢-✿]\s.*…",
+    "codex": r"esc to interrupt",
+    "gemini": r"esc to (cancel|interrupt)",
+}
+
+
+def _pane_tail(session: str, window: str) -> list[str]:
+    """Last 40 non-blank lines of the pane — the busy/idle comparison surface
+    for pane_busy."""
+    content = capture_pane(session, window) or ""
+    return [ln for ln in content.splitlines() if ln.strip()][-40:]
+
+
+def pane_busy(session: str, window: str, backend: str, settle: float = 0.35) -> bool:
+    """True if the cook is mid-turn, False if idle at the prompt (or empty pane).
+
+    Two OR'd signals — a genuinely idle pane has neither:
+      1. the backend's busy marker is present in the last ~6 non-blank tail lines
+         (codex's persistent "esc to interrupt" footer; claude's start-of-turn
+         spinner). Instant, no sleep — covers codex for its whole turn.
+      2. the pane is actively REPAINTING (two tails captured ~`settle` apart
+         differ). This is required for a claude cook STREAMING a long reply:
+         this Claude build shows the spinner only at turn start, and during text
+         streaming the footer is byte-identical to idle — the only live signal is
+         the growing transcript. Verified: idle panes are stable across `settle`,
+         so this does not false-positive.
+
+    `backend` is REQUIRED — markers are backend-specific and tmux.py has no
+    state-dir context to infer it; callers pass it (send_keys already has
+    `backend`; peek reads it from the cook's state file)."""
+    first = _pane_tail(session, window)
+    if any(re.search(_BUSY_MARKERS[backend], ln, re.IGNORECASE)
+           for ln in first[-6:]):
+        return True
+    time.sleep(settle)
+    return _pane_tail(session, window) != first
 
 
 def wait_for_prompt(session: str, window: str, backend: str,
