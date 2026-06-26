@@ -159,6 +159,32 @@ class TestCleanRoom:
         assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" not in toks
         assert "--settings" not in toks
 
+    def test_codex_clean_room_exports_codex_home_keeps_notify(self):
+        """Clean-room codex cook runs against a fresh per-cook CODEX_HOME
+        (exported before exec) while the -c notify override — the cook→sous
+        completion path — survives. Verified empirically: notify fires under a
+        fresh seeded CODEX_HOME."""
+        cmd = build_shell_cmd(
+            backend="codex", name="eval1", session="ck-r", status_dir="/tmp/state",
+            clean_room=True, codex_home="/tmp/state/codex-home/eval1",
+        )
+        toks = _claude_inner_tokens(cmd)  # same bash -lc payload shape
+        ei = toks.index("exec")
+        # CODEX_HOME is the last export token, so shlex keeps the `;` separator on it
+        assert any(t.rstrip(";") == "CODEX_HOME=/tmp/state/codex-home/eval1" for t in toks[:ei])
+        # notify override still present as two adjacent argv tokens
+        argv = _codex_argv_from_shell_cmd(cmd)
+        assert any(
+            t == "-c" and argv[i + 1].startswith("notify=")
+            for i, t in enumerate(argv[:-1])
+        ), f"notify override missing: {argv}"
+
+    def test_codex_without_codex_home_omits_it(self):
+        cmd = build_shell_cmd(
+            backend="codex", name="rev", session="ck-r", status_dir="/tmp/state",
+        )
+        assert "CODEX_HOME" not in cmd
+
 
 class TestRoleInjection:
     def test_claude_role_passes_file_path(self, tmp_path):

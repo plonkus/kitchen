@@ -510,6 +510,24 @@ def cmd_open(args):
                resume_session_id=sous_session_id)
 
 
+def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
+    """Fresh, isolated CODEX_HOME for a clean-room codex cook. Seeded with ONLY
+    auth.json (auth survives — mirrors the Claude "keep auth, drop everything
+    else" stance) plus a minimal config.toml granting trust to cwd. The trust
+    grant is load-bearing: codex's workspace-trust prompt is suppressed by
+    NEITHER --dangerously-bypass-approvals-and-sandbox NOR a -c override, only
+    by the persisted projects.<cwd>.trust_level (verified empirically) — without
+    it the cook hangs on the trust dialog and wait_for_prompt times out. notify
+    rides the command line, so cook→sous reporting is unaffected."""
+    home = base / "codex-home" / name
+    if home.exists():
+        shutil.rmtree(home)  # re-hire under the same name must start fresh
+    home.mkdir(parents=True)
+    shutil.copyfile(Path.home() / ".codex" / "auth.json", home / "auth.json")
+    (home / "config.toml").write_text(f'[projects."{cwd}"]\ntrust_level = "trusted"\n')
+    return home
+
+
 def cmd_hire(args):
     kitchen = resolve_kitchen(args.kitchen)
     session = mc(kitchen)
@@ -520,10 +538,10 @@ def cmd_hire(args):
     cwd = str(resolve_project(cwd))
 
     clean_room = getattr(args, "clean_room", False)
-    # Clean-room isolation is Claude-only. Codex/gemini isolation is a
+    # Clean-room isolation supports claude + codex. Gemini isolation is a
     # documented follow-up — fail clearly rather than silently no-op.
-    if clean_room and backend != "claude":
-        sys.exit(f"--clean-room is only supported for Claude cooks, not '{backend}' (not yet implemented).")
+    if clean_room and backend not in ("claude", "codex"):
+        sys.exit(f"--clean-room is only supported for Claude and Codex cooks, not '{backend}' (not yet implemented).")
 
     # Clean-room cooks boot bare — NO role prompt. The sous sends the single
     # eval prompt via a ticket. Otherwise resolve the role file as usual.
@@ -552,6 +570,10 @@ def cmd_hire(args):
     # appears. build_shell_cmd reads role_path for the gemini branch.
     role_to_pass = role_path if backend in ("claude", "gemini") else None
 
+    # Clean-room codex cooks get a fresh, isolated CODEX_HOME (no memory,
+    # AGENTS.md, plugin registry, or user config). Claude/gemini: None.
+    codex_home = str(_seed_codex_home(base, name, cwd)) if clean_room and backend == "codex" else None
+
     write_status(base, name, {"status": "booting", "agent": name, "backend": backend})
 
     effort = getattr(args, "effort", None)
@@ -559,6 +581,7 @@ def cmd_hire(args):
         session=session, name=name, cwd=cwd,
         backend=backend, status_dir=str(base),
         effort=effort, role_path=role_to_pass, clean_room=clean_room,
+        codex_home=codex_home,
     )
     if not ok:
         # update_status preserves durable fields (the booting write above
@@ -575,7 +598,9 @@ def cmd_hire(args):
         update_status(base, name, status="failed")
         sys.exit(f"{name} didn't show prompt within timeout.")
 
-    if backend == "codex":
+    # Clean-room codex cooks have no role_path — they boot bare and the sous
+    # tickets the eval prompt (same as clean-room claude).
+    if backend == "codex" and role_path:
         send_keys(session, name, role_path.read_text() + _ROLE_ACK_FOOTER,
                   backend=backend, log_dir=base / "cooks")
 
@@ -663,6 +688,10 @@ def cmd_clock_out(args):
     base = state_dir(kitchen)
     cook_file = base / "cooks" / f"{args.cook}.json"
     cook_file.unlink(missing_ok=True)
+    # Tear down a clean-room codex cook's per-cook CODEX_HOME if it has one.
+    codex_home = base / "codex-home" / args.cook
+    if codex_home.is_dir():
+        shutil.rmtree(codex_home)
     print(f"{args.cook} has clocked out.")
 
 
@@ -1234,12 +1263,10 @@ def cmd_close(args):
     # Clean up mcp config, socket, pid, and stale cook state
     for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
         (base / f).unlink(missing_ok=True)
-    cooks_dir = base / "cooks"
-    if cooks_dir.is_dir():
-        shutil.rmtree(cooks_dir)
-    notes = base / "notes"
-    if notes.is_dir():
-        shutil.rmtree(notes)
+    for sub in ("cooks", "notes", "codex-home"):
+        d = base / sub
+        if d.is_dir():
+            shutil.rmtree(d)
 
     print("Kitchen closed. Service over.")
 
@@ -1262,7 +1289,7 @@ def main():
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
-    p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude only): no auto-memory, no superpowers plugin/injection, no role prompt. Sous supplies the one eval prompt via a ticket.")
+    p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude or Codex): no memory, no plugin/skill startup injection, no role prompt. Sous supplies the one eval prompt via a ticket. (gemini not yet supported)")
 
     p_ticket = sub.add_parser("ticket", help="Send a ticket to a cook")
     p_ticket.add_argument("cook", help="Cook name")

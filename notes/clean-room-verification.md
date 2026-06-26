@@ -1,8 +1,11 @@
 # `--clean-room` cook — isolation verification
 
-Durable evidence for `kitchen hire <name> --clean-room` (Claude-only eval/isolation
-hire). Captured empirically on **2026-06-24**, Claude Code **2.1.190**, on the user's
-normal **subscription/OAuth** login (no `ANTHROPIC_API_KEY`, no `--bare`/`--safe-mode`).
+Durable evidence for `kitchen hire <name> --clean-room`. Claude evidence captured
+**2026-06-24** (Claude Code **2.1.190**); Codex evidence captured **2026-06-26**
+(codex-cli **0.142.2**). Both on the user's normal **subscription/OAuth** login
+(no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env, no `--bare`/`--safe-mode`).
+
+> Codex support: see the "Codex clean-room" section at the bottom. Claude sections below.
 
 ## What `--clean-room` excludes (Claude cook)
 
@@ -86,5 +89,58 @@ so its presence is direct proof the Stop hook fired under clean-room. Auth also 
 
 ## Backend handling
 
-`--clean-room --backend codex` and `--clean-room --backend gemini` fail loud:
-`--clean-room is only supported for Claude cooks, not '<backend>' (not yet implemented).`
+`--clean-room` supports claude (above) and codex (see the Codex section below).
+`--clean-room --backend gemini` fails loud:
+`--clean-room is only supported for Claude and Codex cooks, not 'gemini' (not yet implemented).`
+
+---
+
+# Codex clean-room (Option A) — verification
+
+`kitchen hire <name> --clean-room --backend codex` keeps the interactive-codex cook
+model and gives each cook a **fresh per-cook `CODEX_HOME`** (`<kitchen-base>/codex-home/<name>`)
+seeded with **only `auth.json`** + a minimal `config.toml` granting trust to cwd. Captured
+**2026-06-26**, codex-cli **0.142.2**, subscription auth (no `OPENAI_API_KEY` env).
+
+## Mapping the 3 disables to Codex
+
+| Layer | Mechanism |
+|-------|-----------|
+| Memory | Fresh `CODEX_HOME` has no `~/.codex/memories/` (real `MEMORY.md` not copied); the `memories` feature is `experimental`/off by default. |
+| Plugin/skill startup injection | Fresh `CODEX_HOME` has no enabled plugin registry → no SessionStart-codex injection (superpowers isn't an enabled codex plugin anyway). Achieved by OMITTING the registry, NOT by touching `[features].hooks`. |
+| Role prompt | `cmd_hire` passes no role; the codex role `send_keys` is guarded `if backend == "codex" and role_path:` so it's skipped. Sous tickets the eval prompt. |
+
+## Auth + notify preserved
+
+- **Auth:** seed ONLY `auth.json` (keys: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh` — pure credentials). Cook booted authenticated (gpt-5.5, "2 usage limit resets available").
+- **Notify:** `-c notify=["kitchen","hook-codex"]` rides the command line, independent of `CODEX_HOME`. Confirmed firing under the fresh home.
+
+## STEP-1 de-risk results (all held)
+
+1. **notify under fresh seeded `CODEX_HOME`** → ✅ a turn fired `kitchen hook-codex`, writing the cook's status JSON to the sous status dir.
+2. **trust prompt** → `--dangerously-bypass-approvals-and-sandbox` does NOT suppress codex's workspace-trust prompt under a fresh home, and a `-c projects."<cwd>".trust_level` override did NOT gate it either. The working fix (and what `_seed_codex_home` writes) is a persisted `config.toml`:
+   ```toml
+   [projects."/Users/plucas/cncorp/claude-kitchen"]
+   trust_level = "trusted"
+   ```
+   With it pre-seeded, codex booted straight to the prompt — no trust dialog.
+3. **auth sufficiency** → ✅ `auth.json` alone authenticates; no dependence on `version.json`/`installation_id`/token-cache.
+
+## End-to-end (real code paths: `_seed_codex_home` + `build_shell_cmd`)
+
+Cook launched with the exact command `kitchen hire --clean-room --backend codex` produces, driven through one turn with an injection probe. Result:
+
+```
+# injection probe answer in the cook's TUI:
+SP=NO   MEM=NO   AGENTS=NO
+
+# cook->sous notify status file written by `kitchen hook-codex`:
+{"agent": "e2ecook", "session": "ck-e2e", "status": "idle",
+ "summary": "SP=NO\nMEM=NO\nAGENTS=NO", "session_id": "019f0560-..."}
+```
+
+No `MEMORY.md` was present in the fresh home. `--backend gemini --clean-room` still fails loud.
+
+## Cleanup
+
+Per-cook `CODEX_HOME` dirs live under `<kitchen-base>/codex-home/<name>` and are removed on `kitchen clock-out <cook>` (per-cook) and `kitchen close` (whole `codex-home/`).

@@ -93,7 +93,7 @@ _CLEAN_ROOM_SETTINGS = '{"enabledPlugins":{"superpowers@superpowers-marketplace"
 
 def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
                     effort: str = None, role_path: Path = None,
-                    clean_room: bool = False) -> str:
+                    clean_room: bool = False, codex_home: str = None) -> str:
     q = shlex.quote
     parts = [
         f"AGENT_NAME={q(name)}",
@@ -101,6 +101,11 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         f"STATUS_DIR={q(status_dir)}",
     ]
     parts.extend(f"{k}={q(v)}" for k, v in os.environ.items() if k.startswith("KITCHEN_"))
+    # Clean-room codex cooks run against a fresh, isolated CODEX_HOME (seeded in
+    # cmd_hire) — no user config, memory, AGENTS.md, or plugin registry. notify
+    # still rides the -c flag below, so cook→sous reporting is unaffected.
+    if codex_home:
+        parts.append(f"CODEX_HOME={q(codex_home)}")
     env = "export " + " ".join(parts)
     if backend == "claude":
         effort_flag = f" --effort {q(effort)}" if effort else ""
@@ -147,10 +152,11 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
 
 def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: str,
                  effort: str = None, role_path: Path = None,
-                 clean_room: bool = False) -> bool:
+                 clean_room: bool = False, codex_home: str = None) -> bool:
     """Spawn a new tmux window with an agent. Returns True on success."""
     cmd = build_shell_cmd(backend, name, session, status_dir,
-                          effort=effort, role_path=role_path, clean_room=clean_room)
+                          effort=effort, role_path=role_path,
+                          clean_room=clean_room, codex_home=codex_home)
 
     if has_session(session):
         result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd)

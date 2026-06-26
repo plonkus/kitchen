@@ -1223,26 +1223,59 @@ class TestCmdHireCleanRoom:
         assert kwargs["clean_room"] is True
         assert kwargs["role_path"] is None
 
-    @pytest.mark.parametrize("backend", ["codex", "gemini"])
-    @patch("claude_kitchen.cli.spawn_window")
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
-    def test_clean_room_non_claude_fails_loud(
-        self, mock_rp, mock_rk, mock_state, mock_spawn, backend, tmp_path,
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_codex_clean_room_seeds_home_and_skips_role(
+        self, mock_rp, mock_rk, mock_state, mock_wait, mock_spawn, mock_send, tmp_path, monkeypatch,
     ):
-        """Clean-room is Claude-only; codex AND gemini must fail loud before
-        spawning anything."""
+        """Clean-room codex: a fresh per-cook CODEX_HOME is seeded with ONLY
+        auth.json + a cwd trust grant, forwarded to spawn_window, and the role
+        send is skipped (cook boots bare)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".codex").mkdir()
+        (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
         mock_state.return_value = tmp_path
         args = MagicMock()
         args.kitchen = "risotto"
-        args.name = "x"
-        args.backend = backend
+        args.name = "eval1"
+        args.backend = "codex"
         args.project = None
         args.role = None
         args.effort = None
         args.clean_room = True
-        with pytest.raises(SystemExit, match="only supported for Claude"):
+        cmd_hire(args)
+        home = tmp_path / "codex-home" / "eval1"
+        assert (home / "auth.json").read_text() == '{"OPENAI_API_KEY": "x"}'
+        cfg = (home / "config.toml").read_text()
+        assert 'trust_level = "trusted"' in cfg
+        assert '/eval/dir' in cfg  # trust granted to the cook's cwd
+        assert mock_spawn.call_args.kwargs["codex_home"] == str(home)
+        mock_send.assert_not_called()  # clean-room codex boots bare, no role
+
+    @patch("claude_kitchen.cli.spawn_window")
+    @patch("claude_kitchen.cli.shutil.which", return_value="/usr/bin/agy")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    def test_clean_room_gemini_fails_loud(
+        self, mock_rp, mock_rk, mock_state, mock_which, mock_spawn, tmp_path,
+    ):
+        """Clean-room supports claude + codex; gemini still fails loud before
+        spawning anything (guard runs before the agy-on-PATH check)."""
+        mock_state.return_value = tmp_path
+        args = MagicMock()
+        args.kitchen = "risotto"
+        args.name = "x"
+        args.backend = "gemini"
+        args.project = None
+        args.role = None
+        args.effort = None
+        args.clean_room = True
+        with pytest.raises(SystemExit, match="only supported for Claude and Codex"):
             cmd_hire(args)
         mock_spawn.assert_not_called()
 
