@@ -103,8 +103,9 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
     parts.extend(f"{k}={q(v)}" for k, v in os.environ.items() if k.startswith("KITCHEN_"))
     # Clean-room codex cooks run against a fresh, isolated CODEX_HOME (seeded in
     # cmd_hire) — no user config, memory, AGENTS.md, or plugin registry. notify
-    # still rides the -c flag below, so cook→sous reporting is unaffected.
-    if codex_home:
+    # still rides the -c flag below, so cook→sous reporting is unaffected. Gated
+    # to codex so the invariant (only codex gets CODEX_HOME) is local here.
+    if codex_home and backend == "codex":
         parts.append(f"CODEX_HOME={q(codex_home)}")
     env = "export " + " ".join(parts)
     if backend == "claude":

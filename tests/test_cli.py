@@ -3,6 +3,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -1256,6 +1257,63 @@ class TestCmdHireCleanRoom:
         assert mock_spawn.call_args.kwargs["codex_home"] == str(home)
         mock_send.assert_not_called()  # clean-room codex boots bare, no role
 
+    def test_seed_codex_home_escapes_tricky_path(self, tmp_path, monkeypatch):
+        """A cwd containing a double-quote, backslash, and space must yield
+        VALID TOML whose projects key round-trips to the exact cwd — otherwise
+        codex can't parse the trust grant and hits the blocking prompt."""
+        from claude_kitchen.cli import _seed_codex_home
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".codex").mkdir()
+        (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
+        base = tmp_path / "base"; base.mkdir()
+        tricky = '/tmp/we"ird\\path dir'
+        home = _seed_codex_home(base, "eval1", tricky)
+        parsed = tomllib.loads((home / "config.toml").read_text())  # raises if invalid TOML
+        assert list(parsed["projects"].keys()) == [tricky]
+        assert parsed["projects"][tricky]["trust_level"] == "trusted"
+
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.spawn_window", return_value=False)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_clean_room_codex_cleans_home_on_spawn_failure(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, tmp_path, monkeypatch,
+    ):
+        """A failed launch must NOT leave the copied credential behind."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".codex").mkdir()
+        (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
+        mock_state.return_value = tmp_path
+        args = MagicMock()
+        args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        with pytest.raises(SystemExit):
+            cmd_hire(args)
+        assert not (tmp_path / "codex-home" / "eval1").exists(), "seeded CODEX_HOME (with auth.json) leaked on spawn failure"
+
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=False)
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_clean_room_codex_cleans_home_on_prompt_timeout(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, tmp_path, monkeypatch,
+    ):
+        """A prompt-wait timeout must also tear down the seeded CODEX_HOME."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".codex").mkdir()
+        (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
+        mock_state.return_value = tmp_path
+        args = MagicMock()
+        args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        with pytest.raises(SystemExit):
+            cmd_hire(args)
+        assert not (tmp_path / "codex-home" / "eval1").exists(), "seeded CODEX_HOME leaked on prompt timeout"
+
     @patch("claude_kitchen.cli.spawn_window")
     @patch("claude_kitchen.cli.shutil.which", return_value="/usr/bin/agy")
     @patch("claude_kitchen.cli.state_dir")
@@ -1290,6 +1348,11 @@ class TestCmdClose:
         cooks = tmp_path / "cooks"
         cooks.mkdir()
         (cooks / "eng.json").write_text("{}")
+        # clean-room codex per-cook homes (containing copied auth.json) must
+        # also be wiped on close
+        codex_home = tmp_path / "codex-home" / "eval1"
+        codex_home.mkdir(parents=True)
+        (codex_home / "auth.json").write_text("{}")
         # both the renamed config AND any legacy .mcp.json must be cleaned up
         # on close (no cook-discoverable leftover under base/)
         mcp_config = tmp_path / "kitchen-mcp.json"
@@ -1300,8 +1363,29 @@ class TestCmdClose:
         args.kitchen = "risotto"
         cmd_close(args)
         assert not cooks.exists()
+        assert not (tmp_path / "codex-home").exists()
         assert not mcp_config.exists()
         assert not legacy_config.exists()
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_clock_out_removes_codex_home(self, mock_rk, mock_state, mock_tmux, tmp_path):
+        """clock-out tears down the cook's per-cook CODEX_HOME (and its auth.json)."""
+        from claude_kitchen.cli import cmd_clock_out
+        mock_state.return_value = tmp_path
+        mock_tmux.return_value = MagicMock(returncode=0)
+        (tmp_path / "cooks").mkdir()
+        (tmp_path / "cooks" / "eval1.json").write_text("{}")
+        codex_home = tmp_path / "codex-home" / "eval1"
+        codex_home.mkdir(parents=True)
+        (codex_home / "auth.json").write_text("{}")
+        args = MagicMock()
+        args.kitchen = "risotto"
+        args.cook = "eval1"
+        cmd_clock_out(args)
+        assert not codex_home.exists()
+        assert not (tmp_path / "cooks" / "eval1.json").exists()
 
 
 class TestCmdCloseWipesNotesNotWiki:

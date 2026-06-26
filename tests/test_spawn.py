@@ -185,6 +185,16 @@ class TestCleanRoom:
         )
         assert "CODEX_HOME" not in cmd
 
+    def test_codex_home_is_codex_only(self):
+        """The CODEX_HOME export is gated to the codex backend inside
+        build_shell_cmd — a (nonsensical) claude call with codex_home set must
+        NOT leak it, so the invariant is local, not just upheld by cmd_hire."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            codex_home="/tmp/state/codex-home/eng",
+        )
+        assert "CODEX_HOME" not in cmd
+
 
 class TestRoleInjection:
     def test_claude_role_passes_file_path(self, tmp_path):

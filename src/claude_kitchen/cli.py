@@ -524,7 +524,11 @@ def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
         shutil.rmtree(home)  # re-hire under the same name must start fresh
     home.mkdir(parents=True)
     shutil.copyfile(Path.home() / ".codex" / "auth.json", home / "auth.json")
-    (home / "config.toml").write_text(f'[projects."{cwd}"]\ntrust_level = "trusted"\n')
+    # Escape cwd for a TOML basic string (backslash + double-quote) so a path
+    # with those chars stays valid TOML — otherwise codex can't parse the trust
+    # grant and falls back to the (blocking) trust prompt.
+    key = cwd.replace("\\", "\\\\").replace('"', '\\"')
+    (home / "config.toml").write_text(f'[projects."{key}"]\ntrust_level = "trusted"\n')
     return home
 
 
@@ -588,6 +592,9 @@ def cmd_hire(args):
         # set `backend`); benign at hire-time but enforces the §Status
         # preservation invariant by code rather than happenstance.
         update_status(base, name, status="failed")
+        # Don't leave a copied credential behind on a failed launch.
+        if codex_home:
+            shutil.rmtree(codex_home, ignore_errors=True)
         print(f"Failed to boot {name}.", file=sys.stderr)
         sys.exit(1)
 
@@ -596,6 +603,8 @@ def cmd_hire(args):
     # and is lost. Also required for the codex send_keys role delivery below.
     if not wait_for_prompt(session, name, backend):
         update_status(base, name, status="failed")
+        if codex_home:
+            shutil.rmtree(codex_home, ignore_errors=True)
         sys.exit(f"{name} didn't show prompt within timeout.")
 
     # Clean-room codex cooks have no role_path — they boot bare and the sous
