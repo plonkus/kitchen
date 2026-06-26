@@ -342,3 +342,139 @@ class TestPaneBusy:
         with pytest.raises(ValueError, match="unknown backend"):
             pane_busy("ck-x", "cc", "llama")
 
+
+
+# ---- B1: verified-submit loop ----
+# send_keys: paste (untouched) → settle-poll → Enter-until-the-payload-leaves-
+# the-composer. These drive the real loop logic with capture_pane (settle) and
+# tmux() (cursor row + Enter) mocked — no live tmux. They pin: a swallowed first
+# Enter is recovered by retry, success is keyed on the composer clearing (not a
+# busy level), and both deadlines fail clearly (raise) instead of submitting
+# blind or silently returning.
+
+_SETTLE_HEAD = "DOTHING"  # ticket text; head == text so it's easy to embed
+
+
+def _settle_capture():
+    """capture_pane side-effect for the settle-poll: a baseline with NO head,
+    then stable panes that DO contain the head (so paste is positively observed
+    and the pane settles)."""
+    calls = {"n": 0}
+
+    def cap(session, window, full=False):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "idle transcript\n❯ "          # baseline, no head
+        return f"transcript line\n❯ {_SETTLE_HEAD} landed\n"  # head present, stable
+
+    return cap
+
+
+def _no_paste_capture(session, window, full=False):
+    """Settle-poll never sees the head → paste never positively observed."""
+    return "idle transcript, head never appears\n❯ "
+
+
+def _tmux_with_composer(rows):
+    """tmux() side-effect. display-message → a cursor row index; capture-pane →
+    the next scripted composer-row string (the cursor row send_keys reads to
+    decide if the ticket left the composer); send-keys/load-buffer/paste-buffer
+    → success. Records how many Enters were sent."""
+    queue = list(rows)
+    state = {"enter": 0}
+
+    def fake(*args, **kwargs):
+        cmd = args[0]
+        m = MagicMock(returncode=0, stdout="")
+        if cmd == "display-message":
+            m.stdout = "20\n"
+        elif cmd == "capture-pane":
+            m.stdout = (queue.pop(0) if queue else "") + "\n"
+        elif cmd == "send-keys":
+            state["enter"] += 1
+        return m
+
+    fake.state = state
+    return fake
+
+
+class TestSendKeysVerifiedSubmit:
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_first_enter_submits(self, mock_cap, mock_tmux, mock_sleep):
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_capture()
+        # composer: baseline holds the payload; after the 1st Enter it's cleared.
+        fake = _tmux_with_composer(["PAYLOAD tail line", "❯ "])
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_swallowed_first_enter_is_retried(self, mock_cap, mock_tmux, mock_sleep):
+        # The codex paste-commit race: the 1st Enter is swallowed (composer still
+        # holds the payload), the 2nd lands (composer clears). The loop recovers.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_capture()
+        fake = _tmux_with_composer(["PAYLOAD tail line",   # baseline
+                                    "PAYLOAD tail line",   # after Enter #1: swallowed
+                                    "❯ "])            # after Enter #2: submitted
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 2
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_never_clears_raises_after_all_attempts(self, mock_cap, mock_tmux, mock_sleep):
+        # Composer never clears → no positive transition → raise (never silently
+        # return "delivered"). This is also the already-busy guard: a busy level
+        # alone is NOT accepted as success; only the composer clearing is.
+        from claude_kitchen.tmux import send_keys, _SUBMIT_ATTEMPTS
+        mock_cap.side_effect = _settle_capture()
+        fake = _tmux_with_composer(["PAYLOAD tail line"] * (1 + _SUBMIT_ATTEMPTS))
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="never left the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == _SUBMIT_ATTEMPTS
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_paste_never_observed_raises_without_any_enter(self, mock_time, mock_cap, mock_tmux):
+        # Settle deadline with no paste-landed signal → fail clearly (raise),
+        # and CRUCIALLY send no Enter — never submit blind into an unknown
+        # composer (replaces the old "sending Enter anyway").
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+        def now():
+            clock[0] += 1.0
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _no_paste_capture
+        fake = _tmux_with_composer([])
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="paste not observed"):
+            send_keys("ck-x", "cx", "a ticket whose head never lands", backend="codex")
+        assert fake.state["enter"] == 0
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_never_re_pastes_only_enters(self, mock_cap, mock_tmux, mock_sleep):
+        # IRON RULE: retry is Enter-only. After the initial paste-buffer there
+        # must be NO further load-buffer/paste-buffer, no matter how many Enter
+        # retries the loop runs.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_capture()
+        fake = _tmux_with_composer(["PAYLOAD tail line", "PAYLOAD tail line", "❯ "])
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        cmds = [c.args[0] for c in mock_tmux.call_args_list]
+        assert cmds.count("paste-buffer") == 1
+        assert cmds.count("load-buffer") == 1
+        assert fake.state["enter"] == 2  # retried, but never re-pasted

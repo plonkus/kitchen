@@ -1,13 +1,9 @@
 """tmux helpers for claude-kitchen."""
 import itertools
-import json
 import os
 import re
 import subprocess
-import sys
 import time
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 # Per-call tmux timeout. Generous enough that fast queries (has-session,
@@ -213,123 +209,89 @@ def wait_for_prompt(session: str, window: str, backend: str,
     return False
 
 
-def _utc_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# Verified-submit loop tuning. One Enter usually submits; the extra attempts
+# recover codex's paste-mode-commit race (a swallowed first Enter). An extra
+# Enter into an already-submitted/empty composer is a verified no-op, so
+# retrying is safe (IRON RULE: retry Enter ONLY, never re-paste).
+_SUBMIT_ATTEMPTS = 8
+_SUBMIT_POLL = 0.3
 
 
-def _append_json_line(log_dir: Path, filename: str, entry: dict):
-    """Append one JSON line to <log_dir>/<filename>. Logging failures are
-    swallowed — they must never shadow the original send_keys exception
-    or break a ticket on disk-full / EACCES."""
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with (log_dir / filename).open("a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError:
-        pass
+def _cursor_row(session: str, window: str) -> str:
+    """The composer/input row the cursor sits on, stripped. After a paste this
+    holds the ticket payload (its tail line for codex/gemini, or an Ink
+    "[Pasted N lines]" stub for claude); after a successful submit the composer
+    clears and this no longer holds it. Routed through the tmux() wrapper so the
+    per-call TIMEOUT applies."""
+    target = f"{session}:{window}"
+    cy = tmux("display-message", "-t", target, "-p", "#{cursor_y}").stdout.strip()
+    if not cy:
+        return ""
+    return tmux("capture-pane", "-t", target, "-p", "-S", cy, "-E", cy).stdout.strip()
 
 
-def send_keys(session: str, window: str, text: str,
-              backend: Optional[str] = None, log_dir: Optional[Path] = None):
+def send_keys(session: str, window: str, text: str, backend: Optional[str] = None):
     # Bracketed paste keeps embedded newlines as newlines instead of Enter.
     # Named buffer prevents concurrent sends in the brigade from clobbering
     # each other's payload between load and paste.
-    # Two-phase poll-then-single-Enter. Phase 1: wait for proof the paste
-    # started landing (a "[Pasted " collapse stub, or a head marker from the
-    # payload). Phase 2: wait for the pane to stop repainting before Enter.
-    # For long pastes Ink renders the stub from the FIRST chunk while the
-    # rest still streams in, so firing on first-stub races the remainder and
-    # the message never submits (stub + uncollapsed literal tail, stuck at
-    # the prompt). Settling the pane closes that race. See notes/collapsed-
-    # paste-mechanism-report.md + notes/brief-send-keys-stable-poll.md.
     #
-    # Instrumentation (brief-send-keys-instrumentation.md): on exception or
-    # deadline-without-signal, append a JSON line to
-    # <log_dir>/<window>.send_keys.log. For codex backend specifically, also
-    # snapshot pane pre/post the trailing Enter into
-    # <log_dir>/<window>.send_keys_trace.log — used to diagnose the Ratatui
-    # paste-mode-commit race against the trailing Enter (which Ink's
-    # progressive redraw mitigation does NOT cover).
-    start = time.time()
+    # Phase 1 — settle-poll: wait for proof the paste landed (a "[Pasted "
+    # collapse stub, or a head marker from the payload) AND for the pane to stop
+    # repainting. For long pastes Ink renders the stub from the FIRST chunk
+    # while the rest still streams in, so submitting on first-stub races the
+    # remainder and the message never submits. Settling closes that race. See
+    # notes/collapsed-paste-mechanism-report.md + notes/brief-send-keys-stable-
+    # poll.md. If the paste is never positively observed by the deadline we
+    # FAIL CLEARLY (raise) rather than submit blind into an unknown composer.
+    #
+    # Phase 2 — verified submit: loop Enter until the ticket leaves the composer
+    # (a positive transition vs the pre-loop baseline), which closes codex's
+    # paste-mode-commit race against the trailing Enter. Enter-only — NEVER
+    # re-paste, or a swallowed Enter would duplicate the text in the composer.
     target = f"{session}:{window}"
     signalled = False
     stable = 0
-    baseline = ""
-    post_paste = ""
 
-    try:
-        buf = f"kitchen-{os.getpid()}-{next(_buffer_counter)}"
-        baseline = capture_pane(session, window) or ""
-        tmux("load-buffer", "-b", buf, "-", input=text, check=True)
-        tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", target, check=True)
-        head = next((s for s in (line.strip() for line in text.splitlines()) if s), "")[:24]
-        deadline = time.time() + 2.0
-        prev = None
-        while time.time() < deadline:
-            time.sleep(0.05)
-            pane = capture_pane(session, window) or ""
-            post_paste = pane
-            if not signalled:
-                if (pane.count("[Pasted ") > baseline.count("[Pasted ")
-                        or (head and pane.count(head) > baseline.count(head))):
-                    signalled = True
-                    prev = pane
-                continue
-            if pane == prev:
-                stable += 1
-                if stable >= 3:  # ~150 ms of no repaint = paste fully landed
-                    break
-            else:
-                stable = 0
+    buf = f"kitchen-{os.getpid()}-{next(_buffer_counter)}"
+    baseline = capture_pane(session, window) or ""
+    tmux("load-buffer", "-b", buf, "-", input=text, check=True)
+    tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", target, check=True)
+    head = next((s for s in (line.strip() for line in text.splitlines()) if s), "")[:24]
+    deadline = time.time() + 2.0
+    prev = None
+    while time.time() < deadline:
+        time.sleep(0.05)
+        pane = capture_pane(session, window) or ""
+        if not signalled:
+            if (pane.count("[Pasted ") > baseline.count("[Pasted ")
+                    or (head and pane.count(head) > baseline.count(head))):
+                signalled = True
                 prev = pane
+            continue
+        if pane == prev:
+            stable += 1
+            if stable >= 3:  # ~150 ms of no repaint = paste fully landed
+                break
         else:
-            print(f"send_keys: paste not observed within 2.0s on {target}; "
-                  f"sending Enter anyway", file=sys.stderr)
-            if log_dir:
-                _append_json_line(log_dir, f"{window}.send_keys.log", {
-                    "ts": _utc_iso(),
-                    "target": target,
-                    "backend": backend,
-                    "outcome": "deadline_no_signal",
-                    "exception_type": None,
-                    "exception_str": None,
-                    "baseline_tail_200": baseline[-200:],
-                    "post_paste_tail_200": post_paste[-200:],
-                    "signalled": signalled,
-                    "stable": stable,
-                    "elapsed_ms": int((time.time() - start) * 1000),
-                })
+            stable = 0
+            prev = pane
 
-        if backend == "codex" and log_dir:
-            pre_enter = capture_pane(session, window) or ""
-            tmux("send-keys", "-t", target, "Enter", check=True)
-            time.sleep(0.25)
-            post_enter = capture_pane(session, window) or ""
-            _append_json_line(log_dir, f"{window}.send_keys_trace.log", {
-                "ts": _utc_iso(),
-                "target": target,
-                "pre_enter_tail_300": pre_enter[-300:],
-                "post_enter_tail_300": post_enter[-300:],
-                "elapsed_ms": int((time.time() - start) * 1000),
-            })
-        else:
-            tmux("send-keys", "-t", target, "Enter", check=True)
+    if not signalled:
+        raise RuntimeError(
+            f"send_keys: paste not observed within 2.0s on {target}; refusing "
+            f"to submit into an unknown composer")
 
-    except Exception as e:
-        if log_dir:
-            _append_json_line(log_dir, f"{window}.send_keys.log", {
-                "ts": _utc_iso(),
-                "target": target,
-                "backend": backend,
-                "outcome": "exception",
-                "exception_type": type(e).__name__,
-                "exception_str": str(e),
-                "baseline_tail_200": baseline[-200:],
-                "post_paste_tail_200": post_paste[-200:],
-                "signalled": signalled,
-                "stable": stable,
-                "elapsed_ms": int((time.time() - start) * 1000),
-            })
-        raise
+    # The composer now holds the payload — capture it as the pre-loop baseline,
+    # then Enter until that payload leaves the composer (turn started, or the
+    # message queued behind a busy turn — either way it was submitted).
+    composer = _cursor_row(session, window)
+    for _ in range(_SUBMIT_ATTEMPTS):
+        tmux("send-keys", "-t", target, "Enter", check=True)
+        time.sleep(_SUBMIT_POLL)
+        if composer and composer not in _cursor_row(session, window):
+            return
+    raise RuntimeError(
+        f"send_keys: ticket never left the composer on {target} after "
+        f"{_SUBMIT_ATTEMPTS} Enter attempts; submission not confirmed")
 
 
