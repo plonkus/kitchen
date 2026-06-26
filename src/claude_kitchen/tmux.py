@@ -217,17 +217,20 @@ _SUBMIT_ATTEMPTS = 8
 _SUBMIT_POLL = 0.3
 
 
-def _cursor_row(session: str, window: str) -> str:
-    """The composer/input row the cursor sits on, stripped. After a paste this
-    holds the ticket payload (its tail line for codex/gemini, or an Ink
-    "[Pasted N lines]" stub for claude); after a successful submit the composer
-    clears and this no longer holds it. Routed through the tmux() wrapper so the
-    per-call TIMEOUT applies."""
+def _cursor_col(session: str, window: str) -> int:
+    """The cursor's column in the composer (cursor-scoped, not whole-pane).
+
+    Right after a paste the cursor sits at the END of the pasted payload (a large
+    column). Once the composer ACCEPTS the input — a normal submit OR a queue
+    behind a busy turn ("Messages to be submitted…") — it clears and the cursor
+    snaps back to the empty-prompt column. A *swallowed* Enter leaves the payload
+    (and the cursor) where it was. So a return to the pre-paste empty column is
+    POSITIVE proof the input was accepted, not merely that a row repainted/
+    wrapped/expanded a "[Pasted N]" stub. Routed through the tmux() wrapper so
+    the per-call TIMEOUT applies. Returns -1 if the column can't be read."""
     target = f"{session}:{window}"
-    cy = tmux("display-message", "-t", target, "-p", "#{cursor_y}").stdout.strip()
-    if not cy:
-        return ""
-    return tmux("capture-pane", "-t", target, "-p", "-S", cy, "-E", cy).stdout.strip()
+    out = tmux("display-message", "-t", target, "-p", "#{cursor_x}").stdout.strip()
+    return int(out) if out.isdigit() else -1
 
 
 def send_keys(session: str, window: str, text: str, backend: Optional[str] = None):
@@ -244,13 +247,27 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # poll.md. If the paste is never positively observed by the deadline we
     # FAIL CLEARLY (raise) rather than submit blind into an unknown composer.
     #
-    # Phase 2 — verified submit: loop Enter until the ticket leaves the composer
-    # (a positive transition vs the pre-loop baseline), which closes codex's
-    # paste-mode-commit race against the trailing Enter. Enter-only — NEVER
-    # re-paste, or a swallowed Enter would duplicate the text in the composer.
+    # Phase 2 — verified submit: loop Enter until the composer ACCEPTS the input,
+    # proven POSITIVELY by the input cursor snapping back to the empty-composer
+    # column (see _cursor_col). This closes codex's paste-mode-commit race
+    # against the trailing Enter without false-positiving on a mere repaint.
+    # Enter-only — NEVER re-paste, or a swallowed Enter would duplicate the text.
     target = f"{session}:{window}"
     signalled = False
     stable = 0
+
+    # Strip trailing newlines: they add an empty final composer row whose cursor
+    # sits back at the empty column, which would defeat the cursor-column accept
+    # check below (and Enter submits regardless, so they carry no meaning). The
+    # codex role-ack footer ends in "\n", so this is a live path.
+    text = text.rstrip("\n")
+
+    # Empty-composer cursor column, captured BEFORE the paste — the accepted-state
+    # target the submit loop watches for.
+    empty_col = _cursor_col(session, window)
+    if empty_col < 0:
+        raise RuntimeError(
+            f"send_keys: could not read the composer cursor on {target}")
 
     buf = f"kitchen-{os.getpid()}-{next(_buffer_counter)}"
     baseline = capture_pane(session, window) or ""
@@ -276,20 +293,28 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
             stable = 0
             prev = pane
 
-    if not signalled:
+    # Fail clearly on ANY incomplete settle — never observed (signalled False)
+    # OR observed but never stabilized (stable < 3 at the deadline). Submitting
+    # into a still-repainting composer reintroduces the long-paste race the
+    # settle-poll exists to prevent.
+    if not (signalled and stable >= 3):
         raise RuntimeError(
-            f"send_keys: paste not observed within 2.0s on {target}; refusing "
-            f"to submit into an unknown composer")
+            f"send_keys: paste did not settle within 2.0s on {target} "
+            f"(signalled={signalled}, stable={stable}); refusing to submit "
+            f"into an unknown composer")
 
-    # The composer now holds the payload — capture it as the pre-loop baseline,
-    # then Enter until that payload leaves the composer (turn started, or the
-    # message queued behind a busy turn — either way it was submitted).
-    composer = _cursor_row(session, window)
+    # Precondition: the payload is actually sitting in the composer (cursor moved
+    # off the empty column). Otherwise the loop's "back to empty" success check
+    # could fire without a real submit.
+    if _cursor_col(session, window) == empty_col:
+        raise RuntimeError(
+            f"send_keys: paste did not land in the composer on {target}")
+
     for _ in range(_SUBMIT_ATTEMPTS):
         tmux("send-keys", "-t", target, "Enter", check=True)
         time.sleep(_SUBMIT_POLL)
-        if composer and composer not in _cursor_row(session, window):
-            return
+        if _cursor_col(session, window) == empty_col:
+            return  # composer cleared → input accepted (submitted or queued)
     raise RuntimeError(
         f"send_keys: ticket never left the composer on {target} after "
         f"{_SUBMIT_ATTEMPTS} Enter attempts; submission not confirmed")
