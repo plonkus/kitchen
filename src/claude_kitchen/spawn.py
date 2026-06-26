@@ -97,6 +97,12 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # Pass the file path, not the contents — the file form avoids
         # shell-quoting fragility for multi-line role prompts.
         role_flag = f" --append-system-prompt-file {q(str(role_path))}" if role_path else ""
+        # Disable Claude's prompt-suggestion ghost text (the dim placeholder in
+        # an empty composer): pane readers (pane_busy/peek) could otherwise
+        # misread it as typed input. Claude cooks only — appended to THIS
+        # branch's export, not the shared `parts` list, so it never spills onto
+        # codex/gemini cooks.
+        env = f"{env} CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
         # Block AskUserQuestion: it renders an interactive picker in the cook's
         # TUI that fires no hook and blocks forever — the sous never learns of
         # it. Cooks surface questions via NEEDS_CONTEXT instead (see role prompts).
