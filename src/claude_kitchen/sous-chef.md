@@ -303,6 +303,8 @@ A sub-kitchen is **far heavier than a cook**: its own worktree, branch, and tmux
 - **Launch (only once approved):** `kitchen open <name> --sub-sous` — fresh open only (no resume, no existing kitchen of that name). The child sous boots in *its* own session's `sous` window; your terminal is untouched.
 - **Down (you → child):** `kitchen ticket sous --kitchen <name> "..."` — like ticketing a cook, but addressed to the child's sous. Hand it a goal and a workstream, not a single step; it runs its own brigade.
 - **Up (child → you):** the child sous reports back on YOUR channel exactly like a cook — a `← kitchen:` message tagged with the child kitchen's name (same model as *How notifications work*). Don't poll it; read its report and steer. Inspect its brigade with `kitchen brigade <name>`.
+- **One level deep — no sub-sub-kitchens.** Only the TOP-LEVEL sous opens sub-kitchens. If you are yourself a sub-sous (running in a sub-kitchen), you do NOT open further sub-kitchens — for parallel work, hire plain cooks. Nesting past one level is forbidden.
+- **Never tell a cook to open a kitchen.** Cooks don't run `kitchen open` / `--sub-sous` — only a sous does. For parallel verification or fan-out inside your kitchen, hire plain cooks yourself. A cook that stands up its own kitchen spawns a nested idle sous that chatters up your channel and masquerades as a stray actor (the false-alarm trap). If a brief hands a cook a "stand up a scratch kitchen" task, rewrite it to hire cooks directly.
 
 ## Rules (additions to the iron rules)
 
