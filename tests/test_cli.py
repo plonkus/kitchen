@@ -1424,6 +1424,21 @@ class TestCmdHireCleanRoom:
             cmd_hire(args)
         mock_spawn.assert_not_called()
 
+    def test_validate_skill_path_rejects_plain_dir(self, tmp_path):
+        """An existing dir that's neither a skill nor a plugin dir fails clearly."""
+        from claude_kitchen.cli import _validate_skill_path
+        d = tmp_path / "notaskill"; d.mkdir()
+        with pytest.raises(SystemExit, match="not a skill or plugin dir"):
+            _validate_skill_path(str(d))
+
+    def test_validate_skill_path_accepts_plugin_dir(self, tmp_path):
+        """A .claude-plugin/plugin.json dir is an accepted shape (→ abs path)."""
+        from claude_kitchen.cli import _validate_skill_path
+        d = tmp_path / "plug"
+        (d / ".claude-plugin").mkdir(parents=True)
+        (d / ".claude-plugin" / "plugin.json").write_text("{}")
+        assert _validate_skill_path(str(d)) == str(d.resolve())
+
 
 class TestCmdClose:
     @patch("claude_kitchen.cli.tmux")
