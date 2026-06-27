@@ -634,6 +634,7 @@ class TestStatusPreservationAcrossNonStopWriters:
         args.role = None
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         with pytest.raises(SystemExit):
             cmd_hire(args)
         data = json.loads((tmp_path / "cooks" / "eng.json").read_text())
@@ -1072,6 +1073,7 @@ class TestCmdHireFailures:
         args.role = None
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
             with pytest.raises(SystemExit, match="didn't show prompt"):
                 cmd_hire(args)
@@ -1097,6 +1099,7 @@ class TestCmdHireRole:
         args.role = "ghost"
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         with pytest.raises(SystemExit, match="Unknown role.*ghost"):
             cmd_hire(args)
 
@@ -1117,6 +1120,7 @@ class TestCmdHireRole:
         args.role = "reviewer"
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
         assert kwargs["role_path"] is not None
@@ -1141,6 +1145,7 @@ class TestCmdHireRole:
         args.role = "reviewer"
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         cmd_hire(args)
         # Codex doesn't get a --append-system-prompt-file flag
         assert mock_spawn.call_args.kwargs["role_path"] is None
@@ -1172,6 +1177,7 @@ class TestCmdHireRole:
         args.role = None
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         cmd_hire(args)
         mock_send.assert_called_once()
         assert "_default — generic cook" in mock_send.call_args.args[2]
@@ -1195,6 +1201,7 @@ class TestCmdHireRole:
         args.role = "eng"
         args.effort = None
         args.clean_room = False
+        args.with_skill = []
         cmd_hire(args)
         mock_send.assert_not_called()
 
@@ -1219,6 +1226,7 @@ class TestCmdHireCleanRoom:
         args.role = None
         args.effort = None
         args.clean_room = True
+        args.with_skill = []
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
         assert kwargs["clean_room"] is True
@@ -1248,6 +1256,7 @@ class TestCmdHireCleanRoom:
         args.role = None
         args.effort = None
         args.clean_room = True
+        args.with_skill = []
         cmd_hire(args)
         home = tmp_path / "codex-home" / "eval1"
         assert (home / "auth.json").read_text() == '{"OPENAI_API_KEY": "x"}'
@@ -1288,7 +1297,7 @@ class TestCmdHireCleanRoom:
         mock_state.return_value = tmp_path
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
-        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []
         with pytest.raises(SystemExit):
             cmd_hire(args)
         assert not (tmp_path / "codex-home" / "eval1").exists(), "seeded CODEX_HOME (with auth.json) leaked on spawn failure"
@@ -1309,7 +1318,7 @@ class TestCmdHireCleanRoom:
         mock_state.return_value = tmp_path
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
-        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []
         with pytest.raises(SystemExit):
             cmd_hire(args)
         assert not (tmp_path / "codex-home" / "eval1").exists(), "seeded CODEX_HOME leaked on prompt timeout"
@@ -1333,7 +1342,85 @@ class TestCmdHireCleanRoom:
         args.role = None
         args.effort = None
         args.clean_room = True
+        args.with_skill = []
         with pytest.raises(SystemExit, match="only supported for Claude and Codex"):
+            cmd_hire(args)
+        mock_spawn.assert_not_called()
+
+    @staticmethod
+    def _skill_dir(tmp_path):
+        d = tmp_path / "myskill"
+        d.mkdir()
+        (d / "SKILL.md").write_text("---\nname: myskill\ndescription: x\n---\nbody\n")
+        return d
+
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_with_skill_wires_plugin_dir(
+        self, mock_rp, mock_rk, mock_state, mock_wait, mock_spawn, mock_send, tmp_path,
+    ):
+        """--with-skill on a claude clean-room cook reaches spawn_window as a
+        validated absolute path in plugin_dirs (→ --plugin-dir)."""
+        mock_state.return_value = tmp_path
+        skill = self._skill_dir(tmp_path)
+        args = MagicMock()
+        args.kitchen = "risotto"; args.name = "eval1"; args.backend = "claude"
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        args.with_skill = [str(skill)]
+        cmd_hire(args)
+        assert mock_spawn.call_args.kwargs["plugin_dirs"] == [str(skill.resolve())]
+
+    @patch("claude_kitchen.cli.spawn_window")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_with_skill_requires_clean_room(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, tmp_path,
+    ):
+        mock_state.return_value = tmp_path
+        skill = self._skill_dir(tmp_path)
+        args = MagicMock()
+        args.kitchen = "risotto"; args.name = "x"; args.backend = "claude"
+        args.project = None; args.role = None; args.effort = None; args.clean_room = False
+        args.with_skill = [str(skill)]
+        with pytest.raises(SystemExit, match="requires --clean-room"):
+            cmd_hire(args)
+        mock_spawn.assert_not_called()
+
+    @patch("claude_kitchen.cli.spawn_window")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_with_skill_non_claude_fails_loud(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, tmp_path,
+    ):
+        mock_state.return_value = tmp_path
+        skill = self._skill_dir(tmp_path)
+        args = MagicMock()
+        args.kitchen = "risotto"; args.name = "x"; args.backend = "codex"
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        args.with_skill = [str(skill)]
+        with pytest.raises(SystemExit, match="not yet supported"):
+            cmd_hire(args)
+        mock_spawn.assert_not_called()
+
+    @patch("claude_kitchen.cli.spawn_window")
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/eval/dir"))
+    def test_with_skill_bad_path_fails_clearly(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, tmp_path,
+    ):
+        mock_state.return_value = tmp_path
+        args = MagicMock()
+        args.kitchen = "risotto"; args.name = "x"; args.backend = "claude"
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True
+        args.with_skill = [str(tmp_path / "does-not-exist")]
+        with pytest.raises(SystemExit, match="not a directory"):
             cmd_hire(args)
         mock_spawn.assert_not_called()
 

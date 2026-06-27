@@ -81,8 +81,9 @@ These are reminders that follow from the iron rules. Do not rationalize past the
 - **Does NOT touch:** `CLAUDE.md`/`AGENTS.md` and other files on disk — the cook can still read them and they're still auto-discovered from cwd — and skill *availability* (skills still resolve; only the startup injection is gone). So clean-room is not hermetic on its own.
 - **cwd is your lever** for that project-local context: CLAUDE.md/AGENTS.md discovery walks up from cwd and memory is keyed by cwd's project path, so hire with `--project <dir>` pointed at an **empty dir or a pinned checkout** for a true clean room. Clean-room does NOT manage cwd.
 - **No role = YOU send the prompt.** Because there's no role prompt, the cook boots idle; deliver the single eval/task prompt yourself via a normal `kitchen ticket`.
+- **Opt a skill back in with `--with-skill <path>`** (Claude only, repeatable). Loads one custom skill/plugin dir (needs a `SKILL.md` or `.claude-plugin/plugin.json`) into the blank cook via a session-scoped `--plugin-dir` — additive, the rest of the blank slate stays off. Only valid with `--clean-room`; on codex/gemini it fails loud (codex opt-in is a fast-follow).
 
-Example: `kitchen hire eval1 --clean-room --backend codex --project /abs/eval-dir`, then `kitchen ticket eval1 "<the eval prompt>"`. `gemini` + `--clean-room` fails loud (not yet supported).
+Example: `kitchen hire eval1 --clean-room --backend codex --project /abs/eval-dir`, then `kitchen ticket eval1 "<the eval prompt>"`. To opt a skill in: `kitchen hire eval1 --clean-room --with-skill /abs/my-skill-dir`. `gemini` + `--clean-room` fails loud (not yet supported).
 
 **Gemini is an opt-in third backend.** `kitchen hire <name> --backend gemini` works but requires the `agy` (Antigravity) CLI on PATH — note: that's `agy`, not a `gemini` binary. Default backends are claude and codex; do NOT reach for gemini on your own. Use it only when the head chef explicitly asks for it, or a task specifically calls for it.
 
