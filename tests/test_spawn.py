@@ -185,6 +185,27 @@ class TestCleanRoom:
         )
         assert "CODEX_HOME" not in cmd
 
+    def test_clean_room_with_plugin_dirs(self):
+        """--with-skill paths arrive as repeated --plugin-dir <path> pairs on a
+        clean-room claude cook, alongside (not replacing) the memory + settings
+        knobs — additive opt-in to the blank slate."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eval1", session="ck-r", status_dir="/tmp/state",
+            clean_room=True, plugin_dirs=["/skills/a", "/skills/b"],
+        )
+        toks = _claude_inner_tokens(cmd)
+        pairs = [(toks[i], toks[i + 1]) for i in range(len(toks) - 1) if toks[i] == "--plugin-dir"]
+        assert ("--plugin-dir", "/skills/a") in pairs
+        assert ("--plugin-dir", "/skills/b") in pairs
+        assert "--settings" in toks  # blank-slate knobs still present
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" in toks[:toks.index("exec")]
+
+    def test_no_plugin_dirs_by_default(self):
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+        )
+        assert "--plugin-dir" not in cmd
+
     def test_codex_home_is_codex_only(self):
         """The CODEX_HOME export is gated to the codex backend inside
         build_shell_cmd — a (nonsensical) claude call with codex_home set must
