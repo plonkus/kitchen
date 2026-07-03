@@ -1,4 +1,5 @@
 """Tests for spawn logic."""
+import json
 import os
 import shlex
 import subprocess
@@ -117,6 +118,82 @@ class TestBuildShellCmd:
             status_dir="/tmp/state",
         )
         assert "KITCHEN_" not in cmd
+
+
+def _claude_inner_tokens(cmd: str) -> list[str]:
+    """Tokens of the `bash -lc '<inner>'` payload for a claude cook, parsed
+    through shell rules — same approach as the codex argv helper, so assertions
+    survive the shell-quoting layer instead of matching raw substrings."""
+    outer = shlex.split(cmd)
+    assert outer[:2] == ["bash", "-lc"], f"unexpected outer shape: {outer[:2]}"
+    return shlex.split(outer[2])
+
+
+class TestCleanRoom:
+    def test_clean_room_disables_memory_and_superpowers_no_role(self):
+        """--clean-room wires the auto-memory env knob (before exec) AND the
+        superpowers-disabling --settings (after exec), and passes NO role
+        prompt — the three exclusions verified to give MEM=NO + SP=NO while
+        subscription auth + the kitchen Stop hook stay intact."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eval1", session="ck-r",
+            status_dir="/tmp/state", clean_room=True,
+        )
+        toks = _claude_inner_tokens(cmd)
+        # auto-memory env var is a temp assignment immediately before `exec`
+        ei = toks.index("exec")
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" in toks[:ei]
+        # superpowers plugin disabled via a --settings JSON arg (parsed, not substring)
+        si = toks.index("--settings")
+        settings = json.loads(toks[si + 1])
+        assert settings["enabledPlugins"]["superpowers@superpowers-marketplace"] is False
+        # clean-room cooks boot bare — no role prompt
+        assert "--append-system-prompt-file" not in toks
+
+    def test_default_is_not_clean_room(self):
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        toks = _claude_inner_tokens(cmd)
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" not in toks
+        assert "--settings" not in toks
+
+    def test_codex_clean_room_exports_codex_home_keeps_notify(self):
+        """Clean-room codex cook runs against a fresh per-cook CODEX_HOME
+        (exported before exec) while the -c notify override — the cook→sous
+        completion path — survives. Verified empirically: notify fires under a
+        fresh seeded CODEX_HOME."""
+        cmd = build_shell_cmd(
+            backend="codex", name="eval1", session="ck-r", status_dir="/tmp/state",
+            clean_room=True, codex_home="/tmp/state/codex-home/eval1",
+        )
+        toks = _claude_inner_tokens(cmd)  # same bash -lc payload shape
+        ei = toks.index("exec")
+        # CODEX_HOME is the last export token, so shlex keeps the `;` separator on it
+        assert any(t.rstrip(";") == "CODEX_HOME=/tmp/state/codex-home/eval1" for t in toks[:ei])
+        # notify override still present as two adjacent argv tokens
+        argv = _codex_argv_from_shell_cmd(cmd)
+        assert any(
+            t == "-c" and argv[i + 1].startswith("notify=")
+            for i, t in enumerate(argv[:-1])
+        ), f"notify override missing: {argv}"
+
+    def test_codex_without_codex_home_omits_it(self):
+        cmd = build_shell_cmd(
+            backend="codex", name="rev", session="ck-r", status_dir="/tmp/state",
+        )
+        assert "CODEX_HOME" not in cmd
+
+    def test_codex_home_is_codex_only(self):
+        """The CODEX_HOME export is gated to the codex backend inside
+        build_shell_cmd — a (nonsensical) claude call with codex_home set must
+        NOT leak it, so the invariant is local, not just upheld by cmd_hire."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            codex_home="/tmp/state/codex-home/eng",
+        )
+        assert "CODEX_HOME" not in cmd
 
 
 class TestRoleInjection:

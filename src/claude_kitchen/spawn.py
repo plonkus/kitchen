@@ -82,8 +82,18 @@ _GEMINI_ROLE_FOOTER = (
 )
 
 
+# Clean-room (eval) cooks disable the superpowers plugin so its SessionStart
+# "You have superpowers" injection never fires. Passed via --settings, which
+# MERGES with ~/.claude/settings.json (empirically verified) — the kitchen's
+# own Stop hook there stays live, so cook→sous completion notifications still
+# work. Plugin key is the marketplace-qualified name confirmed against
+# ~/.claude/settings.json's enabledPlugins.
+_CLEAN_ROOM_SETTINGS = '{"enabledPlugins":{"superpowers@superpowers-marketplace":false}}'
+
+
 def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
-                    effort: str = None, role_path: Path = None) -> str:
+                    effort: str = None, role_path: Path = None,
+                    clean_room: bool = False, codex_home: str = None) -> str:
     q = shlex.quote
     parts = [
         f"AGENT_NAME={q(name)}",
@@ -91,6 +101,12 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         f"STATUS_DIR={q(status_dir)}",
     ]
     parts.extend(f"{k}={q(v)}" for k, v in os.environ.items() if k.startswith("KITCHEN_"))
+    # Clean-room codex cooks run against a fresh, isolated CODEX_HOME (seeded in
+    # cmd_hire) — no user config, memory, AGENTS.md, or plugin registry. notify
+    # still rides the -c flag below, so cook→sous reporting is unaffected. Gated
+    # to codex so the invariant (only codex gets CODEX_HOME) is local here.
+    if codex_home and backend == "codex":
+        parts.append(f"CODEX_HOME={q(codex_home)}")
     env = "export " + " ".join(parts)
     if backend == "claude":
         effort_flag = f" --effort {q(effort)}" if effort else ""
@@ -103,10 +119,17 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # branch's export, not the shared `parts` list, so it never spills onto
         # codex/gemini cooks.
         env = f"{env} CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
+        # Clean-room (eval) cooks: disable auto-memory via env var (no MEMORY.md
+        # <system-reminder> injection) and disable the superpowers plugin via
+        # --settings (no SessionStart injection). Both ride the launch without
+        # touching subscription auth or the kitchen Stop hook. The caller also
+        # passes no role_path, so clean-room cooks boot bare (no role prompt).
+        mem = "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 " if clean_room else ""
+        settings_flag = f" --settings {q(_CLEAN_ROOM_SETTINGS)}" if clean_room else ""
         # Block AskUserQuestion: it renders an interactive picker in the cook's
         # TUI that fires no hook and blocks forever — the sous never learns of
         # it. Cooks surface questions via NEEDS_CONTEXT instead (see role prompts).
-        return f'bash -lc {q(f"{env}; exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{role_flag}")}'
+        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{settings_flag}{role_flag}")}'
     elif backend == "codex":
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
@@ -135,10 +158,12 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
 
 
 def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: str,
-                 effort: str = None, role_path: Path = None) -> bool:
+                 effort: str = None, role_path: Path = None,
+                 clean_room: bool = False, codex_home: str = None) -> bool:
     """Spawn a new tmux window with an agent. Returns True on success."""
     cmd = build_shell_cmd(backend, name, session, status_dir,
-                          effort=effort, role_path=role_path)
+                          effort=effort, role_path=role_path,
+                          clean_room=clean_room, codex_home=codex_home)
 
     if has_session(session):
         result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd)
