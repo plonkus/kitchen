@@ -144,3 +144,44 @@ No `MEMORY.md` was present in the fresh home. `--backend gemini --clean-room` st
 ## Cleanup
 
 Per-cook `CODEX_HOME` dirs live under `<kitchen-base>/codex-home/<name>` and are removed on `kitchen clock-out <cook>` (per-cook) and `kitchen close` (whole `codex-home/`).
+
+---
+
+# `--with-skill` — opt a custom skill into a clean-room cook (Claude, allowlist v1)
+
+`kitchen hire <name> --clean-room --with-skill <path>` (repeatable, Claude only) loads a
+custom skill/plugin dir into the blank cook via a session-scoped `--plugin-dir` per path —
+additive only; memory/superpowers/role stay off and the sous-managed cwd is untouched.
+Captured **2026-06-26**, Claude Code **2.1.190**, subscription auth.
+
+## Mechanism
+
+`--plugin-dir <path>` loads **both** a bare skill dir (containing `SKILL.md`) and a
+plugin-wrapped skill (containing `.claude-plugin/plugin.json`) — both verified to surface the
+skill while clean-room guarantees hold. Chosen over staging into `<cwd>/.claude/skills` because
+it's session-scoped and doesn't mutate cwd.
+
+## Exact command `build_shell_cmd(..., clean_room=True, plugin_dirs=[<skill>])` emits
+
+```
+bash -lc 'export AGENT_NAME=eval1 AGENT_SESSION=ck-eval STATUS_DIR=… KITCHEN_NOTES=… KITCHEN_WIKI=…; CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{"enabledPlugins":{"superpowers@superpowers-marketplace":false}}' --plugin-dir /…/myskill'
+```
+
+Memory env-var before `exec`; superpowers-off `--settings`; the opt-in `--plugin-dir`; no role.
+
+## End-to-end (real `build_shell_cmd` flags)
+
+Skill dir: `myskill/SKILL.md` with `description: Hand-written test skill for clean-room with-skill verification.` Probe of the launched cook:
+
+```
+SP=NO ; MEM=NO ; SKILL=Hand-written test skill for clean-room with-skill verification.
+```
+
+Clean-room guarantees intact (superpowers injection off, memory off) **and** the named skill
+available — its `SKILL.md` description read back verbatim (not hallucinated). Negative control
+(same flags, no `--plugin-dir`) → `SKILL=NONE`, confirming the skill's presence is due to the opt-in.
+
+## Guards
+
+`--with-skill` without `--clean-room` fails loud; on codex/gemini fails loud ("not yet supported");
+a path that isn't a dir, or a dir lacking both `SKILL.md` and `.claude-plugin/plugin.json`, fails clearly.

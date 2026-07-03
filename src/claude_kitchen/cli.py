@@ -532,6 +532,19 @@ def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
     return home
 
 
+def _validate_skill_path(raw: str) -> str:
+    """Resolve a --with-skill path and confirm it's a loadable skill or plugin
+    dir (has SKILL.md, or a .claude-plugin/plugin.json). Returns the absolute
+    path; exits clearly otherwise. Both shapes load via claude's --plugin-dir
+    (verified empirically)."""
+    p = Path(raw).expanduser()
+    if not p.is_dir():
+        sys.exit(f"--with-skill path is not a directory: {raw}")
+    if not ((p / "SKILL.md").is_file() or (p / ".claude-plugin" / "plugin.json").is_file()):
+        sys.exit(f"--with-skill path is not a skill or plugin dir (needs SKILL.md or .claude-plugin/plugin.json): {raw}")
+    return str(p.resolve())
+
+
 def cmd_hire(args):
     kitchen = resolve_kitchen(args.kitchen)
     session = mc(kitchen)
@@ -546,6 +559,18 @@ def cmd_hire(args):
     # documented follow-up — fail clearly rather than silently no-op.
     if clean_room and backend not in ("claude", "codex"):
         sys.exit(f"--clean-room is only supported for Claude and Codex cooks, not '{backend}' (not yet implemented).")
+
+    # --with-skill: opt a custom skill into a clean-room cook (allowlist v1).
+    # Each path loads as a session-scoped --plugin-dir (see build_shell_cmd) —
+    # purely additive, clean-room's blank slate is otherwise untouched.
+    with_skill = getattr(args, "with_skill", None) or []
+    plugin_dirs = None
+    if with_skill:
+        if not clean_room:
+            sys.exit("--with-skill requires --clean-room.")
+        if backend != "claude":
+            sys.exit(f"--with-skill is not yet supported for '{backend}' cooks (Claude only in v1).")
+        plugin_dirs = [_validate_skill_path(p) for p in with_skill]
 
     # Clean-room cooks boot bare — NO role prompt. The sous sends the single
     # eval prompt via a ticket. Otherwise resolve the role file as usual.
@@ -585,7 +610,7 @@ def cmd_hire(args):
         session=session, name=name, cwd=cwd,
         backend=backend, status_dir=str(base),
         effort=effort, role_path=role_to_pass, clean_room=clean_room,
-        codex_home=codex_home,
+        codex_home=codex_home, plugin_dirs=plugin_dirs,
     )
     if not ok:
         # update_status preserves durable fields (the booting write above
@@ -1306,6 +1331,7 @@ def main():
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
     p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude or Codex): no memory, no plugin/skill startup injection, no role prompt. Sous supplies the one eval prompt via a ticket. (gemini not yet supported)")
+    p_hire.add_argument("--with-skill", action="append", default=[], metavar="PATH", help="Load a custom skill/plugin dir into a --clean-room cook (repeatable; Claude only). Path needs a SKILL.md or .claude-plugin/plugin.json. Additive opt-in to the blank slate.")
 
     p_ticket = sub.add_parser("ticket", help="Send a ticket to a cook")
     p_ticket.add_argument("cook", help="Cook name")
