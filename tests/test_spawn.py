@@ -477,3 +477,44 @@ class TestSpawnSousWindow:
                                Path("/tmp/child"))
         assert ok is True                        # launch stands despite the timeout
         assert not (tmp_path / "sous.pid").exists()  # pid skipped, best-effort
+
+
+class TestModelSelection:
+    """--model wires the friendly tier into `claude --model <full-id>`; omitting
+    it leaves the launch command byte-for-byte at today's default."""
+
+    def test_model_wired_per_choice(self):
+        for choice, full_id in (
+            ("fable", "claude-fable-5"),
+            ("sonnet", "claude-sonnet-5"),
+            ("opus", "claude-opus-4-8"),
+        ):
+            cmd = build_shell_cmd(
+                backend="claude", name="eng", session="ck-r",
+                status_dir="/tmp/state", model=choice,
+            )
+            toks = _claude_inner_tokens(cmd)
+            i = toks.index("--model")
+            assert toks[i + 1] == full_id, f"{choice} → {toks[i+1]!r}, want {full_id!r}"
+
+    def test_model_omitted_absent_and_default_unchanged(self):
+        """No --model → the flag is absent AND the payload is identical to the
+        no-arg default (proves omission preserves current behavior)."""
+        default = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+        )
+        explicit_none = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            model=None,
+        )
+        assert "--model" not in default
+        assert default == explicit_none
+
+    def test_model_is_claude_only_at_build_layer(self):
+        """The codex branch never emits --model even if a model is passed
+        (cli.py fails such a call loud before it reaches here)."""
+        cmd = build_shell_cmd(
+            backend="codex", name="rev", session="ck-r",
+            status_dir="/tmp/state", model="opus",
+        )
+        assert "--model" not in cmd

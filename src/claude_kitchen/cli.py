@@ -572,6 +572,12 @@ def cmd_hire(args):
             sys.exit(f"--with-skill is not yet supported for '{backend}' cooks (Claude only in v1).")
         plugin_dirs = [_validate_skill_path(p) for p in with_skill]
 
+    # --model: pick the Claude model tier for the cook. Claude-only (codex/gemini
+    # have their own model selection); fail loud rather than silently ignore.
+    model = getattr(args, "model", None)
+    if model and backend != "claude":
+        sys.exit(f"--model is only supported for Claude cooks, not '{backend}' (Claude only).")
+
     # Clean-room cooks boot bare — NO role prompt. The sous sends the single
     # eval prompt via a ticket. Otherwise resolve the role file as usual.
     if clean_room:
@@ -610,7 +616,7 @@ def cmd_hire(args):
         session=session, name=name, cwd=cwd,
         backend=backend, status_dir=str(base),
         effort=effort, role_path=role_to_pass, clean_room=clean_room,
-        codex_home=codex_home, plugin_dirs=plugin_dirs,
+        codex_home=codex_home, plugin_dirs=plugin_dirs, model=model,
     )
     if not ok:
         # update_status preserves durable fields (the booting write above
@@ -1330,6 +1336,7 @@ def main():
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (e.g. low, medium, high, max)")
+    p_hire.add_argument("--model", choices=["fable", "sonnet", "opus"], help="Claude model tier for the cook: fable, sonnet, or opus (Claude cooks only). Omit to use the account default.")
     p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude or Codex): no memory, no plugin/skill startup injection, no role prompt. Sous supplies the one eval prompt via a ticket. (gemini not yet supported)")
     p_hire.add_argument("--with-skill", action="append", default=[], metavar="PATH", help="Load a custom skill/plugin dir into a --clean-room cook (repeatable; Claude only). Path needs a SKILL.md or .claude-plugin/plugin.json. Additive opt-in to the blank slate.")
 

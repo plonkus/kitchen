@@ -635,11 +635,35 @@ class TestStatusPreservationAcrossNonStopWriters:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         with pytest.raises(SystemExit):
             cmd_hire(args)
         data = json.loads((tmp_path / "cooks" / "eng.json").read_text())
         assert data["status"] == "failed"
         assert data["backend"] == "codex"
+
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    def test_cmd_hire_model_on_non_claude_fails_loud(
+        self, mock_rp, mock_rk, mock_state, tmp_path,
+    ):
+        """--model is Claude-only: codex/gemini backends must fail loud
+        (mirrors the --with-skill claude-only guard)."""
+        for backend in ("codex", "gemini"):
+            mock_state.return_value = tmp_path
+            args = MagicMock()
+            args.kitchen = "risotto"
+            args.name = "eng"
+            args.backend = backend
+            args.project = None
+            args.role = None
+            args.effort = None
+            args.clean_room = False
+            args.with_skill = []
+            args.model = "opus"
+            with pytest.raises(SystemExit, match="only supported for Claude"):
+                cmd_hire(args)
 
 
 class TestBrigadeAlignedOutput:
@@ -1074,6 +1098,7 @@ class TestCmdHireFailures:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
             with pytest.raises(SystemExit, match="didn't show prompt"):
                 cmd_hire(args)
@@ -1100,6 +1125,7 @@ class TestCmdHireRole:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         with pytest.raises(SystemExit, match="Unknown role.*ghost"):
             cmd_hire(args)
 
@@ -1121,6 +1147,7 @@ class TestCmdHireRole:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
         assert kwargs["role_path"] is not None
@@ -1146,6 +1173,7 @@ class TestCmdHireRole:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         cmd_hire(args)
         # Codex doesn't get a --append-system-prompt-file flag
         assert mock_spawn.call_args.kwargs["role_path"] is None
@@ -1178,6 +1206,7 @@ class TestCmdHireRole:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         cmd_hire(args)
         mock_send.assert_called_once()
         assert "_default — generic cook" in mock_send.call_args.args[2]
@@ -1202,6 +1231,7 @@ class TestCmdHireRole:
         args.effort = None
         args.clean_room = False
         args.with_skill = []
+        args.model = None
         cmd_hire(args)
         mock_send.assert_not_called()
 
@@ -1227,6 +1257,7 @@ class TestCmdHireCleanRoom:
         args.effort = None
         args.clean_room = True
         args.with_skill = []
+        args.model = None
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
         assert kwargs["clean_room"] is True
@@ -1257,6 +1288,7 @@ class TestCmdHireCleanRoom:
         args.effort = None
         args.clean_room = True
         args.with_skill = []
+        args.model = None
         cmd_hire(args)
         home = tmp_path / "codex-home" / "eval1"
         assert (home / "auth.json").read_text() == '{"OPENAI_API_KEY": "x"}'
@@ -1343,6 +1375,7 @@ class TestCmdHireCleanRoom:
         args.effort = None
         args.clean_room = True
         args.with_skill = []
+        args.model = None
         with pytest.raises(SystemExit, match="only supported for Claude and Codex"):
             cmd_hire(args)
         mock_spawn.assert_not_called()
