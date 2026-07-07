@@ -223,17 +223,17 @@ class TestNamespaced:
         # An already slug-scoped name must not be re-prefixed — otherwise
         # re-opening (or opening from a worktree dir already named for the
         # kitchen) stacks the slug, the source of the on-disk
-        # racksmith-racksmith-racksmith-program-rx-bugs triple.
-        mock_run.return_value = self._git_remote("git@github.com:acme/racksmith.git")
-        once = namespaced(tmp_path, "program-rx-bugs")
-        assert once == "racksmith-program-rx-bugs"
+        # my-project-my-project-my-project-feature-x triple.
+        mock_run.return_value = self._git_remote("git@github.com:acme/my-project.git")
+        once = namespaced(tmp_path, "feature-x")
+        assert once == "my-project-feature-x"
         # Feeding the namespaced name back in is a no-op, repeatedly.
         twice = namespaced(tmp_path, once)
-        assert twice == "racksmith-program-rx-bugs"
-        assert namespaced(tmp_path, twice) == "racksmith-program-rx-bugs"
+        assert twice == "my-project-feature-x"
+        assert namespaced(tmp_path, twice) == "my-project-feature-x"
         # A near-miss sharing the slug as a prefix but not at a `-` boundary
         # is still scoped, not mistaken for already-namespaced.
-        assert namespaced(tmp_path, "racksmithy") == "racksmith-racksmithy"
+        assert namespaced(tmp_path, "my-projecty") == "my-project-my-projecty"
 
 
 class TestWikiAndNotesDirs:

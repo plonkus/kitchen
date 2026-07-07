@@ -87,7 +87,7 @@ def project_slug(project_path: Path) -> str:
     """Derive a project slug from `git config --get remote.origin.url`.
 
     Returns the bare repo name — the last path component of the remote,
-    sans `.git`. `git@github.com:plonkus/racksmith.git` -> `racksmith`.
+    sans `.git`. `git@github.com:owner/my-project.git` -> `my-project`.
     Two unrelated repos that share a repo name collide; that's the user's
     problem to disambiguate with an explicit `--kitchen` / kitchen name.
     When no remote is configured but the path is a git repo, falls back to
@@ -130,8 +130,8 @@ def namespaced(project: Path, requested: str) -> str:
     common `kitchen open` no-name case (dir name == slug → `seed-domo`, not
     `seed-domo-seed-domo`) and stops re-opens / opening from a worktree dir
     already named for the kitchen from piling slug on slug (the on-disk
-    `racksmith-racksmith-racksmith-program-rx-bugs` triple). The `f"{slug}-"`
-    boundary keeps a mere prefix match (`racksmithy`) from being mistaken for
+    `my-project-my-project-my-project-feature-x` triple). The `f"{slug}-"`
+    boundary keeps a mere prefix match (`my-projecty`) from being mistaken for
     an already-scoped name.
     """
     slug = project_slug(project)

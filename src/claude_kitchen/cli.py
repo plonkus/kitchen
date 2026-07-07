@@ -364,7 +364,7 @@ def cmd_open(args):
     requested = args.name or project.name
     # Namespace the kitchen by project slug so kitchens for different projects
     # never collide on tmux session / state dir / socket names — e.g.
-    # `kitchen open main` in two repos yields plow-main and racksmith-main,
+    # `kitchen open main` in two repos yields my-project-main and other-repo-main,
     # not a shared "main". The git branch/worktree keeps the bare `requested`
     # name (it already lives inside the project's own repo).
     name = namespaced(project, requested)

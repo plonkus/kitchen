@@ -55,4 +55,4 @@ When a cook finishes, you'll see a `← kitchen:` message with the cook's output
 - **Sending work** — after `kitchen hire`, the sous fires the first ticket via `kitchen ticket <cook> "..."`. There is no `--task` flag (was removed in favor of explicit ticketing).
 - **`--effort` flag** — reasoning effort: `low`, `medium`, `high` (default), `max`. Only use this if the human explicitly requests a specific effort level. Do not set it on your own.
 - **State lives in** `~/.claude-kitchen/<project-slug>-<name>/` — cook status JSON files
-- **tmux sessions** named `ck-<project-slug>-<name>` (e.g., `ck-racksmith-risotto`). The project slug is the repo name, so the same name in two repos never collides. Human can `tmux attach` to observe cooks.
+- **tmux sessions** named `ck-<project-slug>-<name>` (e.g., `ck-my-project-risotto`). The project slug is the repo name, so the same name in two repos never collides. Human can `tmux attach` to observe cooks.
