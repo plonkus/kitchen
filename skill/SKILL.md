@@ -15,7 +15,7 @@ If `$AGENT_SESSION` is set, you ARE the sous chef in an active kitchen. Do NOT c
 
 | Command | What it does |
 |---------|-------------|
-| `kitchen open <project> --name <name>` | Start a kitchen (human runs this, not the sous) |
+| `kitchen open [name] [project]` | Start a kitchen (human runs this, not the sous) |
 | `kitchen hire <name> --backend claude\|codex [--role ROLE] [--effort LEVEL]` | Spawn a cook in the kitchen |
 | `kitchen roles` | List available cook roles |
 | `kitchen ticket <cook> "message"` | Send a task to a cook |

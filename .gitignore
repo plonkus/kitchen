@@ -8,3 +8,9 @@ dist/
 .*-fixes-task.md
 .gstack/
 docs/
+
+# Browser-automation / scratch artifacts
+.playwright-mcp/
+.antigravitycli/
+--full-page
+redesign-*.png

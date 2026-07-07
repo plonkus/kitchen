@@ -23,7 +23,7 @@ Plugin key confirmed against `~/.claude/settings.json` `enabledPlugins`:
 ## Exact launch command `build_shell_cmd(..., clean_room=True)` emits
 
 ```
-bash -lc 'export AGENT_NAME=eval1 AGENT_SESSION=ck-claude-kitchen STATUS_DIR=/Users/plucas/.claude-kitchen/kitchen-claude-kitchen KITCHEN_NOTES=... KITCHEN_WIKI=...; CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{"enabledPlugins":{"superpowers@superpowers-marketplace":false}}''
+bash -lc 'export AGENT_NAME=eval1 AGENT_SESSION=ck-claude-kitchen STATUS_DIR=$HOME/.claude-kitchen/kitchen-claude-kitchen KITCHEN_NOTES=... KITCHEN_WIKI=...; CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{"enabledPlugins":{"superpowers@superpowers-marketplace":false}}''
 ```
 
 Note: the auto-memory env var is a temp assignment **before** `exec`; the plugin
@@ -120,7 +120,7 @@ seeded with **only `auth.json`** + a minimal `config.toml` granting trust to cwd
 1. **notify under fresh seeded `CODEX_HOME`** → ✅ a turn fired `kitchen hook-codex`, writing the cook's status JSON to the sous status dir.
 2. **trust prompt** → `--dangerously-bypass-approvals-and-sandbox` does NOT suppress codex's workspace-trust prompt under a fresh home, and a `-c projects."<cwd>".trust_level` override did NOT gate it either. The working fix (and what `_seed_codex_home` writes) is a persisted `config.toml`:
    ```toml
-   [projects."/Users/plucas/cncorp/claude-kitchen"]
+   [projects."/path/to/your/repo"]
    trust_level = "trusted"
    ```
    With it pre-seeded, codex booted straight to the prompt — no trust dialog.
