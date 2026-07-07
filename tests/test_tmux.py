@@ -165,3 +165,439 @@ class TestWaitForPrompt:
                                timeout=100000, stall_timeout=45) is True
 
 
+# Real pane captures from the B3 live verification (claude+codex+gemini cooks,
+# ck-sbusy). These are the empirical fixtures the busy/idle logic is pinned to.
+CLAUDE_IDLE = (
+    "  By making information abundant rather than scarce, it reshaped society.\n"
+    "✻ Churned for 54s\n"
+    "────────────────────────────────────────────────────────────\n"
+    "❯ \n"
+    "────────────────────────────────────────────────────────────\n"
+    "  ██░░░░░░░░░░ 4%  claude-opus-4-8[1m]  main\n"
+    "  [ tmux attach -t ck-sbusy ]  [ 0/2 agents active ]\n"
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n"
+)
+# Turn-start spinner (rotating asterisk glyph + gerund + ellipsis).
+CLAUDE_BUSY_SPINNER = (
+    "  the copying of words but fundamentally restructured knowledge.\n"
+    "✻ Churned for 54s\n"
+    "❯ Now, without tools, write another 20-paragraph essay.\n"
+    "✽ Crafting…\n"
+)
+CLAUDE_BUSY_SPINNER_SUFFIX = "✶ Fluttering… (1s · ↓ 1 tokens)\n"
+# Two frames of a claude STREAMING text: no spinner, footer byte-identical to
+# idle — only the growing transcript differs.
+CLAUDE_STREAM_1 = (
+    "  insulator, it became pliable when heated and hard when cooled.\n"
+    "────────────────────────────────────────────────────────────\n"
+    "❯ \n"
+    "────────────────────────────────────────────────────────────\n"
+    "  ██░░░░░░░░░░ 4%  claude-opus-4-8[1m]  main\n"
+    "  [ tmux attach -t ck-sbusy ]  [ 1/2 agents active ]\n"
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n"
+)
+CLAUDE_STREAM_2 = CLAUDE_STREAM_1.replace(
+    "  insulator, it became pliable when heated and hard when cooled.\n",
+    "  insulator, it became pliable when heated and hard when cooled.\n"
+    "  The Gutta Percha Company in London became a vital supplier.\n",
+)
+CODEX_IDLE = (
+    "  making radio one of the most adaptable communication technologies.\n"
+    "› Explain this codebase\n"
+    "  gpt-5.5 high fast · /tmp/proj · Context 98% left\n"
+)
+CODEX_BUSY = (
+    "  making radio one of the most adaptable communication technologies.\n"
+    "› Without tools, write a 25-paragraph essay on the history of clocks.\n"
+    "• Working (2s • esc to interrupt)\n"
+    "› Explain this codebase\n"
+    "  gpt-5.5 high fast · /tmp/proj · Context 98% left\n"
+)
+GEMINI_IDLE = (
+    "  It continues to be the ultimate symbol of direction and orientation.\n"
+    ">\n"
+    "? for shortcuts                                  Gemini 3.5 Flash (Medium)\n"
+)
+GEMINI_BUSY = (
+    "> Without tools, write a 20-paragraph essay on the history of compasses.\n"
+    "⣻  Working...\n"
+    ">\n"
+    "esc to cancel                                    Gemini 3.5 Flash (Medium)\n"
+)
+
+
+def _tail(raw):
+    """Mirror _pane_tail's filtering so marker tests can run on raw captures."""
+    return [ln for ln in raw.splitlines() if ln.strip()][-40:]
+
+
+class TestBusyMarkerHit:
+    """Pure marker-match logic against the real captured tails."""
+
+    def test_claude_spinner_matches(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(CLAUDE_BUSY_SPINNER), "claude") is True
+
+    def test_claude_spinner_with_token_suffix_matches(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(CLAUDE_BUSY_SPINNER_SUFFIX), "claude") is True
+
+    def test_claude_idle_completion_line_does_NOT_match(self):
+        # "✻ Churned for 54s" has the same glyph as the live spinner but no "…".
+        # The ellipsis is the discriminator — this is the brittle bit, pin it.
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(["✻ Churned for 54s"], "claude") is False
+
+    def test_claude_idle_footer_does_NOT_match(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(CLAUDE_IDLE), "claude") is False
+
+    def test_codex_working_footer_matches(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(CODEX_BUSY), "codex") is True
+
+    def test_codex_idle_does_NOT_match(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(CODEX_IDLE), "codex") is False
+
+    def test_gemini_cancel_footer_matches(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(GEMINI_BUSY), "gemini") is True
+
+    def test_gemini_idle_does_NOT_match(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        assert _busy_marker_hit(_tail(GEMINI_IDLE), "gemini") is False
+
+    def test_unknown_backend_raises_valueerror(self):
+        from claude_kitchen.tmux import _busy_marker_hit
+        with pytest.raises(ValueError, match="unknown backend"):
+            _busy_marker_hit(["whatever"], "llama")
+
+
+class TestPaneBusy:
+    """Full pane_busy: marker fast-path, claude change-detection, codex/gemini
+    no-fallback, unknown-backend error. capture_pane mocked — no live tmux."""
+
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_codex_busy_marker_is_instant_single_capture(self, mock_cap):
+        # Marker hit → True with exactly ONE capture (no settle, no fallback).
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.return_value = CODEX_BUSY
+        assert pane_busy("ck-x", "cx", "codex") is True
+        assert mock_cap.call_count == 1
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_codex_idle_no_fallback_single_capture(self, mock_cap, mock_sleep):
+        # Persistent-footer backend: marker-miss is authoritatively idle —
+        # exactly ONE capture, and NO settle sleep.
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.return_value = CODEX_IDLE
+        assert pane_busy("ck-x", "cx", "codex") is False
+        assert mock_cap.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_gemini_idle_no_fallback_single_capture(self, mock_cap, mock_sleep):
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.return_value = GEMINI_IDLE
+        assert pane_busy("ck-x", "gm", "gemini") is False
+        assert mock_cap.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_claude_idle_stable_pane_is_not_busy(self, mock_cap, mock_sleep):
+        # Markerless backend, marker-miss → change-detection. Idle pane is stable
+        # across the settle window, so the two captures match → False (no
+        # false-positive). Two captures taken.
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.return_value = CLAUDE_IDLE
+        assert pane_busy("ck-x", "cc", "claude") is False
+        assert mock_cap.call_count == 2
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_claude_streaming_detected_by_change(self, mock_cap, mock_sleep):
+        # Markerless backend streaming text: no spinner, footer identical to
+        # idle, but the transcript grows between captures → busy.
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.side_effect = [CLAUDE_STREAM_1, CLAUDE_STREAM_2]
+        assert pane_busy("ck-x", "cc", "claude") is True
+        assert mock_cap.call_count == 2
+
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_claude_spinner_marker_is_instant(self, mock_cap):
+        # Spinner present → True via the marker fast-path, single capture.
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.return_value = CLAUDE_BUSY_SPINNER
+        assert pane_busy("ck-x", "cc", "claude") is True
+        assert mock_cap.call_count == 1
+
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_unknown_backend_raises_valueerror(self, mock_cap):
+        from claude_kitchen.tmux import pane_busy
+        mock_cap.return_value = CLAUDE_IDLE
+        with pytest.raises(ValueError, match="unknown backend"):
+            pane_busy("ck-x", "cc", "llama")
+
+
+# ---- B1: verified-submit loop (cursor-column accept predicate) ----
+# send_keys: paste (untouched) → settle-poll → Enter-until-the-composer-accepts.
+# Acceptance is proven POSITIVELY by the input cursor returning to the empty
+# composer column (submit OR queue), NOT by a row string changing — so a repaint
+# after a swallowed Enter cannot false-positive into silent ticket loss. These
+# drive the real loop with capture_pane (settle) and tmux() (cursor_x + Enter)
+# mocked — no live tmux.
+
+_SETTLE_HEAD = "DOTHING"      # ticket text; head == text so it's easy to embed
+_EMPTY_COL = 2               # empty-composer cursor column
+_PAYLOAD_COL = 37            # cursor at the end of a pasted payload
+
+
+def _settle_stable():
+    """capture_pane side-effect: a baseline with NO head, then identical panes
+    that DO contain the head → paste positively observed AND pane stabilizes."""
+    calls = {"n": 0}
+
+    def cap(session, window, full=False):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "idle transcript\n> "
+        return f"transcript line\n> {_SETTLE_HEAD} landed\n"  # head present, stable
+
+    return cap
+
+
+def _settle_no_signal(session, window, full=False):
+    """Settle-poll never sees the head → paste never positively observed."""
+    return "idle transcript, head never appears\n> "
+
+
+def _settle_signal_never_stable():
+    """Head appears (signalled) but the pane KEEPS changing → never reaches the
+    stability threshold. Exercises Critical 1's 'observed but never stabilized'."""
+    calls = {"n": 0}
+
+    def cap(session, window, full=False):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "idle\n> "
+        return f"streaming {calls['n']}\n> {_SETTLE_HEAD} {calls['n']}\n"  # head, but always different
+
+    return cap
+
+
+def _tmux_cursor(cols):
+    """tmux() side-effect. display-message → the next scripted cursor_x; send-keys/
+    load-buffer/paste-buffer → success. Records Enters and the load-buffer input."""
+    queue = list(cols)
+    state = {"enter": 0, "pasted_text": None}
+
+    def fake(*args, **kwargs):
+        cmd = args[0]
+        m = MagicMock(returncode=0, stdout="")
+        if cmd == "display-message":
+            m.stdout = (str(queue.pop(0)) if queue else str(_PAYLOAD_COL)) + "\n"
+        elif cmd == "load-buffer":
+            state["pasted_text"] = kwargs.get("input")
+        elif cmd == "send-keys":
+            state["enter"] += 1
+        return m
+
+    fake.state = state
+    return fake
+
+
+class TestSendKeysVerifiedSubmit:
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_first_enter_submits(self, mock_cap, mock_tmux, mock_sleep):
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        # cursor_x: empty (pre-paste) → payload (precondition) → empty (accepted).
+        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _EMPTY_COL])
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_swallowed_first_enter_is_retried(self, mock_cap, mock_tmux, mock_sleep):
+        # codex paste-commit race: Enter #1 swallowed (cursor still at payload),
+        # Enter #2 lands (cursor back to empty). The loop recovers.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL,
+                             _PAYLOAD_COL,    # after Enter #1: swallowed, still in composer
+                             _EMPTY_COL])     # after Enter #2: accepted
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 2
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_repaint_without_acceptance_does_not_false_positive(self, mock_cap, mock_tmux, mock_sleep):
+        # CRITICAL 2: the payload is NEVER accepted (cursor never returns to the
+        # empty column) but the composer "repaints" — the cursor jitters across
+        # columns (wrap/stub-expansion/redraw). The OLD row-string predicate would
+        # have declared success (row changed); the cursor-column predicate must
+        # NOT — it raises rather than silently losing the ticket.
+        from claude_kitchen.tmux import send_keys, _SUBMIT_ATTEMPTS
+        mock_cap.side_effect = _settle_stable()
+        jitter = [40, 38, 41, 39, 42, 37, 40, 38]  # never _EMPTY_COL
+        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL] + jitter[:_SUBMIT_ATTEMPTS])
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="never left the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == _SUBMIT_ATTEMPTS
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_queued_while_busy_counts_as_success(self, mock_cap, mock_tmux, mock_sleep):
+        # TRAP guard: a follow-up fired mid-turn is QUEUED, not committed to
+        # history — but the composer DOES clear (cursor → empty column), so the
+        # predicate correctly counts it as accepted. (Identical cursor signature
+        # to a normal submit: that is the point — accept == submit OR queue.)
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _EMPTY_COL])
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_paste_never_observed_raises_without_any_enter(self, mock_time, mock_cap, mock_tmux):
+        # CRITICAL 1 (never signalled): settle deadline with no paste-landed
+        # signal → raise, send NO Enter (never submit blind).
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+        def now():
+            clock[0] += 0.5
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_no_signal
+        fake = _tmux_cursor([_EMPTY_COL])
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="did not settle"):
+            send_keys("ck-x", "cx", "a ticket whose head never lands", backend="codex")
+        assert fake.state["enter"] == 0
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_observed_but_never_stable_raises(self, mock_time, mock_cap, mock_tmux):
+        # CRITICAL 1 (the new fix): paste IS observed but the pane never reaches
+        # the stability threshold before the deadline → still raise. The narrow
+        # old check ('not signalled') would have submitted into a still-repainting
+        # composer, reintroducing the long-paste race.
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+        def now():
+            clock[0] += 0.5
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_signal_never_stable()
+        fake = _tmux_cursor([_EMPTY_COL])
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="did not settle"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 0
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_paste_did_not_land_in_composer_raises(self, mock_cap, mock_tmux, mock_sleep):
+        # Precondition: if after a 'settled' paste the cursor is STILL at the
+        # empty column, the payload never reached the composer — raise rather than
+        # let the loop's 'back to empty' check fire on a no-op.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _EMPTY_COL])  # precondition still empty
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="did not land in the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 0
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_never_re_pastes_only_enters(self, mock_cap, mock_tmux, mock_sleep):
+        # IRON RULE: retry is Enter-only — after the initial paste-buffer there is
+        # NO further load-buffer/paste-buffer no matter how many Enter retries run.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _PAYLOAD_COL, _EMPTY_COL])
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        cmds = [c.args[0] for c in mock_tmux.call_args_list]
+        assert cmds.count("paste-buffer") == 1
+        assert cmds.count("load-buffer") == 1
+        assert fake.state["enter"] == 2  # retried, never re-pasted
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_trailing_newlines_stripped_before_paste(self, mock_cap, mock_tmux, mock_sleep):
+        # A trailing newline would add an empty final composer row whose cursor
+        # sits back at the empty column, defeating the accept check (and the codex
+        # role-ack footer ends in "\n"). The text must be rstrip("\n")ed before
+        # the paste; INTERNAL newlines are preserved.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _EMPTY_COL])
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", "DOTHING\nsecond line\n\n", backend="codex")
+        assert fake.state["pasted_text"] == "DOTHING\nsecond line"
+
+    # ---- cycle-3: pin the two residual column-predicate edges ----
+    # Both proven non-reproducible on real cooks (codex + claude): a NON-EMPTY
+    # payload always parks the cursor at column >= empty_col + 1 (content floor,
+    # verified across both 80-col wrap boundaries and short multi-line tails),
+    # so the cursor never collides with empty_col while text is present. These
+    # two tests pin the boundary so it stays explicit.
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_text_remaining_is_not_false_accepted(self, mock_cap, mock_tmux, mock_sleep):
+        # EDGE 2 (residual false-positive / silent-loss class): a swallowed Enter
+        # leaves the payload in the composer. "Text remains" means the cursor
+        # stays at a CONTENT column — even the closest content can get to empty,
+        # the floor empty_col+1 (a 1-char / wrapped tail) — never AT empty_col.
+        # So the predicate must NOT accept: it keeps Entering and ultimately
+        # raises, never declaring a still-unsent ticket delivered.
+        from claude_kitchen.tmux import send_keys, _SUBMIT_ATTEMPTS
+        floor = _EMPTY_COL + 1  # the lowest column real content ever occupies
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, floor] + [floor] * _SUBMIT_ATTEMPTS)
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="never left the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == _SUBMIT_ATTEMPTS
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_landing_at_empty_col_fails_loud(self, mock_cap, mock_tmux, mock_sleep):
+        # EDGE 1 (landing false-negative): IF a real payload ever landed reading
+        # cursor_x == empty_col (a hypothetical exact wrap-to-empty-col that the
+        # floor invariant says doesn't happen), the landed precondition raises
+        # "did not land" — fail LOUD, send NO Enter. The sous sees the error and
+        # retries; the ticket is never blindly submitted or silently lost.
+        from claude_kitchen.tmux import send_keys
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor([_EMPTY_COL, _EMPTY_COL])  # post-settle cursor still at empty col
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="did not land in the composer"):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 0

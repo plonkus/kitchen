@@ -198,3 +198,10 @@ Both live inside the installed `claude_kitchen` package — `kitchen setup` prin
 - **`kitchen setup` reports Claude CLI too old.** Upgrade Claude Code to ≥ 2.1.80.
 - **Legacy kitchen named `projects`.** The `projects` name is reserved for the per-project wiki root. Rename the legacy state directory as `kitchen setup` instructs.
 - **Kitchen refuses to open ("not a git repository").** `cd` into a git repo first; kitchen needs one to derive a state slug.
+
+## Acknowledgements
+
+Kitchen was inspired by two projects we admired and learned from. We re-implemented their ideas in our own Python — no code was copied.
+
+- **[firstmate](https://github.com/kunchenguid/firstmate)** — we studied its tmux send/verify approach (verified-submit, prompt-suggestion/ghost-text suppression, busy-footer detection) and re-implemented those ideas ourselves.
+- **[mypeople](https://github.com/plow-pbc/mypeople)** — general inspiration for orchestrating multiple Claude Code agents through a single channel server.

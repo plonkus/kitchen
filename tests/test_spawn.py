@@ -185,6 +185,27 @@ class TestCleanRoom:
         )
         assert "CODEX_HOME" not in cmd
 
+    def test_clean_room_with_plugin_dirs(self):
+        """--with-skill paths arrive as repeated --plugin-dir <path> pairs on a
+        clean-room claude cook, alongside (not replacing) the memory + settings
+        knobs — additive opt-in to the blank slate."""
+        cmd = build_shell_cmd(
+            backend="claude", name="eval1", session="ck-r", status_dir="/tmp/state",
+            clean_room=True, plugin_dirs=["/skills/a", "/skills/b"],
+        )
+        toks = _claude_inner_tokens(cmd)
+        pairs = [(toks[i], toks[i + 1]) for i in range(len(toks) - 1) if toks[i] == "--plugin-dir"]
+        assert ("--plugin-dir", "/skills/a") in pairs
+        assert ("--plugin-dir", "/skills/b") in pairs
+        assert "--settings" in toks  # blank-slate knobs still present
+        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" in toks[:toks.index("exec")]
+
+    def test_no_plugin_dirs_by_default(self):
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+        )
+        assert "--plugin-dir" not in cmd
+
     def test_codex_home_is_codex_only(self):
         """The CODEX_HOME export is gated to the codex backend inside
         build_shell_cmd — a (nonsensical) claude call with codex_home set must
@@ -217,6 +238,64 @@ class TestRoleInjection:
             status_dir="/tmp/state",
         )
         assert "--append-system-prompt-file" not in cmd
+
+
+_GHOST_VAR = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
+
+
+def _export_segment(cmd: str) -> str:
+    """The `export ...` portion of a `bash -lc 'export ...; exec ...'` command —
+    i.e. the env the launched process inherits, excluding the exec'd argv."""
+    outer = shlex.split(cmd)
+    assert outer[:2] == ["bash", "-lc"], f"unexpected outer shape: {outer[:2]}"
+    inner = outer[2]
+    return inner.split("; exec", 1)[0]
+
+
+class TestPromptSuggestionDisabled:
+    """B2: kitchen-launched Claude COOKS disable the prompt-suggestion ghost
+    text (CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false). Claude-cook-only — never
+    on codex/gemini cooks, never on the sous launches."""
+
+    def test_claude_cook_disables_ghost_text(self):
+        cmd = build_shell_cmd(
+            backend="claude", name="eng", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        # Present, AND in the exported env (so the exec'd claude inherits it),
+        # not stray inside the argv.
+        assert _GHOST_VAR in _export_segment(cmd)
+
+    def test_codex_cook_has_no_ghost_var(self):
+        cmd = build_shell_cmd(
+            backend="codex", name="rev", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        assert "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION" not in cmd
+
+    def test_gemini_cook_has_no_ghost_var(self):
+        cmd = build_shell_cmd(
+            backend="gemini", name="gm", session="ck-r",
+            status_dir="/tmp/state",
+        )
+        assert "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION" not in cmd
+
+    @patch("claude_kitchen.spawn.os.chdir")
+    @patch("claude_kitchen.spawn.os.execvp")
+    def test_spawn_sous_has_no_ghost_var(self, mock_exec, mock_chdir, tmp_path, monkeypatch):
+        """The interactive sous is descoped from B2 — its launch argv must not
+        carry the ghost-text disable."""
+        for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        spawn_sous("risotto", tmp_path, "prompt text", slug="gh-x-y")
+        argv = mock_exec.call_args.args[1]
+        assert all("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION" not in tok for tok in argv), (
+            f"ghost-text disable leaked into sous argv: {argv}"
+        )
+
+    def test_build_sous_cmd_has_no_ghost_var(self, tmp_path):
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
+        assert "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION" not in cmd
 
 
 class TestSpawnSous:

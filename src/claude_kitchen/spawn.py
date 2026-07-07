@@ -93,7 +93,8 @@ _CLEAN_ROOM_SETTINGS = '{"enabledPlugins":{"superpowers@superpowers-marketplace"
 
 def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
                     effort: str = None, role_path: Path = None,
-                    clean_room: bool = False, codex_home: str = None) -> str:
+                    clean_room: bool = False, codex_home: str = None,
+                    plugin_dirs: list = None) -> str:
     q = shlex.quote
     parts = [
         f"AGENT_NAME={q(name)}",
@@ -113,6 +114,12 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # Pass the file path, not the contents — the file form avoids
         # shell-quoting fragility for multi-line role prompts.
         role_flag = f" --append-system-prompt-file {q(str(role_path))}" if role_path else ""
+        # Disable Claude's prompt-suggestion ghost text (the dim placeholder in
+        # an empty composer): pane readers (pane_busy/peek) could otherwise
+        # misread it as typed input. Claude cooks only — appended to THIS
+        # branch's export, not the shared `parts` list, so it never spills onto
+        # codex/gemini cooks.
+        env = f"{env} CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
         # Clean-room (eval) cooks: disable auto-memory via env var (no MEMORY.md
         # <system-reminder> injection) and disable the superpowers plugin via
         # --settings (no SessionStart injection). Both ride the launch without
@@ -120,10 +127,15 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # passes no role_path, so clean-room cooks boot bare (no role prompt).
         mem = "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 " if clean_room else ""
         settings_flag = f" --settings {q(_CLEAN_ROOM_SETTINGS)}" if clean_room else ""
+        # Clean-room allowlist opt-in (--with-skill): each path is loaded as a
+        # session-scoped plugin dir. Additive only — doesn't touch memory, the
+        # disabled superpowers plugin, the role, or the sous-managed cwd. cli.py
+        # gates this to clean-room claude cooks with validated paths.
+        plugin_flags = "".join(f" --plugin-dir {q(p)}" for p in (plugin_dirs or []))
         # Block AskUserQuestion: it renders an interactive picker in the cook's
         # TUI that fires no hook and blocks forever — the sous never learns of
         # it. Cooks surface questions via NEEDS_CONTEXT instead (see role prompts).
-        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{settings_flag}{role_flag}")}'
+        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{settings_flag}{plugin_flags}{role_flag}")}'
     elif backend == "codex":
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
@@ -153,11 +165,13 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
 
 def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: str,
                  effort: str = None, role_path: Path = None,
-                 clean_room: bool = False, codex_home: str = None) -> bool:
+                 clean_room: bool = False, codex_home: str = None,
+                 plugin_dirs: list = None) -> bool:
     """Spawn a new tmux window with an agent. Returns True on success."""
     cmd = build_shell_cmd(backend, name, session, status_dir,
                           effort=effort, role_path=role_path,
-                          clean_room=clean_room, codex_home=codex_home)
+                          clean_room=clean_room, codex_home=codex_home,
+                          plugin_dirs=plugin_dirs)
 
     if has_session(session):
         result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd)
