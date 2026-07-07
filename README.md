@@ -2,6 +2,8 @@
 
 Multi-agent orchestration for Claude Code and Codex. A **sous chef** (Claude) coordinates **cook** agents running in tmux windows, communicating via Claude Code's channels feature.
 
+**→ [How it works](ARCHITECTURE.md)** — the architecture in two diagrams: tmux keystrokes down, hooks + MCP channels up, any agent CLI as a cook, all on your existing subscriptions.
+
 ## Requirements
 
 Every dependency below lists **why** kitchen needs it, a **verify** command to check whether it's already present, and how to **install** it if missing. An agent can walk this list top to bottom, run each verify command, and install only what's missing. The [Install](#install) section then ties it together, ending with `kitchen setup` as the final green-light check.
@@ -110,8 +112,8 @@ tmux attach -t ck-<kitchen-name>
 (When you omit `<name>`, the kitchen name is the repo directory's name.)
 
 The kitchen is automatically namespaced by the project's slug — the repo name,
-taken from the git remote (`git@github.com:plonkus/racksmith.git` → `racksmith`).
-`kitchen open main` becomes `racksmith-main`, so the same name in two different
+taken from the git remote (`git@github.com:owner/my-project.git` → `my-project`).
+`kitchen open main` becomes `my-project-main`, so the same name in two different
 repos never collides on the tmux session, state dir, or channel socket. The
 `tmux attach -t` target above is `ck-<project-slug>-<name>`. (Two unrelated repos
 that share a name collide; disambiguate with an explicit kitchen name.)
@@ -149,6 +151,8 @@ The sous chef translates your requests into `kitchen hire`, `kitchen ticket`, et
 
 The sous is autonomous — give it a goal and it hires cooks, assigns work, reviews results, and iterates.
 
+For the full picture — diagrams, the hook → socket → channel pipeline, the verified tmux typing layer, and how to add new cook backends — see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ## CLI Reference
 
 These are the commands the sous chef uses under the hood. You can also run them directly.
@@ -178,7 +182,7 @@ All kitchen state lives under `~/.claude-kitchen/`:
 - `~/.claude-kitchen/<kitchen-name>/` — per-kitchen state: `kitchen.json`, `kitchen.sock` (MCP socket), `sous.pid`, `cooks/` (cook status JSON), `notes/` (handoff, log, task briefs — wiped on `kitchen close`)
 - `~/.claude-kitchen/projects/<project-slug>/wiki/` — the per-project **wiki**, persistent across kitchens. Contains `mistakes.md` (lessons learned) and `preferences.md` (head chef's working style). Survives `kitchen close`.
 
-`<project-slug>` comes from `git remote origin` — e.g. `gh-plonkus-kitchen` for this repo. Local-only repos (no origin) fall back to a slugified toplevel path.
+`<project-slug>` comes from `git remote origin` — e.g. `my-project` for a repo at `git@github.com:owner/my-project.git`. Local-only repos (no origin) fall back to a slugified toplevel path.
 
 ## Customizing kitchen
 
