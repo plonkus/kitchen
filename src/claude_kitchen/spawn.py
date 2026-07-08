@@ -66,11 +66,6 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
 # Codex:    low | medium | high | xhigh
 _CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "max": "xhigh"}
 
-# Claude model tiers → full model IDs for `claude --model`. The CLI also accepts
-# the bare alias (fable/sonnet/opus), but pinning the full id keeps a cook's
-# model deterministic. Claude-only; cli.py guards codex/gemini out.
-_CLAUDE_MODEL = {"fable": "claude-fable-5", "sonnet": "claude-sonnet-5", "opus": "claude-opus-4-8"}
-
 # Per-launch notify override appended to every codex cook. TOML array literal.
 _CODEX_NOTIFY_OVERRIDE = 'notify=["kitchen","hook-codex"]'
 
@@ -116,13 +111,11 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
     env = "export " + " ".join(parts)
     if backend == "claude":
         effort_flag = f" --effort {q(effort)}" if effort else ""
-        # Claude model selection (--model): friendly tier → full id. Omitted →
-        # empty string, so the default launch command is byte-for-byte unchanged.
-        # CLI `choices` already restricts input; this guard is for direct-helper
-        # misuse, failing clearly instead of a raw KeyError.
-        if model and model not in _CLAUDE_MODEL:
-            raise ValueError(f"Unknown Claude model tier: {model!r} (expected one of {', '.join(_CLAUDE_MODEL)})")
-        model_flag = f" --model {q(_CLAUDE_MODEL[model])}" if model else ""
+        # Claude model selection (--model): the tier alias (fable/sonnet/opus)
+        # passes through verbatim, so `claude --model` resolves the latest model
+        # in that tier at launch. Omitted → empty string, so the default launch
+        # command is byte-for-byte unchanged.
+        model_flag = f" --model {q(model)}" if model else ""
         # Pass the file path, not the contents — the file form avoids
         # shell-quoting fragility for multi-line role prompts.
         role_flag = f" --append-system-prompt-file {q(str(role_path))}" if role_path else ""
