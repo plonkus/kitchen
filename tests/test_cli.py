@@ -1330,8 +1330,10 @@ class TestCmdHireCleanRoom:
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
         args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []
+        args.model = None  # else the non-Claude --model guard exits before the codex-home path
         with pytest.raises(SystemExit):
             cmd_hire(args)
+        mock_spawn.assert_called_once()  # proves we reached the spawn-failure path, not the guard
         assert not (tmp_path / "codex-home" / "eval1").exists(), "seeded CODEX_HOME (with auth.json) leaked on spawn failure"
 
     @patch("claude_kitchen.cli.send_keys")
@@ -1351,8 +1353,10 @@ class TestCmdHireCleanRoom:
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
         args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []
+        args.model = None  # else the non-Claude --model guard exits before the prompt-wait path
         with pytest.raises(SystemExit):
             cmd_hire(args)
+        mock_wait.assert_called_once()  # proves we reached the prompt-timeout path, not the guard
         assert not (tmp_path / "codex-home" / "eval1").exists(), "seeded CODEX_HOME leaked on prompt timeout"
 
     @patch("claude_kitchen.cli.spawn_window")
@@ -1404,8 +1408,10 @@ class TestCmdHireCleanRoom:
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "claude"
         args.project = None; args.role = None; args.effort = None; args.clean_room = True
         args.with_skill = [str(skill)]
+        args.model = None  # a Claude hire passes the guard; assert model isn't accidentally forwarded
         cmd_hire(args)
         assert mock_spawn.call_args.kwargs["plugin_dirs"] == [str(skill.resolve())]
+        assert mock_spawn.call_args.kwargs["model"] is None
 
     @patch("claude_kitchen.cli.spawn_window")
     @patch("claude_kitchen.cli.state_dir")

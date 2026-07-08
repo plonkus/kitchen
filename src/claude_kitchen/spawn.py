@@ -118,6 +118,10 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         effort_flag = f" --effort {q(effort)}" if effort else ""
         # Claude model selection (--model): friendly tier → full id. Omitted →
         # empty string, so the default launch command is byte-for-byte unchanged.
+        # CLI `choices` already restricts input; this guard is for direct-helper
+        # misuse, failing clearly instead of a raw KeyError.
+        if model and model not in _CLAUDE_MODEL:
+            raise ValueError(f"Unknown Claude model tier: {model!r} (expected one of {', '.join(_CLAUDE_MODEL)})")
         model_flag = f" --model {q(_CLAUDE_MODEL[model])}" if model else ""
         # Pass the file path, not the contents — the file form avoids
         # shell-quoting fragility for multi-line role prompts.
