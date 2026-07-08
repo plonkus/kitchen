@@ -480,22 +480,19 @@ class TestSpawnSousWindow:
 
 
 class TestModelSelection:
-    """--model wires the friendly tier into `claude --model <full-id>`; omitting
-    it leaves the launch command byte-for-byte at today's default."""
+    """--model passes the tier alias through to `claude --model <alias>` verbatim
+    (the CLI resolves the latest model in that tier); omitting it leaves the
+    launch command byte-for-byte at today's default."""
 
-    def test_model_wired_per_choice(self):
-        for choice, full_id in (
-            ("fable", "claude-fable-5"),
-            ("sonnet", "claude-sonnet-5"),
-            ("opus", "claude-opus-4-8"),
-        ):
+    def test_model_alias_passed_through(self):
+        for alias in ("fable", "sonnet", "opus"):
             cmd = build_shell_cmd(
                 backend="claude", name="eng", session="ck-r",
-                status_dir="/tmp/state", model=choice,
+                status_dir="/tmp/state", model=alias,
             )
             toks = _claude_inner_tokens(cmd)
             i = toks.index("--model")
-            assert toks[i + 1] == full_id, f"{choice} → {toks[i+1]!r}, want {full_id!r}"
+            assert toks[i + 1] == alias, f"{alias} → {toks[i+1]!r}, want the bare alias {alias!r}"
 
     def test_model_omitted_is_golden_default(self, monkeypatch):
         """No --model → the claude launch argv is byte-for-byte the golden
@@ -528,12 +525,3 @@ class TestModelSelection:
             status_dir="/tmp/state", model="opus",
         )
         assert "--model" not in cmd
-
-    def test_unknown_model_raises_valueerror(self):
-        """A model tier not in the map (direct-helper misuse; CLI choices
-        prevent it at the arg layer) fails with a clear ValueError, not KeyError."""
-        with pytest.raises(ValueError, match="Unknown Claude model tier"):
-            build_shell_cmd(
-                backend="claude", name="eng", session="ck-r",
-                status_dir="/tmp/state", model="haiku",
-            )
