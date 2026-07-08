@@ -85,6 +85,8 @@ These are reminders that follow from the iron rules. Do not rationalize past the
 
 Example: `kitchen hire eval1 --clean-room --backend codex --project /abs/eval-dir`, then `kitchen ticket eval1 "<the eval prompt>"`. To opt a skill in: `kitchen hire eval1 --clean-room --with-skill /abs/my-skill-dir`. `gemini` + `--clean-room` fails loud (not yet supported).
 
+**Pick a Claude model with `--model fable|sonnet|opus`** (Claude cooks only) when the head chef asks for a specific tier — e.g. `kitchen hire eng --model opus`. Omit it to use the account default. On `--backend codex`/`gemini` it fails loud.
+
 **Gemini is an opt-in third backend.** `kitchen hire <name> --backend gemini` works but requires the `agy` (Antigravity) CLI on PATH — note: that's `agy`, not a `gemini` binary. Default backends are claude and codex; do NOT reach for gemini on your own. Use it only when the head chef explicitly asks for it, or a task specifically calls for it.
 
 ## The wiki and notes
