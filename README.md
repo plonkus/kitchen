@@ -2,7 +2,7 @@
 
 **Keep one AI focused on the big picture while a brigade of AI coding agents does the work.**
 
-Claude Kitchen turns a Claude Code session into a hands-on engineering lead. That **sous chef** hires Claude, Codex, or Gemini **cooks** in tmux, gives them focused tickets, and receives their completed work automatically through Claude Code channels. You keep talking to one coherent orchestrator while the cooks spend their own context reading code, running tests, implementing changes, and reviewing one another.
+Kitchen turns a Claude Code session into a hands-on engineering lead. That **sous chef** hires Claude, Codex, or Gemini **cooks** in tmux, gives them focused tickets, and receives their completed work automatically through Claude Code channels. You keep talking to one coherent orchestrator while the cooks spend their own context reading code, running tests, implementing changes, and reviewing one another.
 
 It runs the stock agent CLIs you already use—authenticated through your existing subscriptions—not stripped-down API workers hidden behind a custom harness.
 
@@ -121,7 +121,7 @@ Install Claude Code using its official instructions, then sign in with a claude.
 claude /login
 ```
 
-Claude Kitchen's channel connection will not work with Console/API-key authentication.
+Kitchen's channel connection will not work with Console/API-key authentication.
 
 ### 3. Install superpowers
 
