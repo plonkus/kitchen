@@ -1,4 +1,4 @@
-# claude-kitchen
+# Kitchen
 
 **Keep one AI focused on the big picture while a brigade of AI coding agents does the work.**
 
