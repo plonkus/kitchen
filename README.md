@@ -1,211 +1,299 @@
-# claude-kitchen
+# Kitchen
 
-Multi-agent orchestration for Claude Code and Codex. A **sous chef** (Claude) coordinates **cook** agents running in tmux windows, communicating via Claude Code's channels feature.
+**Keep one AI focused on the big picture while a brigade of AI coding agents does the work.**
 
-**→ [How it works](ARCHITECTURE.md)** — the architecture in two diagrams: tmux keystrokes down, hooks + MCP channels up, any agent CLI as a cook, all on your existing subscriptions.
+Kitchen turns a Claude Code session into a hands-on engineering lead. That **sous chef** hires Claude, Codex, or Gemini **cooks** in tmux, gives them focused tickets, and receives their completed work automatically through Claude Code channels. You keep talking to one coherent orchestrator while the cooks spend their own context reading code, running tests, implementing changes, and reviewing one another.
+
+It runs the stock agent CLIs you already use—authenticated through your existing subscriptions—not stripped-down API workers hidden behind a custom harness.
+
+## Why kitchen?
+
+| Benefit | Why it matters |
+|---|---|
+| **A manager that stays sharp** | The sous delegates source reads, greps, tests, and implementation instead of filling its own context with project detail. Its context stays available for coordination, tradeoffs, and long-running continuity. |
+| **Real agents, on your existing subscriptions** | Cooks are ordinary Claude Code, Codex, and optionally Gemini/agy sessions. They keep their native tools, skills, plugins, MCP servers, and subscription auth; no separate model API integration or metered API-key billing is required. Provider usage limits still apply. |
+| **An opinionated workflow you can actually edit** | `sous-chef.md` and the role prompts encode a complete operating method: delegate investigation, write verifiable tickets, review across backends, preserve decisions, and prove completion. They are plain Markdown—fork them, tune them, or replace the methodology. |
+| **Cross-model review by design** | The supplied workflow pairs a Claude implementer with a Codex reviewer, or vice versa. An adversarial second model often catches assumptions the first model rationalized past. The convention lives in the prompt, so you remain in control. |
+| **Parallel work without a black box** | Each cook is an isolated tmux window. Run independent workstreams concurrently, attach to watch them live, inspect a pane with `kitchen peek`, or take over the keyboard yourself. |
+| **Memory that survives the shift** | Per-project `mistakes.md` and `preferences.md` files persist across kitchens, while per-kitchen notes support handoffs and task briefs. The team can carry forward lessons without keeping every old conversation alive. |
+
+Kitchen also integrates the superpowers skills workflow for brainstorming, specs, chunked implementation, review, and verification. For heavier use cases it can launch a child kitchen for an independent workstream or a clean-room Claude/Codex cook for a more reproducible evaluation—but the core stays deliberately small: tmux down, hooks and a Unix socket back up.
+
+## The mental model
+
+```text
+                         your terminal
+  you  <────────────>  sous chef (Claude Code)
+                              │       ▲
+                kitchen ticket│       │MCP channel notification
+                              ▼       │
+                    tmux session      │
+                 ┌────────┼────────┐  │
+                 │        │        │  │
+              Claude    Codex   Gemini/agy
+               cook      cook      cook
+                 │        │        │
+                 └────────┴────────┘
+                      completion hooks
+                              │
+                    per-kitchen Unix socket
+```
+
+There are two intentionally simple directions:
+
+- **Sous → cook:** `kitchen ticket` pastes a message into the cook's tmux composer and verifies that the TUI accepted it.
+- **Cook → sous:** the agent CLI's completion hook sends the cook's full final response to a per-kitchen Unix socket. A tiny MCP channel server pushes it into the sous's live context—no polling and no pane scraping for results.
+
+For the implementation details, diagrams, backend contracts, and the hook → socket → MCP flow, see [How kitchen works](ARCHITECTURE.md).
+
+## A quick taste
+
+Open a kitchen in a Git repository:
+
+```bash
+kitchen open
+```
+
+Claude starts as the sous chef in your terminal. Give it the outcome you want:
+
+```text
+Build the import feature. Have one model implement it, another review it,
+and run an end-to-end verification before you report back.
+```
+
+The sous can turn that into a flow like this:
+
+```bash
+kitchen hire eng --backend claude --role eng
+kitchen hire reviewer --backend codex --role reviewer
+kitchen ticket eng "Implement the agreed import feature and verify it end to end."
+
+# eng's response arrives automatically in the sous's context
+kitchen ticket reviewer "Review the import implementation. Do not edit; report findings."
+```
+
+You continue talking to the sous while both cook sessions remain visible in tmux. The supplied workflow reuses cooks when their context is valuable, routes findings back to the implementer, and requires evidence before declaring the work done.
 
 ## Requirements
 
-Every dependency below lists **why** kitchen needs it, a **verify** command to check whether it's already present, and how to **install** it if missing. An agent can walk this list top to bottom, run each verify command, and install only what's missing. The [Install](#install) section then ties it together, ending with `kitchen setup` as the final green-light check.
-
 ### Required
 
-- **tmux** — the entire orchestration runs in tmux windows; nothing works without it.
+- **tmux** — cooks run in tmux windows; this is the process and observation layer.
   - Verify: `tmux -V`
-  - Install: `brew install tmux` (macOS) · `apt install tmux` / `dnf install tmux` (Linux)
-- **git** — kitchen derives a per-project state slug from `git remote origin` (falls back to the repo's absolute toplevel path for local-only repos), and `kitchen open --src` uses git worktrees. Almost always already installed.
+  - Install: `brew install tmux` on macOS, or use your Linux package manager.
+- **git** — kitchen derives the project namespace from the repository and uses git worktrees for named kitchens.
   - Verify: `git --version`
-  - Install: `brew install git` (macOS) · distro package manager (Linux)
-- **[uv](https://docs.astral.sh/uv/)** — kitchen installs as a uv tool, and uv provides the Python 3.12+ runtime the CLI needs.
+- **[uv](https://docs.astral.sh/uv/)** — installs the Python 3.12+ CLI and its dependencies.
   - Verify: `uv --version`
-  - Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Claude Code CLI ≥ 2.1.80** — kitchen uses the development channels feature added in 2.1.80; older versions can't run a kitchen.
-  - Verify: `claude --version` (must be ≥ 2.1.80)
-  - Install: see [claude.com/claude-code](https://claude.com/claude-code)
-- **claude.ai web auth (not an API key)** — channels are only exposed to claude.ai logins. Console / API-key auth fails at channel-connect time.
-  - Verify: run `claude` and check `/login` shows a logged-in claude.ai account
-  - Fix: `claude /login` and pick your claude.ai account
-- **superpowers plugin** — kitchen's `sous-chef.md` workflows reference its skills.
-  - Verify: `claude /plugin list` shows `superpowers`, or `~/.claude/plugins/cache/superpowers-marketplace/superpowers/` exists
-  - Install (from inside Claude Code): `/plugin install superpowers from superpowers-marketplace`
-- **`mcp` Python SDK** — `channel.py` is an MCP server. **No manual install needed** — it's a transitive dependency pulled in automatically by `uv tool install` below. Listed here only so it isn't mistaken for a separate step.
-  - Verify (after install): `uv run python -c "import mcp"`
+- **Claude Code CLI 2.1.80 or newer** — the sous uses Claude Code's development channels feature.
+  - Verify: `claude --version`
+- **claude.ai web authentication** — channels are available to claude.ai logins, not Console/API-key authentication.
+  - Sign in: `claude /login`, then choose your claude.ai account.
+- **superpowers plugin** — the supplied sous workflow invokes its brainstorming and development skills.
+  - Install from Claude Code: `/plugin install superpowers from superpowers-marketplace`
+- **`mcp` Python SDK** — installed automatically as a transitive dependency of this project; no separate install step is needed.
 
-### Optional
+### Optional backends and tools
 
-- **Codex CLI** — only needed for Codex backend cooks (`kitchen hire <name> --backend codex`).
-  - Verify: `codex --version`
-  - Install: see OpenAI's Codex CLI install docs
-- **Codex hooks config** — if Codex is installed, `~/.codex/config.toml` must enable hooks under `[features]`: `hooks = true` (or the older `codex_hooks = true`). `kitchen setup` checks this and nudges if missing.
+- **Codex CLI** — required only for `--backend codex` cooks. Kitchen forces its completion notify command per cook launch.
+- **Codex hook support** — `~/.codex/config.toml` should contain `notify = ["kitchen", "hook-codex"]` and `hooks = true` under `[features]`. `kitchen setup` currently checks for the notify stanza even if you do not plan to hire Codex cooks.
+- **Antigravity CLI (`agy`)** — required only for the opt-in `--backend gemini` cook. Kitchen does not use a `gemini` binary and `kitchen setup` does not install or check `agy`.
+- **`jq`** — needed only by the packaged richer statusline example, not by the kitchen core.
 
 ## Install
 
-Follow these steps in order. Each maps to a dependency in [Requirements](#requirements) above — verify first, install only what's missing.
+### 1. Install the system tools
 
-**1. Install the required system tools** (tmux, git, uv):
-
-```bash
-brew install tmux git                              # macOS (git often already present)
-curl -LsSf https://astral.sh/uv/install.sh | sh    # uv
-```
-
-**2. Install the Claude Code CLI and log in via web auth:**
-
-Install Claude Code per [claude.com/claude-code](https://claude.com/claude-code), then:
+On macOS:
 
 ```bash
-claude /login   # pick your claude.ai account — NOT an API key (channels need web auth)
+brew install tmux git
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-**3. Install the superpowers plugin** from inside Claude Code:
+On Linux, install tmux and git through your package manager, then install uv with the command above.
 
+### 2. Install Claude Code and authenticate
+
+Install Claude Code using its official instructions, then sign in with a claude.ai account:
+
+```bash
+claude /login
 ```
+
+Kitchen's channel connection will not work with Console/API-key authentication.
+
+### 3. Install superpowers
+
+From inside Claude Code:
+
+```text
 /plugin install superpowers from superpowers-marketplace
 ```
 
-**4. Clone the kitchen repo and install the CLI:**
+### 4. Clone and install kitchen
 
 ```bash
 git clone git@github.com:plonkus/kitchen.git
 cd kitchen
-uv tool install --editable .   # also pulls in the `mcp` SDK transitively
+uv tool install --editable .
 ```
 
-`--editable` means edits to this checkout are picked up immediately by the installed `kitchen` binary — convenient for contributors, harmless for everyone else.
+The editable install makes changes to this checkout—including prompt customizations—available to the installed `kitchen` command immediately.
 
-**5. Run the diagnostic** — this is the verification gate:
+### 5. Run the setup diagnostic
 
 ```bash
 kitchen setup
 ```
 
-`kitchen setup` checks your environment and auto-installs the skill symlink. It does **not** auto-install hooks — it prints the exact JSON / TOML to paste into your settings. Specifically, it verifies:
+`kitchen setup` verifies:
 
-1. Claude Code hooks (`Stop` + `UserPromptSubmit`) in `~/.claude/settings.json`
-2. Codex hook (`notify = ["kitchen", "hook-codex"]`) in `~/.codex/config.toml`
-3. The `claude-kitchen` skill is symlinked into `~/.claude/skills/` (auto-installed)
-4. The `mcp` Python SDK is importable
-5. The superpowers plugin exists at `~/.claude/plugins/cache/superpowers-marketplace/superpowers`
-6. The `claude` CLI is on PATH and is version ≥ 2.1.80
-7. No legacy kitchen named `projects` (the name is reserved for the per-project wiki root)
+1. Claude `Stop` and `UserPromptSubmit` hook configuration.
+2. The Codex completion notify configuration.
+3. The `claude-kitchen` skill symlink, creating or updating it automatically.
+4. The `mcp` Python SDK.
+5. The superpowers plugin.
+6. Claude Code version 2.1.80 or newer.
+7. That no legacy kitchen uses the reserved name `projects`.
 
-If any check fails, `kitchen setup` exits non-zero and tells you what to fix. Re-run it until it reports everything green.
+The statusline check is advisory. Hook installation is **not** automatic: when hook configuration is missing, setup prints the exact JSON or TOML to add. Re-run the command until the blocking checks are green.
 
-## Quick Start
+## Quick start
 
-`cd` into any git repo, then:
+Run kitchen from inside any git repository:
 
 ```bash
-# Open a kitchen in the current repo (no worktree)
+# Use the current checkout
 kitchen open
 
-# Or: open a named kitchen with a git worktree at a sibling path
+# Or create a branch + sibling worktree for a named kitchen
 kitchen open my-feature
 ```
 
-The sous chef launches Claude in your current terminal. Talk to it in natural language — it handles the orchestration. In a separate terminal, watch cooks work:
+The current process becomes the Claude sous chef. Talk to it normally—describe goals, constraints, and what evidence you expect. The sous knows the kitchen commands and manages cooks for you.
+
+In another terminal, watch the brigade:
 
 ```bash
-tmux attach -t ck-<kitchen-name>
+tmux attach -t ck-<project-slug>-<kitchen-name>
 ```
 
-(When you omit `<name>`, the kitchen name is the repo directory's name.)
+Kitchen namespaces sessions and state by project slug. For example, `kitchen open my-feature` in a repository named `widget` becomes kitchen `widget-my-feature`, while the git branch and worktree keep the name `my-feature`. A no-name `kitchen open` usually uses the repository name without doubling it.
 
-The kitchen is automatically namespaced by the project's slug — the repo name,
-taken from the git remote (`git@github.com:owner/my-project.git` → `my-project`).
-`kitchen open main` becomes `my-project-main`, so the same name in two different
-repos never collides on the tmux session, state dir, or channel socket. The
-`tmux attach -t` target above is `ck-<project-slug>-<name>`. (Two unrelated repos
-that share a name collide; disambiguate with an explicit kitchen name.)
+### Useful requests to give the sous
 
-A kitchen opened before namespacing existed lives at the bare `<name>`. The first
-`kitchen open <name>` from its project root re-attaches it (with a one-line
-suggestion to close+reopen under the namespaced name) instead of forking a new
-kitchen; bare-name lookups (`kitchen close <name>`, etc.) keep resolving from
-inside the project root.
+```text
+Hire a Claude engineer to investigate the flaky integration test.
 
-## Usage
+Have a Codex reviewer inspect the engineer's commit for correctness and scope.
 
-Once the kitchen is open, just talk to the sous chef. It knows how to hire cooks, send them work, and manage the workflow:
+Split the migration into independent workstreams and run them in parallel.
 
-```
-> hire a claude cook to fix the auth bug in src/auth.py
+Use a clean-room cook in /tmp/eval-checkout to evaluate this prompt.
 
-> spin up a codex worker to review the last PR
-
-> fire up 3 cooks — one for tests, one for docs, one for the migration
-
-> have the reviewer look at what eng just did
-
-> clock out the docs cook, we're done with docs
+Clock out the docs cook; keep the reviewer around for the next change.
 ```
 
-The sous chef translates your requests into `kitchen hire`, `kitchen ticket`, etc. You don't need to remember the CLI — the sous handles it. You can also run the CLI directly from another terminal if you prefer.
+## CLI reference
 
-## How It Works
-
-1. `kitchen open` launches Claude as your sous chef, with a per-kitchen MCP channel server
-2. The sous hires cooks that run in tmux windows (you can watch them live)
-3. When a cook finishes, its Claude Code / Codex hook sends a notification through the channel socket
-4. The MCP server surfaces that notification to the sous as `← kitchen: <cook's response>`; the sous decides what's next
-
-The sous is autonomous — give it a goal and it hires cooks, assigns work, reviews results, and iterates.
-
-For the full picture — diagrams, the hook → socket → channel pipeline, the verified tmux typing layer, and how to add new cook backends — see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
-
-## CLI Reference
-
-These are the commands the sous chef uses under the hood. You can also run them directly.
+The sous runs these commands under the hood. You can also use them directly from another terminal.
 
 | Command | What it does |
-|---------|-------------|
-| `kitchen open [name] [project]` | Start a kitchen with sous chef |
-| `kitchen hire <cook> --backend claude\|codex [--role <role>]` | Spawn a cook (optionally with a role; works for both backends) |
-| `kitchen roles` | List available cook roles |
-| `kitchen ticket <cook> "message"` | Send a task to a cook |
-| `kitchen peek <cook> [--full]` | See a cook's screen |
-| `kitchen brigade` | Status of all cooks |
-| `kitchen clock-out <cook>` | Kill a cook |
-| `kitchen close` | Shut down the kitchen |
-| `kitchen setup` | Check hooks, skill, and dependencies |
+|---|---|
+| `kitchen open [name] [project]` | Open a kitchen; an explicit name creates a worktree. |
+| `kitchen open <name> --sub-sous` | Launch a fresh child kitchen whose sous runs in its own tmux session. |
+| `kitchen hire <cook> [options]` | Spawn a cook and wait until its interactive prompt is ready. |
+| `kitchen roles` | List the packaged cook roles. |
+| `kitchen ticket <cook> "message"` | Deliver a verified message to a cook. |
+| `kitchen peek <cook> [--full]` | Capture the cook's current pane or full scrollback. |
+| `kitchen brigade [kitchen]` | Show live cook status and known context usage. |
+| `kitchen clock-out <cook>` | Hard-kill a cook and remove its managed state. |
+| `kitchen sweep` | Remove state files for cook windows that no longer exist. |
+| `kitchen close [kitchen]` | Shut down the kitchen and remove managed per-kitchen state. |
+| `kitchen setup` | Check hooks, dependencies, skill installation, and environment readiness. |
 
-### Options
+### Hire options
 
-- `kitchen hire <cook> --role <role>` — inject a role prompt at boot (Claude via `--append-system-prompt-file`, Codex via a first message). See `kitchen roles` for available roles.
-- `kitchen hire <cook> --effort max` — set reasoning effort (`low` / `medium` / `high` / `max`)
-- `kitchen hire <cook> --backend codex` — use Codex instead of Claude
+```bash
+# Packaged role; _default is used when --role is omitted
+kitchen hire eng --backend claude --role eng
 
-## Where State Lives
+# Cross-model reviewer
+kitchen hire reviewer --backend codex --role reviewer
 
-All kitchen state lives under `~/.claude-kitchen/`:
+# Unified effort scale: low, medium, high, max
+kitchen hire investigator --effort max
 
-- `~/.claude-kitchen/<kitchen-name>/` — per-kitchen state: `kitchen.json`, `kitchen.sock` (MCP socket), `sous.pid`, `cooks/` (cook status JSON), `notes/` (handoff, log, task briefs — wiped on `kitchen close`)
-- `~/.claude-kitchen/projects/<project-slug>/wiki/` — the per-project **wiki**, persistent across kitchens. Contains `mistakes.md` (lessons learned) and `preferences.md` (head chef's working style). Survives `kitchen close`.
+# Claude model tier; the Claude CLI resolves the current model in that tier
+kitchen hire architect --model opus
 
-`<project-slug>` comes from `git remote origin` — e.g. `my-project` for a repo at `git@github.com:owner/my-project.git`. Local-only repos (no origin) fall back to a slugified toplevel path.
+# Near-fresh eval worker: no role, auto-memory, or superpowers startup injection
+kitchen hire eval1 --clean-room --project /absolute/eval-directory
 
-## Customizing kitchen
+# Add a specific skill/plugin directory back to a clean-room Claude cook
+kitchen hire eval2 --clean-room --with-skill /absolute/path/to/skill
+```
 
-Kitchen ships opinionated workflow prompts that you can tune to your own style:
+Claude cooks receive role Markdown as an appended system prompt. Codex receives it as the first message after the TUI is ready, and Gemini/agy receives it as its initial turn. Clean-room mode supports Claude and Codex; `--with-skill` currently supports Claude only. Clean-room mode does not hide files such as `CLAUDE.md` or `AGENTS.md` from the cook's working directory, so use an empty directory or pinned checkout when that isolation matters.
 
-- **`sous-chef.md`** — the sous chef's orchestration prompt (injected via `--append-system-prompt` on `kitchen open`).
-- **`roles/`** — per-role cook prompts (`eng.md`, `qa.md`, `reviewer.md`, `_default.md`).
+## How completion notifications work
 
-Both live inside the installed `claude_kitchen` package — `kitchen setup` prints their exact path on success. Because the CLI is installed `--editable`, edits to these files in your checkout are live immediately; just re-open the kitchen (and re-hire cooks) to pick them up. For larger or persistent changes, fork the repo and install your fork.
+Every launched agent gets `AGENT_NAME`, `AGENT_SESSION`, and `STATUS_DIR`. Global hooks are gated on those variables, so ordinary agent sessions outside a kitchen are untouched.
+
+When a cook completes a turn:
+
+1. Claude's `Stop` hook, Codex's `notify`, or agy's stop hook invokes kitchen.
+2. Kitchen stores the full final response and any available context information in the cook's status JSON.
+3. The hook sends one JSON line to `~/.claude-kitchen/<kitchen>/kitchen.sock`.
+4. The per-kitchen MCP server emits a Claude channel notification.
+5. The response appears automatically in the sous's context, and the sous decides whether to follow up, review, iterate, or report back.
+
+The root sous's own Stop hook does not notify its own socket, preventing an echo loop. Child sous sessions are the deliberate exception: they can report completion to their parent kitchen.
+
+## Where state lives
+
+```text
+~/.claude-kitchen/
+├── <kitchen>/
+│   ├── kitchen.json          # source/worktree + sous resume session
+│   ├── kitchen-mcp.json      # generated per-kitchen MCP config
+│   ├── kitchen.sock          # live channel socket
+│   ├── sous.pid              # duplicate-sous guard
+│   ├── cooks/<name>.json     # backend, status, response, session, context
+│   ├── codex-home/           # clean-room Codex homes, when used
+│   └── notes/                # handoff, log, and long task briefs
+└── projects/<slug>/wiki/
+    ├── mistakes.md           # durable lessons
+    └── preferences.md        # durable working preferences
+```
+
+`kitchen close` removes managed per-kitchen notes and cook state. The project wiki survives so later kitchens inherit the lessons and preferences.
+
+## Customize the workflow
+
+The orchestration behavior is intentionally not hard-coded:
+
+- **`src/claude_kitchen/sous-chef.md`** defines the manager's operating method: protect context, delegate investigation, use superpowers for spec work, review across models, preserve decisions, and require evidence.
+- **`src/claude_kitchen/roles/`** contains the cook contracts: `eng`, `reviewer`, `qa`, and `_default`.
+- **`.kitchen/on-open.sh` and `.kitchen/on-close.sh`** in a project can run lifecycle automation for that repository.
+
+With an editable install, reopen the kitchen or re-hire a cook after changing a prompt to pick up the new behavior. For long-lived customization, fork the repository and install your fork.
 
 ## Troubleshooting
 
-- **`server:kitchen · no MCP server configured` at sous startup.** Harmless race — the channel server connects a moment later. Ignore.
-- **`kitchen setup` says hooks are missing.** It prints the exact snippets to paste into `~/.claude/settings.json` (Claude hooks) and `~/.codex/config.toml` (Codex hook). Paste them, then re-run `kitchen setup`.
-- **`kitchen setup` says the superpowers plugin is missing.** Install from inside Claude Code: `/plugin install superpowers from superpowers-marketplace`.
-- **Channel errors on `kitchen open` ("not authenticated" / channel refused).** Channels require claude.ai auth. Run `claude /login` and pick your claude.ai account — Console / API-key auth does not expose channels.
-- **`kitchen setup` reports Claude CLI too old.** Upgrade Claude Code to ≥ 2.1.80.
-- **Legacy kitchen named `projects`.** The `projects` name is reserved for the per-project wiki root. Rename the legacy state directory as `kitchen setup` instructs.
-- **Kitchen refuses to open ("not a git repository").** `cd` into a git repo first; kitchen needs one to derive a state slug.
+- **`server:kitchen · no MCP server configured` at sous startup:** this is a known harmless startup race; the server connects shortly afterward.
+- **Setup says hooks are missing:** copy the exact Claude JSON or Codex TOML that `kitchen setup` prints, then rerun it.
+- **Superpowers is missing:** install it from Claude Code with `/plugin install superpowers from superpowers-marketplace`.
+- **Channel authentication fails:** run `claude /login` and select a claude.ai account. Console/API-key authentication does not expose channels.
+- **Claude Code is too old:** upgrade to version 2.1.80 or newer.
+- **`agy not on PATH`:** Gemini cooks require Antigravity CLI; Claude and Codex kitchens do not.
+- **Kitchen refuses to open outside a git repository:** move into a git repository first. Kitchen needs it for project namespacing and optional worktrees.
+- **Legacy kitchen named `projects`:** that name is reserved for the persistent project wiki root; follow the rename instruction printed by setup.
 
 ## Acknowledgements
 
-Kitchen was inspired by two projects we admired and learned from. We re-implemented their ideas in our own Python — no code was copied.
+Kitchen was inspired by two projects we admired and learned from. We re-implemented their ideas in our own Python—no code was copied.
 
 - **[firstmate](https://github.com/kunchenguid/firstmate)** — we studied its tmux send/verify approach (verified-submit, prompt-suggestion/ghost-text suppression, busy-footer detection) and re-implemented those ideas ourselves.
 - **[mypeople](https://github.com/plow-pbc/mypeople)** — general inspiration for orchestrating multiple Claude Code agents through a single channel server.
