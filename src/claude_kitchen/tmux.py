@@ -253,9 +253,9 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # each other's payload between load and paste.
     #
     # Phase 1 — settle-poll: wait for proof the paste landed (a "[Pasted "
-    # collapse stub, a head marker from the payload, or — for codex — the
-    # composer cursor moving off its empty column) AND for the pane to stop
-    # repainting. The cursor signal covers inline multiline codex pastes whose
+    # collapse stub, a head marker from the payload, or — for codex/claude —
+    # the composer cursor moving off its empty column) AND for the pane to stop
+    # repainting. The cursor signal covers inline multiline pastes whose
     # head scrolls above the visible tmux viewport. For long pastes Ink renders
     # the stub from the FIRST chunk while the rest still streams in, so
     # submitting on first-stub races the remainder and the message never
@@ -302,7 +302,7 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
                 or (head and pane.count(head) > baseline.count(head))
             )
             cursor_signalled = False
-            if not text_signalled and backend == "codex":
+            if not text_signalled and backend in ("codex", "claude"):
                 cursor_col = _cursor_col(session, window)
                 cursor_signalled = cursor_col >= 0 and cursor_col != empty_col
             if text_signalled or cursor_signalled:
