@@ -390,16 +390,19 @@ def _settle_signal_never_stable():
 
 
 def _tmux_cursor(cols):
-    """tmux() side-effect. display-message → the next scripted cursor_x; send-keys/
-    load-buffer/paste-buffer → success. Records Enters and the load-buffer input."""
+    """tmux() side-effect. display-message → the next scripted cursor_x,
+    repeating the last value on exhaustion; send-keys/load-buffer/paste-buffer
+    → success. Records Enters and the load-buffer input."""
     queue = list(cols)
+    exhausted_value = queue[-1] if queue else _EMPTY_COL
     state = {"enter": 0, "pasted_text": None}
 
     def fake(*args, **kwargs):
         cmd = args[0]
         m = MagicMock(returncode=0, stdout="")
         if cmd == "display-message":
-            m.stdout = (str(queue.pop(0)) if queue else str(_PAYLOAD_COL)) + "\n"
+            value = queue.pop(0) if queue else exhausted_value
+            m.stdout = f"{value}\n"
         elif cmd == "load-buffer":
             state["pasted_text"] = kwargs.get("input")
         elif cmd == "send-keys":
@@ -529,7 +532,7 @@ class TestSendKeysVerifiedSubmit:
         mock_cap.side_effect = _settle_no_signal
         # Cursor remains empty throughout the settle window too; a moved codex
         # cursor is now independent positive proof that the paste landed.
-        fake = _tmux_cursor([_EMPTY_COL] * 4)
+        fake = _tmux_cursor([_EMPTY_COL])
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not settle"):
             send_keys("ck-x", "cx", "a ticket whose head never lands", backend="codex")

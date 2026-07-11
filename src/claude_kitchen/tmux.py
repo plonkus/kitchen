@@ -257,9 +257,9 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # composer cursor moving off its empty column) AND for the pane to stop
     # repainting. The cursor signal covers inline multiline codex pastes whose
     # head scrolls above the visible tmux viewport. For long pastes Ink renders
-    # the stub from the FIRST chunk
-    # while the rest still streams in, so submitting on first-stub races the
-    # remainder and the message never submits. Settling closes that race. See
+    # the stub from the FIRST chunk while the rest still streams in, so
+    # submitting on first-stub races the remainder and the message never
+    # submits. Settling closes that race. See
     # notes/collapsed-paste-mechanism-report.md + notes/brief-send-keys-stable-
     # poll.md. If the paste is never positively observed by the deadline we
     # FAIL CLEARLY (raise) rather than submit blind into an unknown composer.
