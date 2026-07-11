@@ -411,6 +411,48 @@ def _tmux_cursor(cols):
 
 
 class TestSendKeysVerifiedSubmit:
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_codex_offscreen_head_uses_cursor_as_landed_signal(
+            self, mock_time, mock_cap, mock_tmux):
+        # A long inline multiline paste can push its head above the visible tmux
+        # viewport. The pane therefore never exposes either textual landing
+        # signal, even though cursor_x proves the payload is in the composer.
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+
+        def now():
+            clock[0] += 0.05
+            return clock[0]
+
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        head = "OFFSCREEN_HEAD: do thing"
+        padding = [f"padding line {i:02d} abcdef" for i in range(1, 40)]
+        text = "\n".join([head] + padding)
+        visible_tail = "\n".join(padding[-10:])
+        captures = {"n": 0}
+
+        def offscreen_pane(session, window, full=False):
+            captures["n"] += 1
+            return "idle transcript\n> " if captures["n"] == 1 else visible_tail
+
+        assert len(text) < 1000
+        assert head[:24] not in visible_tail
+        mock_cap.side_effect = offscreen_pane
+        # cursor_x: empty (pre-paste) → payload (landing signal) → payload
+        # (settled precondition) → empty (accepted after Enter).
+        fake = _tmux_cursor([
+            _EMPTY_COL, _PAYLOAD_COL, _PAYLOAD_COL, _EMPTY_COL,
+        ])
+        mock_tmux.side_effect = fake
+
+        send_keys("ck-x", "cx", text, backend="codex")
+
+        assert fake.state["enter"] == 1
+        assert fake.state["pasted_text"] == text
+
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")
     @patch("claude_kitchen.tmux.capture_pane")
@@ -485,7 +527,9 @@ class TestSendKeysVerifiedSubmit:
         mock_time.time.side_effect = now
         mock_time.sleep.return_value = None
         mock_cap.side_effect = _settle_no_signal
-        fake = _tmux_cursor([_EMPTY_COL])
+        # Cursor remains empty throughout the settle window too; a moved codex
+        # cursor is now independent positive proof that the paste landed.
+        fake = _tmux_cursor([_EMPTY_COL] * 4)
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not settle"):
             send_keys("ck-x", "cx", "a ticket whose head never lands", backend="codex")

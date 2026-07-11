@@ -253,8 +253,11 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # each other's payload between load and paste.
     #
     # Phase 1 — settle-poll: wait for proof the paste landed (a "[Pasted "
-    # collapse stub, or a head marker from the payload) AND for the pane to stop
-    # repainting. For long pastes Ink renders the stub from the FIRST chunk
+    # collapse stub, a head marker from the payload, or — for codex — the
+    # composer cursor moving off its empty column) AND for the pane to stop
+    # repainting. The cursor signal covers inline multiline codex pastes whose
+    # head scrolls above the visible tmux viewport. For long pastes Ink renders
+    # the stub from the FIRST chunk
     # while the rest still streams in, so submitting on first-stub races the
     # remainder and the message never submits. Settling closes that race. See
     # notes/collapsed-paste-mechanism-report.md + notes/brief-send-keys-stable-
@@ -294,8 +297,15 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
         time.sleep(0.05)
         pane = capture_pane(session, window) or ""
         if not signalled:
-            if (pane.count("[Pasted ") > baseline.count("[Pasted ")
-                    or (head and pane.count(head) > baseline.count(head))):
+            text_signalled = (
+                pane.count("[Pasted ") > baseline.count("[Pasted ")
+                or (head and pane.count(head) > baseline.count(head))
+            )
+            cursor_signalled = False
+            if not text_signalled and backend == "codex":
+                cursor_col = _cursor_col(session, window)
+                cursor_signalled = cursor_col >= 0 and cursor_col != empty_col
+            if text_signalled or cursor_signalled:
                 signalled = True
                 prev = pane
             continue
@@ -332,5 +342,3 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     raise RuntimeError(
         f"send_keys: ticket never left the composer on {target} after "
         f"{_SUBMIT_ATTEMPTS} Enter attempts; submission not confirmed")
-
-
