@@ -414,11 +414,12 @@ def _tmux_cursor(cols):
 
 
 class TestSendKeysVerifiedSubmit:
+    @pytest.mark.parametrize("backend", ["codex", "claude"])
     @patch("claude_kitchen.tmux.tmux")
     @patch("claude_kitchen.tmux.capture_pane")
     @patch("claude_kitchen.tmux.time")
-    def test_codex_offscreen_head_uses_cursor_as_landed_signal(
-            self, mock_time, mock_cap, mock_tmux):
+    def test_offscreen_head_uses_cursor_as_landed_signal(
+            self, mock_time, mock_cap, mock_tmux, backend):
         # A long inline multiline paste can push its head above the visible tmux
         # viewport. The pane therefore never exposes either textual landing
         # signal, even though cursor_x proves the payload is in the composer.
@@ -451,7 +452,7 @@ class TestSendKeysVerifiedSubmit:
         ])
         mock_tmux.side_effect = fake
 
-        send_keys("ck-x", "cx", text, backend="codex")
+        send_keys("ck-x", "cx", text, backend=backend)
 
         assert fake.state["enter"] == 1
         assert fake.state["pasted_text"] == text
