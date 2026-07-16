@@ -317,23 +317,39 @@ class TestSpawnSous:
 
     @patch("claude_kitchen.spawn.os.chdir")
     @patch("claude_kitchen.spawn.os.execvp")
-    def test_remote_control_enabled_with_kitchen_prefix(
+    def test_remote_control_named_with_kitchen(
         self, mock_exec, mock_chdir, tmp_path, monkeypatch,
     ):
-        """Sous launches with --remote-control + prefix=<kitchen>. The pair
-        must appear as adjacent argv tokens — claude parses the flag value
-        positionally."""
+        """Sous launches with --remote-control=<kitchen> as ONE argv token —
+        the `=` form is what keeps a leading-dash kitchen name bound as the
+        value (a separate `-x` token would parse as the next flag)."""
         for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
             monkeypatch.setenv(k, "")
         spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y")
         argv = mock_exec.call_args.args[1]
-        assert "--remote-control" in argv
-        i = argv.index("--remote-control-session-name-prefix")
-        assert argv[i + 1] == "risotto"
+        assert "--remote-control=risotto" in argv
+        assert not any(a.startswith("--remote-control-session") for a in argv)
+        (tmp_path / "sous.pid").unlink()  # re-spawn under the same state dir
+        spawn_sous("-x", tmp_path, "prompt", slug="gh-x-y")
+        assert "--remote-control=-x" in mock_exec.call_args.args[1]
 
-    def test_cook_argv_has_no_remote_control(self):
-        """Cooks must NOT get --remote-control; the flag is sous-only."""
-        for backend in ("claude", "codex"):
+    def test_cook_remote_control_naming(self):
+        """Claude cooks get a named `<kitchen>/<cook>` RC session (ck- prefix
+        stripped) that survives shell parsing as ONE token — even for names
+        full of quotes/semicolons/substitution — proving the shlex.quote layer
+        holds. Codex/gemini cooks get no RC flag."""
+        nasty = "e\"n'g;$(boom) x"
+        for name, want in (
+            ("eng", "--remote-control=r/eng"),
+            ("-x", "--remote-control=r/-x"),          # leading dash binds via `=`
+            (nasty, f"--remote-control=r/{nasty}"),   # injection stays one token
+        ):
+            toks = _claude_inner_tokens(build_shell_cmd(
+                backend="claude", name=name, session="ck-r",
+                status_dir="/tmp/state",
+            ))
+            assert toks.count(want) == 1, f"{name!r} → {toks}"
+        for backend in ("codex", "gemini"):
             cmd = build_shell_cmd(
                 backend=backend, name="eng", session="ck-r",
                 status_dir="/tmp/state",
@@ -510,6 +526,7 @@ class TestModelSelection:
             "claude",
             "--dangerously-skip-permissions",
             "--disallowedTools", "AskUserQuestion",
+            "--remote-control=r/eng",
         ]
         # And model=None is byte-for-byte identical to omitting the kwarg.
         assert default == build_shell_cmd(
