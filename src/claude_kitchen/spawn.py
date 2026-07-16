@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from claude_kitchen.tmux import tmux, has_session, mc
+from claude_kitchen.tmux import tmux, has_session, mc, CK_PREFIX
 from claude_kitchen.state import MCP_CONFIG_NAME
 
 
@@ -39,18 +39,18 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
         os.environ["KITCHEN_NOTES"] = str(notes_dir(kitchen))
 
-    # --remote-control is sous-only (unconditional for v1, no opt-out).
-    # The prefix makes auto-generated RC session names identifiable per
-    # kitchen — e.g. `dashboard-abc123` instead of host-default `mbp-abc123`.
-    # Cooks (claude OR codex) do NOT get remote control: build_shell_cmd
-    # is untouched.
+    # --remote-control=<name> names the RC session exactly the kitchen name,
+    # so the sous is findable in the mobile session list. Claude cooks get a
+    # named `<kitchen>/<cook>` RC session in build_shell_cmd (the CLI remote-
+    # controls all sessions by default anyway — naming is the value-add).
+    # The `=` form is load-bearing: the flag's arg is optional, so a separate
+    # token starting with `-` would parse as the next flag, not the name.
     claude_args = [
         "claude",
         "--dangerously-skip-permissions",
         "--dangerously-load-development-channels", "server:kitchen",
         "--mcp-config", str(state_dir / MCP_CONFIG_NAME),
-        "--remote-control",
-        "--remote-control-session-name-prefix", kitchen,
+        f"--remote-control={kitchen}",
     ]
     if resume_session_id:
         claude_args.extend(["--resume", resume_session_id])
@@ -140,7 +140,13 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # Block AskUserQuestion: it renders an interactive picker in the cook's
         # TUI that fires no hook and blocks forever — the sous never learns of
         # it. Cooks surface questions via NEEDS_CONTEXT instead (see role prompts).
-        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{effort_flag}{model_flag}{settings_flag}{plugin_flags}{role_flag}")}'
+        # Name the cook's Remote Control session `<kitchen>/<cook>` so it's
+        # identifiable on mobile (RC is CLI-default-on; this only names it).
+        # `=` form: the flag's arg is optional, so a leading-dash name as a
+        # separate token would parse as the next flag instead of the name.
+        rc_name = f"{session.removeprefix(CK_PREFIX)}/{name}"
+        rc_flag = f" --remote-control={q(rc_name)}"
+        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{rc_flag}{effort_flag}{model_flag}{settings_flag}{plugin_flags}{role_flag}")}'
     elif backend == "codex":
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
