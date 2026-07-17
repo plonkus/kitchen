@@ -60,11 +60,12 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     os.execvp("claude", claude_args)
 
 
-# Kitchen uses a unified effort scale. Map to each backend's native values.
-# Kitchen:  low | medium | high | max
-# Claude:   low | medium | high | max
-# Codex:    low | medium | high | xhigh
-_CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "max": "xhigh"}
+# Kitchen passes --effort through to the backend's native scale, aliasing
+# only what a backend doesn't take literally. Both ladders verified 2026-07-17:
+# Claude 2.1.211:                low | medium | high | xhigh | max
+# Codex 0.144.5 (API-enforced):  none | minimal | low | medium | high | xhigh | max
+# Neither accepts "ultra" — it's a kitchen alias for the shared top tier.
+_EFFORT_ALIAS = {"ultra": "max"}
 
 # Per-launch notify override appended to every codex cook. TOML array literal.
 _CODEX_NOTIFY_OVERRIDE = 'notify=["kitchen","hook-codex"]'
@@ -110,6 +111,7 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         parts.append(f"CODEX_HOME={q(codex_home)}")
     env = "export " + " ".join(parts)
     if backend == "claude":
+        effort = _EFFORT_ALIAS.get(effort, effort)
         effort_flag = f" --effort {q(effort)}" if effort else ""
         # Claude model selection (--model): the tier alias (fable/sonnet/opus)
         # passes through verbatim, so `claude --model` resolves the latest model
@@ -150,7 +152,7 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
     elif backend == "codex":
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
-        codex_effort = _CODEX_EFFORT.get(effort, effort) if effort else None
+        codex_effort = _EFFORT_ALIAS.get(effort, effort) if effort else None
         effort_flag = f' -c model_reasoning_effort={q(codex_effort)}' if codex_effort else ""
         # Per-launch notify override. Bypasses any global notify wrapper
         # (e.g. the Codex Computer Use plugin's SkyComputerUseClient, which

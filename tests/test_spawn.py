@@ -90,6 +90,37 @@ class TestBuildShellCmd:
         assert "model_reasoning_effort" in keys
         assert "notify" in keys
 
+    def test_codex_effort_values_reach_codex_natively(self):
+        """Codex's API-enforced ladder (verified 0.144.5) includes literal
+        `max` and `xhigh`; kitchen passes them through untranslated, and
+        aliases `ultra` (which no backend accepts) to `max`."""
+        for effort, want in (
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ):
+            cmd = build_shell_cmd(
+                backend="codex", name="rev", session="ck-r",
+                status_dir="/tmp/state", effort=effort,
+            )
+            argv = _codex_argv_from_shell_cmd(cmd)
+            i = argv.index("-c")
+            assert argv[i + 1] == f"model_reasoning_effort={want}", (
+                f"--effort {effort}: {argv[i+1]!r}, want model_reasoning_effort={want}"
+            )
+
+    def test_claude_effort_ultra_aliases_to_max(self):
+        """Claude 2.1.211 accepts low..xhigh|max but not `ultra`; the kitchen
+        alias must land as `--effort max`. `max` itself passes verbatim."""
+        for effort, want in (("max", "max"), ("ultra", "max")):
+            toks = _claude_inner_tokens(build_shell_cmd(
+                backend="claude", name="eng", session="ck-r",
+                status_dir="/tmp/state", effort=effort,
+            ))
+            i = toks.index("--effort")
+            assert toks[i + 1] == want, f"--effort {effort}: {toks[i+1]!r}"
+
     def test_unknown_backend_raises(self):
         with pytest.raises(ValueError, match="Unknown backend"):
             build_shell_cmd(
