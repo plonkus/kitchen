@@ -1335,7 +1335,7 @@ def main():
     p_hire.add_argument("--kitchen", help="Target kitchen")
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
-    p_hire.add_argument("--effort", help="Reasoning effort (low, medium, high, xhigh, max; ultra = alias for max)")
+    p_hire.add_argument("--effort", help="Reasoning effort (low, medium, high, xhigh, max, ultra; support is backend/model-dependent, Claude maps ultra to max)")
     p_hire.add_argument("--model", choices=["fable", "sonnet", "opus"], help="Claude model tier for the cook: fable, sonnet, or opus (Claude cooks only). Passed to `claude --model` verbatim, resolving the latest model in that tier. Omit to use the account default.")
     p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude or Codex): no memory, no plugin/skill startup injection, no role prompt. Sous supplies the one eval prompt via a ticket. (gemini not yet supported)")
     p_hire.add_argument("--with-skill", action="append", default=[], metavar="PATH", help="Load a custom skill/plugin dir into a --clean-room cook (repeatable; Claude only). Path needs a SKILL.md or .claude-plugin/plugin.json. Additive opt-in to the blank slate.")
