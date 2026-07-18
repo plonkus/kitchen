@@ -91,14 +91,13 @@ class TestBuildShellCmd:
         assert "notify" in keys
 
     def test_codex_effort_values_reach_codex_natively(self):
-        """Codex's API-enforced ladder (verified 0.144.5) includes literal
-        `max` and `xhigh`; kitchen passes them through untranslated, and
-        aliases `ultra` (which no backend accepts) to `max`."""
+        """Codex 0.144.5 with gpt-5.6-sol accepts literal `max` and `ultra`;
+        kitchen must not collapse those distinct model-dependent tiers."""
         for effort, want in (
             ("high", "high"),
             ("xhigh", "xhigh"),
             ("max", "max"),
-            ("ultra", "max"),
+            ("ultra", "ultra"),
         ):
             cmd = build_shell_cmd(
                 backend="codex", name="rev", session="ck-r",
