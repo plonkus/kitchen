@@ -1135,7 +1135,9 @@ def cmd_setup(args):
     codex_content = codex_config.read_text() if codex_config.exists() else ""
     has_new = re.search(r"\bhooks\s*=\s*true", codex_content) is not None
     has_old = re.search(r"\bcodex_hooks\s*=\s*true", codex_content) is not None
-    if 'notify = ["kitchen", "hook-codex"]' in codex_content:
+    # Chained behind another notify wrapper, Codex re-encodes kitchen's hook as
+    # escaped, space-free JSON — detect its presence, not one exact spelling.
+    if re.search(r'\\?"kitchen\\?"\s*,\s*\\?"hook-codex\\?"', codex_content):
         print("✅ Codex hook installed")
         if has_old and not has_new:
             print("⚠️  [features].codex_hooks is deprecated by Codex. Change to: hooks = true")
