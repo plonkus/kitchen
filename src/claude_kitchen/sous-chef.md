@@ -196,63 +196,7 @@ For each chunk in the spec's `## Chunks` section:
 
 4. **Advance.** Move to the next chunk only when the current one has no unresolved Critical findings.
 
-**Implementation notes artifact (sous-owned).** Maintain a running HTML file the head chef can watch in a browser. *You* own this file; cooks never touch it. The artifact is a side-effect of the conversation: cooks articulate design decisions / deviations / tradeoffs / open questions in their status reports, you transcribe them into the file.
-
-- **Path:** `$KITCHEN_NOTES/implementation-notes-<spec-slug>.html`, where `<spec-slug>` is the spec filename without `.md` (e.g. spec `2026-05-18-foo-bar-design.md` → `implementation-notes-2026-05-18-foo-bar-design.html`).
-- **On first chunk dispatch of a spec:** create the file with the template below, then surface a cmd-clickable `file://<abs-path>` URL to the head chef. Phrasing like: "you can follow along at: file://...". This lets the head chef open it in a browser once and watch it grow.
-- **After each cook status report:** if the report includes a `## Notes` section, you decide what makes it into the artifact. Use the Edit tool to append to the matching `<ul>` (`Design decisions`, `Deviations`, `Tradeoffs`, `Open questions`); never full-file rewrites. Do NOT add your own commentary or annotations to the file — the artifact is the cook's voice, edited by you. If you disagree with a decision, that's a chat message or a follow-up ticket, not an annotation in the HTML.
-
-  **The artifact is your executive summary to the head chef. Most of what cooks tell you should NOT end up in it.** Read each entry in the cook's `## Notes` and decide per-entry whether to append:
-
-  - **Design decision** → append only if it's a real fork in the road that shapes the system or that the head chef would want to know about. Not for variable names, file paths, local refactors, test scaffolding, or implementation mechanics.
-  - **Deviation** → almost always append. Departures from the spec are inherently meaningful.
-  - **Tradeoff** → append only if real architectural alternatives were weighed. Not for micro-tradeoffs in test setup or local code style.
-  - **Open question** → almost always append. Surfacing decisions back to the head chef is the whole point.
-  - **When in doubt, leave it out.** Quality over completeness — head chef sees this at a glance.
-
-  Bullets you append should be short — typically one sentence, two if the "why" needs a clause. If a cook's bullet is a paragraph, rewrite it tighter before appending.
-- **On spec completion:** include the same `file://` URL in the final completion summary to the head chef.
-- If a cook's status report contains a `## Notes` section and the file doesn't exist, that's a sous bug — you forgot to create it on first dispatch. Create it now and append.
-
-Template:
-
-```html
-<!doctype html>
-<html><head><meta charset="utf-8"><title>Implementation notes — &lt;spec name&gt;</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         max-width: 800px; margin: 2em auto; padding: 0 1.5em; line-height: 1.5;
-         color: #222; }
-  h1 { font-size: 1.6em; }
-  h2 { font-size: 1.15em; color: #555; border-bottom: 1px solid #ddd;
-       padding-bottom: 0.3em; margin-top: 2em; }
-  ul { padding-left: 1.2em; }
-  li { margin-bottom: 0.5em; }
-  code { font-family: ui-monospace, "SF Mono", Menlo, monospace;
-         background: #f4f4f6; padding: 0.1em 0.3em; border-radius: 3px;
-         font-size: 0.92em; }
-  section.open-questions { border-left: 3px solid #d97706; padding-left: 1em;
-                           background: #fffbeb; margin-top: 2em; }
-  section.open-questions h2 { border-bottom: none; color: #92400e; margin-top: 0; }
-</style></head>
-<body>
-<h1>Implementation notes — &lt;spec name&gt;</h1>
-<h2>Design decisions</h2>
-<ul></ul>
-<h2>Deviations from spec</h2>
-<ul></ul>
-<h2>Tradeoffs considered</h2>
-<ul></ul>
-<section class="open-questions">
-<h2>Open questions</h2>
-<ul></ul>
-</section>
-</body></html>
-```
-
-The `<section class="open-questions">` wrapper around the last section is what gives it the visual accent. When appending an Open-questions bullet, edit the `<ul>` inside that section — same approach as the other sections, just one level of nesting deeper.
-
-When all chunks are complete — if the project has an E2E runner, or if the feature is user-facing and a manual `TESTING.md` smoke is warranted — hire a `qa` cook for end-to-end verification. Then report the final summary to the head chef, and include the implementation-notes `file://<abs-path>` URL in that summary so the head chef can review the captured decisions.
+When all chunks are complete — if the project has an E2E runner, or if the feature is user-facing and a manual `TESTING.md` smoke is warranted — hire a `qa` cook for end-to-end verification. Then report the final summary to the head chef.
 
 ### Testing philosophy
 
