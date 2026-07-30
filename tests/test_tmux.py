@@ -595,7 +595,9 @@ class TestSendKeysVerifiedSubmit:
         mock_time.time.side_effect = now
         mock_time.sleep.return_value = None
         mock_cap.side_effect = _settle_stable()   # pane quiet; only the cursor moves
-        fake = _tmux_cursor(settle_col=tuple(range(_PAYLOAD_COL, _PAYLOAD_COL + 40, 3)))
+        # Longer than the whole poll budget, so the cursor is still advancing
+        # when the loop gives up — "never comes to rest", not "rests late".
+        fake = _tmux_cursor(settle_col=tuple(range(_PAYLOAD_COL, _PAYLOAD_COL + 300, 3)))
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not settle"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
@@ -624,6 +626,55 @@ class TestSendKeysVerifiedSubmit:
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", _SETTLE_HEAD, backend=backend)
         assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_slow_tmux_does_not_starve_the_poll_loop(self, mock_time, mock_cap, mock_tmux):
+        # REGRESSION: the loop needs a MINIMUM of four iterations to conclude
+        # anything — one to observe the paste, three to watch the cursor hold
+        # still. A wall-clock budget does not guarantee them: on a loaded box a
+        # single `tmux display-message` has been measured at 2.5s (load 87, 68
+        # users, ~92 cook windows), which burns a 2.0s budget before the first
+        # poll even completes. The paste is fine and the composer is at rest;
+        # the loop just never got to look. Budgeting in POLLS guarantees it does.
+        #
+        # Each clock tick here stands for one poll costing 2.5s of wall time.
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+        def now():
+            clock[0] += 2.5
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor()
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="claude")
+        assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_hung_tmux_hits_the_ceiling_instead_of_hanging(self, mock_time, mock_cap, mock_tmux):
+        # The poll budget must not become an unbounded wait: a tmux server that
+        # is HUNG (not merely busy) would otherwise hold `kitchen ticket` for
+        # _SETTLE_POLLS * the per-call TIMEOUT. The wall-clock ceiling stays as
+        # a backstop — it fires only in that pathological case, and the raise
+        # reports the short poll count so the two are distinguishable.
+        from claude_kitchen.tmux import send_keys, _SETTLE_POLLS
+        clock = [0.0]
+        def now():
+            clock[0] += 60.0  # one poll = a full minute → nothing is coming back
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor()
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match=r"did not settle.*polls=\d+/%d" % _SETTLE_POLLS):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="claude")
+        assert fake.state["enter"] == 0
 
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")
