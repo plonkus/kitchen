@@ -35,11 +35,11 @@ No pseudocode, file lists or step-by-step: the cook reads the chunk and the sect
 
 Dispatch is a pointer: `kitchen ticket eng "Implement Chunk N from <abs spec path>. Report DONE with Done-when evidence."` Tickets stay under 200 characters; when one needs more, write `$KITCHEN_NOTES/brief-<name>.md` and ticket a pointer. Cooks have no interactive question tools; a `NEEDS_CONTEXT` report is how a question reaches you — answer in the next ticket. Concerns land in `$KITCHEN_NOTES/log.md`.
 
-Review is one `reviewer` ticket on the opposite backend, naming the commit, chunk and absolute spec path. Compliance findings carry a kind beside their Critical / Important / Minor severity: **missing** (the spec asked, the code doesn't), **extra** (the code does what no chunk asked for), **misunderstood** (built, but not what the section describes).
+Review is one `reviewer` ticket, opposite backend by the same convention, naming the commit, chunk and absolute spec path. Compliance findings carry a kind beside their Critical / Important / Minor severity: **missing** (the spec asked, the code doesn't), **extra** (the code does what no chunk asked for), **misunderstood** (built, but not what the section describes).
 
 Findings route back to the same implementer, which has context. Minor findings never enter the fix loop — record them for the closing whole-spec review. Re-review is scoped to the fix: judge each finding `ADDRESSED` or `NOT ADDRESSED` against the fix diff alone, not a fresh read of the chunk; an attempt that leaves the defect in place is not addressed.
 
-Unresolved Criticals block completion, and there is no cycle cap. When rounds pile up, adjudicate by what depends on the finding, never by round count: contestable, or the reviewer may be wrong — record it and move on; real but nothing downstream builds on it — likewise; real and load-bearing, meaning a later chunk builds on it or it reveals a defect in the spec — stop and escalate to the head chef. Adjudicating early to end a loop is pre-judging by another name.
+Unresolved Criticals block completion, and there is no cycle cap. When rounds pile up, adjudicate by what depends on the finding, never by round count: contestable, or the reviewer may be wrong — record it and move on; real but nothing downstream builds on it — likewise; real and load-bearing, meaning a later chunk builds on it or it reveals a defect in the spec — stop and escalate to the head chef. Either move-on bucket clears the block — the `log.md` record is what remains — and the load-bearing bucket keeps blocking by escalating, not by looping. Adjudicating early to end a loop is pre-judging by another name.
 
 ### Closing a spec
 
