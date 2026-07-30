@@ -1191,7 +1191,8 @@ class TestCmdHireRole:
         assert args_call[1] == "rev-codex"
         # role content + ack footer both arrive in one send
         assert "reviewer" in args_call[2].lower()
-        assert "You review code, specs, and plans" in args_call[2]
+        # anchor on the H1, not prose: role bodies get rewritten, headers don't
+        assert args_call[2].startswith("# reviewer")
         assert "Ready, chef." in args_call[2]
 
     @patch("claude_kitchen.cli.send_keys")
