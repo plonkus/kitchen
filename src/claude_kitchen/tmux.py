@@ -216,6 +216,26 @@ def wait_for_prompt(session: str, window: str, backend: str,
 _SUBMIT_ATTEMPTS = 8
 _SUBMIT_POLL = 0.3
 
+# Settle-poll budget, counted in POLLS rather than wall-clock. The loop needs a
+# MINIMUM of four iterations to conclude anything — one to observe the paste,
+# three to watch the cursor hold still — and a time budget does not guarantee
+# them: on a loaded box (load 87, 68 users, ~92 cook windows) a single `tmux
+# display-message` was measured at 2.5s, and a 2.0s budget was observed yielding
+# 6-12 polls where it yields ~26 at rest. Starving the loop makes it report "did
+# not settle" for a paste that landed perfectly well, which abandons the payload
+# in the composer — the same wedge the cursor-stability fix removed, reached by a
+# different route. Polls make the loop's conclusion independent of how slow tmux
+# happens to be. 24 polls ≈ the old 2.0s at rest (~75 ms per poll), and stretches
+# to whatever wall-clock a loaded box needs.
+#
+# _SETTLE_CEILING is a backstop, not the budget: it bounds `kitchen ticket`
+# against a HUNG tmux server (where the poll budget would otherwise mean
+# _SETTLE_POLLS * TIMEOUT), and fires only there. The raise reports polls
+# actually taken, so a short count reads as "tmux never answered" rather than
+# "the paste never landed".
+_SETTLE_POLLS = 24
+_SETTLE_CEILING = 30.0
+
 
 def _cursor_col(session: str, window: str) -> int:
     """The cursor's column in the composer (cursor-scoped, not whole-pane).
@@ -254,15 +274,26 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     #
     # Phase 1 — settle-poll: wait for proof the paste landed (a "[Pasted "
     # collapse stub, a head marker from the payload, or — for codex/claude —
-    # the composer cursor moving off its empty column) AND for the pane to stop
-    # repainting. The cursor signal covers inline multiline pastes whose
+    # the composer cursor moving off its empty column) AND for the composer to
+    # come to rest. The cursor signal covers inline multiline pastes whose
     # head scrolls above the visible tmux viewport. For long pastes Ink renders
     # the stub from the FIRST chunk while the rest still streams in, so
     # submitting on first-stub races the remainder and the message never
     # submits. Settling closes that race. See
     # notes/collapsed-paste-mechanism-report.md + notes/brief-send-keys-stable-
-    # poll.md. If the paste is never positively observed by the deadline we
-    # FAIL CLEARLY (raise) rather than submit blind into an unknown composer.
+    # poll.md. If the paste is never positively observed within the poll budget
+    # we FAIL CLEARLY (raise) rather than submit blind into an unknown composer.
+    #
+    # "At rest" is measured on the CURSOR COLUMN, not on the whole pane. A cook
+    # that is mid-turn repaints its pane continuously — the claude working
+    # spinner rotates its glyph and ticks its token counter every ~200-333 ms
+    # (measured on live cooks), which is faster than one poll interval once the
+    # box is loaded and each tmux call costs 100 ms+. Whole-pane stability is
+    # therefore unreachable on a busy cook, and requiring it made every ticket
+    # sent mid-turn raise — abandoning the payload in the composer, which then
+    # poisoned the next send's empty_col baseline and wedged the cook. The
+    # spinner does not move the composer cursor; a paste still streaming in
+    # does. The cursor is the signal that actually answers "has it landed yet".
     #
     # Phase 2 — verified submit: loop Enter until the composer ACCEPTS the input,
     # proven POSITIVELY by the input cursor snapping back to the empty-composer
@@ -291,40 +322,44 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     tmux("load-buffer", "-b", buf, "-", input=text, check=True)
     tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", target, check=True)
     head = next((s for s in (line.strip() for line in text.splitlines()) if s), "")[:24]
-    deadline = time.time() + 2.0
-    prev = None
-    while time.time() < deadline:
+    ceiling = time.time() + _SETTLE_CEILING
+    prev_col = None
+    polls = 0
+    while polls < _SETTLE_POLLS and time.time() < ceiling:
+        polls += 1
         time.sleep(0.05)
-        pane = capture_pane(session, window) or ""
+        col = _cursor_col(session, window)
         if not signalled:
+            pane = capture_pane(session, window) or ""
             text_signalled = (
                 pane.count("[Pasted ") > baseline.count("[Pasted ")
                 or (head and pane.count(head) > baseline.count(head))
             )
-            cursor_signalled = False
-            if not text_signalled and backend in ("codex", "claude"):
-                cursor_col = _cursor_col(session, window)
-                cursor_signalled = cursor_col >= 0 and cursor_col != empty_col
+            cursor_signalled = (backend in ("codex", "claude")
+                                and col >= 0 and col != empty_col)
             if text_signalled or cursor_signalled:
                 signalled = True
-                prev = pane
+                prev_col = col
             continue
-        if pane == prev:
+        if col == prev_col:
             stable += 1
-            if stable >= 3:  # ~150 ms of no repaint = paste fully landed
+            if stable >= 3:  # ~150 ms of no cursor movement = paste fully landed
                 break
         else:
             stable = 0
-            prev = pane
+            prev_col = col
 
     # Fail clearly on ANY incomplete settle — never observed (signalled False)
-    # OR observed but never stabilized (stable < 3 at the deadline). Submitting
-    # into a still-repainting composer reintroduces the long-paste race the
-    # settle-poll exists to prevent.
+    # OR observed but the composer still moving (stable < 3 when the budget ran
+    # out). Submitting into a composer the paste is still streaming into
+    # reintroduces the long-paste race the settle-poll exists to prevent.
+    # `polls` short of _SETTLE_POLLS means the ceiling fired: tmux never
+    # answered, which is a different diagnosis from a paste that never landed.
     if not (signalled and stable >= 3):
         raise RuntimeError(
-            f"send_keys: paste did not settle within 2.0s on {target} "
-            f"(signalled={signalled}, stable={stable}); refusing to submit "
+            f"send_keys: paste did not settle on {target} "
+            f"(signalled={signalled}, stable={stable}, "
+            f"polls={polls}/{_SETTLE_POLLS}); refusing to submit "
             f"into an unknown composer")
 
     # Precondition: the payload is actually sitting in the composer (cursor moved

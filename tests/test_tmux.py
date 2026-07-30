@@ -375,33 +375,69 @@ def _settle_no_signal(session, window, full=False):
     return "idle transcript, head never appears\n> "
 
 
-def _settle_signal_never_stable():
-    """Head appears (signalled) but the pane KEEPS changing → never reaches the
-    stability threshold. Exercises Critical 1's 'observed but never stabilized'."""
+_SPINNER_GLYPHS = "✻✽✶✳✢"
+
+
+def _settle_spinner():
+    """capture_pane side-effect modelling a mid-turn claude cook: the payload IS
+    in the composer, but the working spinner repaints the pane on EVERY poll —
+    rotating glyph, ticking elapsed timer, climbing token count.
+
+    Measured on live cooks (ck-domo-source:eng-x3, ck-watchmepivot:finisher,
+    ck-kitchen-claude-kitchen:wedge): the spinner repaints every ~200-333 ms,
+    while the settle poll interval is 50 ms + the cost of a tmux call — median
+    23-103 ms at rest but spiking past 400 ms on a loaded box. Once the poll
+    interval passes ~1/3 of the spinner period, no two consecutive captures
+    match and whole-pane stability is unreachable. The composer is quiet
+    throughout: it is only the transcript/footer that moves."""
     calls = {"n": 0}
 
     def cap(session, window, full=False):
         calls["n"] += 1
         if calls["n"] == 1:
-            return "idle\n> "
-        return f"streaming {calls['n']}\n> {_SETTLE_HEAD} {calls['n']}\n"  # head, but always different
+            return "idle transcript\n> "
+        g = _SPINNER_GLYPHS[calls["n"] % len(_SPINNER_GLYPHS)]
+        return (f"{g} Infusing… ({calls['n']}s · ↓ {calls['n']}.1k tokens)\n"
+                f"> {_SETTLE_HEAD} landed\n")
 
     return cap
 
 
-def _tmux_cursor(cols):
-    """tmux() side-effect. display-message → the next scripted cursor_x,
-    repeating the last value on exhaustion; send-keys/load-buffer/paste-buffer
-    → success. Records Enters and the load-buffer input."""
-    queue = list(cols)
-    exhausted_value = queue[-1] if queue else _EMPTY_COL
+def _tmux_cursor(empty_col=_EMPTY_COL, settle_col=_PAYLOAD_COL,
+                 after_enter=(_EMPTY_COL,)):
+    """tmux() side-effect scripted by PHASE, not by raw call count.
+
+    The settle-poll samples the cursor an unbounded number of times (it polls
+    until the column holds steady), so a test must not have to know how many
+    reads that takes. display-message therefore returns:
+
+      - `empty_col` for the FIRST read — send_keys' pre-paste empty-composer
+        sample;
+      - `settle_col` for every read before the first Enter — the settle-poll
+        and the landed precondition. Pass a sequence to script a cursor that is
+        still MOVING (a paste mid-flight); the last entry then repeats.
+      - `after_enter[i]` for the single read that follows Enter i+1; the last
+        entry repeats, so a steady post-Enter column needs only one value.
+
+    send-keys/load-buffer/paste-buffer → success. Records Enters and the
+    load-buffer input."""
+    settle = [settle_col] if isinstance(settle_col, int) else list(settle_col)
+    after = list(after_enter)
+    reads = {"n": 0, "settle": 0}
     state = {"enter": 0, "pasted_text": None}
 
     def fake(*args, **kwargs):
         cmd = args[0]
         m = MagicMock(returncode=0, stdout="")
         if cmd == "display-message":
-            value = queue.pop(0) if queue else exhausted_value
+            reads["n"] += 1
+            if reads["n"] == 1:
+                value = empty_col
+            elif state["enter"] == 0:
+                value = settle[min(reads["settle"], len(settle) - 1)]
+                reads["settle"] += 1
+            else:
+                value = after[min(state["enter"] - 1, len(after) - 1)]
             m.stdout = f"{value}\n"
         elif cmd == "load-buffer":
             state["pasted_text"] = kwargs.get("input")
@@ -447,9 +483,7 @@ class TestSendKeysVerifiedSubmit:
         mock_cap.side_effect = offscreen_pane
         # cursor_x: empty (pre-paste) → payload (landing signal) → payload
         # (settled precondition) → empty (accepted after Enter).
-        fake = _tmux_cursor([
-            _EMPTY_COL, _PAYLOAD_COL, _PAYLOAD_COL, _EMPTY_COL,
-        ])
+        fake = _tmux_cursor()
         mock_tmux.side_effect = fake
 
         send_keys("ck-x", "cx", text, backend=backend)
@@ -464,7 +498,7 @@ class TestSendKeysVerifiedSubmit:
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
         # cursor_x: empty (pre-paste) → payload (precondition) → empty (accepted).
-        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _EMPTY_COL])
+        fake = _tmux_cursor()
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         assert fake.state["enter"] == 1
@@ -477,9 +511,10 @@ class TestSendKeysVerifiedSubmit:
         # Enter #2 lands (cursor back to empty). The loop recovers.
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL,
-                             _PAYLOAD_COL,    # after Enter #1: swallowed, still in composer
-                             _EMPTY_COL])     # after Enter #2: accepted
+        fake = _tmux_cursor(after_enter=(
+            _PAYLOAD_COL,    # after Enter #1: swallowed, still in composer
+            _EMPTY_COL,      # after Enter #2: accepted
+        ))
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         assert fake.state["enter"] == 2
@@ -496,7 +531,7 @@ class TestSendKeysVerifiedSubmit:
         from claude_kitchen.tmux import send_keys, _SUBMIT_ATTEMPTS
         mock_cap.side_effect = _settle_stable()
         jitter = [40, 38, 41, 39, 42, 37, 40, 38]  # never _EMPTY_COL
-        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL] + jitter[:_SUBMIT_ATTEMPTS])
+        fake = _tmux_cursor(after_enter=jitter[:_SUBMIT_ATTEMPTS])
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="never left the composer"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
@@ -512,7 +547,7 @@ class TestSendKeysVerifiedSubmit:
         # to a normal submit: that is the point — accept == submit OR queue.)
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _EMPTY_COL])
+        fake = _tmux_cursor()
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         assert fake.state["enter"] == 1
@@ -533,7 +568,7 @@ class TestSendKeysVerifiedSubmit:
         mock_cap.side_effect = _settle_no_signal
         # Cursor remains empty throughout the settle window too; a moved codex
         # cursor is now independent positive proof that the paste landed.
-        fake = _tmux_cursor([_EMPTY_COL])
+        fake = _tmux_cursor(settle_col=_EMPTY_COL)
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not settle"):
             send_keys("ck-x", "cx", "a ticket whose head never lands", backend="codex")
@@ -542,23 +577,103 @@ class TestSendKeysVerifiedSubmit:
     @patch("claude_kitchen.tmux.tmux")
     @patch("claude_kitchen.tmux.capture_pane")
     @patch("claude_kitchen.tmux.time")
-    def test_observed_but_never_stable_raises(self, mock_time, mock_cap, mock_tmux):
-        # CRITICAL 1 (the new fix): paste IS observed but the pane never reaches
-        # the stability threshold before the deadline → still raise. The narrow
-        # old check ('not signalled') would have submitted into a still-repainting
-        # composer, reintroducing the long-paste race.
+    def test_observed_but_composer_still_moving_raises(self, mock_time, mock_cap, mock_tmux):
+        # CRITICAL 1: paste IS observed but the COMPOSER never comes to rest —
+        # the cursor keeps advancing because Ink is still streaming the payload
+        # in. Submitting now would race the remainder, so raise, send NO Enter.
+        #
+        # "Still landing" is a property of the composer, not of the pane: the
+        # settle-poll must watch the cursor column. (Was
+        # test_observed_but_never_stable_raises, which asserted a repainting
+        # PANE should raise — that pinned the bug rather than the contract, see
+        # test_spinner_repaint_does_not_block_settle.)
         from claude_kitchen.tmux import send_keys
         clock = [0.0]
         def now():
-            clock[0] += 0.5
+            clock[0] += 0.2
             return clock[0]
         mock_time.time.side_effect = now
         mock_time.sleep.return_value = None
-        mock_cap.side_effect = _settle_signal_never_stable()
-        fake = _tmux_cursor([_EMPTY_COL])
+        mock_cap.side_effect = _settle_stable()   # pane quiet; only the cursor moves
+        # Longer than the whole poll budget, so the cursor is still advancing
+        # when the loop gives up — "never comes to rest", not "rests late".
+        fake = _tmux_cursor(settle_col=tuple(range(_PAYLOAD_COL, _PAYLOAD_COL + 300, 3)))
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not settle"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
+        assert fake.state["enter"] == 0
+
+    @pytest.mark.parametrize("backend", ["codex", "claude"])
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_spinner_repaint_does_not_block_settle(self, mock_time, mock_cap, mock_tmux, backend):
+        # REGRESSION (the wedge): a cook mid-turn repaints its pane on every
+        # single poll while its composer sits perfectly still holding the
+        # payload. Whole-pane stability is unreachable there, so the old check
+        # raised "did not settle" and ABANDONED the payload in the composer —
+        # which then poisoned the next send's empty-column baseline. Settling on
+        # the cursor column instead is immune: the spinner never moves it.
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+        def now():
+            clock[0] += 0.2
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_spinner()
+        fake = _tmux_cursor()
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend=backend)
+        assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_slow_tmux_does_not_starve_the_poll_loop(self, mock_time, mock_cap, mock_tmux):
+        # REGRESSION: the loop needs a MINIMUM of four iterations to conclude
+        # anything — one to observe the paste, three to watch the cursor hold
+        # still. A wall-clock budget does not guarantee them: on a loaded box a
+        # single `tmux display-message` has been measured at 2.5s (load 87, 68
+        # users, ~92 cook windows), which burns a 2.0s budget before the first
+        # poll even completes. The paste is fine and the composer is at rest;
+        # the loop just never got to look. Budgeting in POLLS guarantees it does.
+        #
+        # Each clock tick here stands for one poll costing 2.5s of wall time.
+        from claude_kitchen.tmux import send_keys
+        clock = [0.0]
+        def now():
+            clock[0] += 2.5
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor()
+        mock_tmux.side_effect = fake
+        send_keys("ck-x", "cx", _SETTLE_HEAD, backend="claude")
+        assert fake.state["enter"] == 1
+
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    @patch("claude_kitchen.tmux.time")
+    def test_hung_tmux_hits_the_ceiling_instead_of_hanging(self, mock_time, mock_cap, mock_tmux):
+        # The poll budget must not become an unbounded wait: a tmux server that
+        # is HUNG (not merely busy) would otherwise hold `kitchen ticket` for
+        # _SETTLE_POLLS * the per-call TIMEOUT. The wall-clock ceiling stays as
+        # a backstop — it fires only in that pathological case, and the raise
+        # reports the short poll count so the two are distinguishable.
+        from claude_kitchen.tmux import send_keys, _SETTLE_POLLS
+        clock = [0.0]
+        def now():
+            clock[0] += 60.0  # one poll = a full minute → nothing is coming back
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_time.sleep.return_value = None
+        mock_cap.side_effect = _settle_stable()
+        fake = _tmux_cursor()
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match=r"did not settle.*polls=\d+/%d" % _SETTLE_POLLS):
+            send_keys("ck-x", "cx", _SETTLE_HEAD, backend="claude")
         assert fake.state["enter"] == 0
 
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
@@ -570,7 +685,7 @@ class TestSendKeysVerifiedSubmit:
         # let the loop's 'back to empty' check fire on a no-op.
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, _EMPTY_COL])  # precondition still empty
+        fake = _tmux_cursor(settle_col=_EMPTY_COL)  # precondition still empty
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not land in the composer"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
@@ -584,7 +699,7 @@ class TestSendKeysVerifiedSubmit:
         # NO further load-buffer/paste-buffer no matter how many Enter retries run.
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _PAYLOAD_COL, _EMPTY_COL])
+        fake = _tmux_cursor(after_enter=(_PAYLOAD_COL, _EMPTY_COL))
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         cmds = [c.args[0] for c in mock_tmux.call_args_list]
@@ -602,7 +717,7 @@ class TestSendKeysVerifiedSubmit:
         # the paste; INTERNAL newlines are preserved.
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, _PAYLOAD_COL, _EMPTY_COL])
+        fake = _tmux_cursor()
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", "DOTHING\nsecond line\n\n", backend="codex")
         assert fake.state["pasted_text"] == "DOTHING\nsecond line"
@@ -627,7 +742,7 @@ class TestSendKeysVerifiedSubmit:
         from claude_kitchen.tmux import send_keys, _SUBMIT_ATTEMPTS
         floor = _EMPTY_COL + 1  # the lowest column real content ever occupies
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, floor] + [floor] * _SUBMIT_ATTEMPTS)
+        fake = _tmux_cursor(settle_col=floor, after_enter=(floor,))
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="never left the composer"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
@@ -644,7 +759,7 @@ class TestSendKeysVerifiedSubmit:
         # retries; the ticket is never blindly submitted or silently lost.
         from claude_kitchen.tmux import send_keys
         mock_cap.side_effect = _settle_stable()
-        fake = _tmux_cursor([_EMPTY_COL, _EMPTY_COL])  # post-settle cursor still at empty col
+        fake = _tmux_cursor(settle_col=_EMPTY_COL)  # post-settle cursor still at empty col
         mock_tmux.side_effect = fake
         with pytest.raises(RuntimeError, match="did not land in the composer"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
