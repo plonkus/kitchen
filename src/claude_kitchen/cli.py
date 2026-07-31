@@ -466,9 +466,20 @@ def cmd_open(args):
     _seed(wiki_dir(slug), _WIKI_TEMPLATES)
     _seed(notes_dir(name), _NOTES_TEMPLATES)
 
-    if not has_session(session):
+    if has_session(session):
+        # Sweep ONLY when the session was already up on this kitchen's own
+        # socket — there the window list is authoritative about which cooks are
+        # still alive. When we have to CREATE the session, every cook record
+        # looks orphaned by construction, and that is exactly the case where the
+        # cooks may still be running: on a suspended kitchen the records are the
+        # memory `suspend` exists to keep, and after the socket move a kitchen's
+        # cooks can be alive on a different server this tmux can't even see.
+        # Deleting their state there destroys the sous's only record of what
+        # they were doing. Orphan files are inert (brigade and the statusline
+        # count live windows, not files); `kitchen sweep` clears them on demand.
+        _sweep_cooks(base, session)
+    else:
         tmux("new-session", "-d", "-s", session, "-n", "_placeholder", session=session)
-    _sweep_cooks(base, session)
     mcp_config = {
         "mcpServers": {
             "kitchen": {
@@ -1299,6 +1310,26 @@ def cmd_setup(args):
         sys.exit(1)
 
 
+def cmd_suspend(args):
+    """Kill a kitchen's tmux server and touch nothing on disk.
+
+    `close` without the destruction: the cooks are gone, the kitchen's memory —
+    kitchen.json, cooks/*.json, notes/, the wiki — is not. Winding a kitchen
+    down used to mean destroying it, so nobody ever did, which is how one tmux
+    server ended up carrying 16 kitchens and 117 panes.
+
+    kill-server rather than kill-session: the point is to give the machine the
+    process back, and the kitchen owns its server outright."""
+    kitchen = resolve_kitchen(args.kitchen)
+    session = mc(kitchen)
+    if not has_session(session):
+        sys.exit(f"Kitchen \"{kitchen}\" has no running tmux server — already suspended.")
+    tmux("kill-server", session=session)
+    print(f"Kitchen \"{kitchen}\" suspended. Cooks are gone; notes and cook records are untouched.")
+    print(f"   kitchen open --resume {kitchen}    # bring the sous back")
+    print(f"   {attach_cmd(session)}    # once it is back up")
+
+
 def cmd_close(args):
     kitchen = resolve_kitchen(args.kitchen)
     session = mc(kitchen)
@@ -1376,6 +1407,9 @@ def main():
     p_sweep = sub.add_parser("sweep", help="Delete stale cook state files (orphans)")
     p_sweep.add_argument("--kitchen", help="Target kitchen")
 
+    p_suspend = sub.add_parser("suspend", help="Kill a kitchen's tmux server, keeping all its state on disk")
+    p_suspend.add_argument("kitchen", nargs="?", help="Kitchen name")
+
     p_close = sub.add_parser("close", help="Close a kitchen")
     p_close.add_argument("kitchen", nargs="?", help="Kitchen name")
     p_close.add_argument("--force", action="store_true", help="Remove worktree even with unpushed changes")
@@ -1416,6 +1450,8 @@ def main():
         cmd_clock_out(args)
     elif args.command == "sweep":
         cmd_sweep(args)
+    elif args.command == "suspend":
+        cmd_suspend(args)
     elif args.command == "close":
         cmd_close(args)
     elif args.command == "setup":

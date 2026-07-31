@@ -864,7 +864,12 @@ class TestCmdOpenNoOriginRepo:
         kj = json.loads((state / "kitchen.json").read_text())
         assert kj["slug"], "slug should be derived via full-path fallback, not empty"
         assert "-" in kj["slug"] and kj["slug"].endswith("myrepo")
-        assert not (state / "cooks" / "ghost.json").exists(), "stale cook file should be swept"
+        # has_session is False here, so this open CREATED the session — and an
+        # open that had to create the session must not sweep. Every cook record
+        # looks orphaned by construction there, including records for cooks that
+        # are alive on a socket this tmux can't see. `kitchen sweep` still
+        # clears them on demand (see TestCmdSweep above).
+        assert (state / "cooks" / "ghost.json").exists()
 
 
 class TestCmdOpenFailures:
@@ -1477,6 +1482,100 @@ class TestCmdHireCleanRoom:
         (d / ".claude-plugin").mkdir(parents=True)
         (d / ".claude-plugin" / "plugin.json").write_text("{}")
         assert _validate_skill_path(str(d)) == str(d.resolve())
+
+
+class TestCmdSuspend:
+    """`suspend` kills the kitchen's own tmux server and touches NOTHING on
+    disk — it is `close` minus the destruction."""
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_kills_only_that_kitchens_server(self, mock_rk, mock_tmux, mock_has, capsys):
+        from claude_kitchen.cli import cmd_suspend
+        cmd_suspend(MagicMock(kitchen="risotto"))
+        assert mock_tmux.call_args.args == ("kill-server",)
+        assert mock_tmux.call_args.kwargs["session"] == "ck-risotto"
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_leaves_every_byte_of_state_alone(self, mock_rk, mock_tmux, mock_has, tmp_path):
+        """The contrast with `close`, which unlinks kitchen.json and rmtrees
+        notes/ + cooks/. Nothing here may be removed or rewritten."""
+        from claude_kitchen.cli import cmd_suspend
+        (tmp_path / "cooks").mkdir()
+        (tmp_path / "cooks" / "eng.json").write_text('{"status":"idle"}')
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "log.md").write_text("# Log\n")
+        (tmp_path / "kitchen.json").write_text('{"source":"/x"}')
+        before = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
+        with patch("claude_kitchen.cli.state_dir", return_value=tmp_path):
+            cmd_suspend(MagicMock(kitchen="risotto"))
+        after = {p: p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file()}
+        assert after == before
+
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_already_suspended_fails_clearly(self, mock_rk, mock_tmux, mock_has):
+        from claude_kitchen.cli import cmd_suspend
+        with pytest.raises(SystemExit, match="already suspended"):
+            cmd_suspend(MagicMock(kitchen="risotto"))
+        mock_tmux.assert_not_called()
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_prints_the_socket_qualified_attach_command(
+            self, mock_rk, mock_tmux, mock_has, capsys):
+        from claude_kitchen.cli import cmd_suspend
+        cmd_suspend(MagicMock(kitchen="risotto"))
+        out = capsys.readouterr().out
+        assert "tmux -L ck-risotto attach -t ck-risotto" in out
+        assert "kitchen open --resume risotto" in out
+
+
+class TestOpenDoesNotSweepCooksItCannotSee:
+    """A kitchen whose session this tmux server can't see — suspended, or alive
+    on another socket — must NOT have its cook records deleted. Every record
+    looks orphaned when the session had to be created, and that is precisely
+    the case where the cooks may still be running (or where the records are the
+    memory `suspend` promised to keep)."""
+
+    @patch("claude_kitchen.cli._sweep_cooks")
+    @patch("claude_kitchen.cli.has_session", return_value=False)
+    def test_no_sweep_when_the_session_had_to_be_created(self, mock_has, mock_sweep):
+        assert mock_sweep is not None
+        import inspect
+        src = inspect.getsource(cmd_open)
+        # The sweep must sit on the has_session TRUE branch.
+        assert "_sweep_cooks(base, session)" in src
+
+    def test_resume_keeps_cook_records_for_an_unreachable_session(
+            self, tmp_path, monkeypatch):
+        """End to end through cmd_open --resume: session absent on this socket,
+        so a fresh one is created — and cooks/*.json survives untouched."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project = tmp_path / "proj"
+        project.mkdir()
+        base = tmp_path / ".claude-kitchen" / "widget"
+        (base / "cooks").mkdir(parents=True)
+        (base / "cooks" / "eng.json").write_text('{"status":"working"}')
+        (base / "kitchen.json").write_text(json.dumps(
+            {"source": str(project), "slug": "widget", "sous_session_id": "sid-1"}) + "\n")
+        args = MagicMock(name_=None, project=str(project), resume=True,
+                         sub_sous=False, worktree_path=None)
+        args.name = "widget"
+        with patch("claude_kitchen.cli.has_session", return_value=False), \
+             patch("claude_kitchen.cli.tmux") as mock_tmux, \
+             patch("claude_kitchen.cli.project_slug", return_value="widget"), \
+             patch("claude_kitchen.cli.namespaced", return_value="widget"), \
+             patch("claude_kitchen.cli.spawn_sous") as mock_spawn:
+            mock_tmux.return_value = MagicMock(returncode=0)
+            cmd_open(args)
+        assert (base / "cooks" / "eng.json").read_text() == '{"status":"working"}'
+        assert mock_spawn.call_args.kwargs["resume_session_id"] == "sid-1"
 
 
 class TestCmdClose:
