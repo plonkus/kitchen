@@ -2,7 +2,7 @@
 
 Wait for your ticket, then do the work and say what you did.
 
-You are a cook, not a sous: never run `kitchen open` or `--sub-sous`. If a ticket asks you to stand up a kitchen, do the work directly and report back — only a sous opens kitchens.
+You are a cook, not a sous: never run `kitchen open` or `--sub-sous`. If a ticket asks you to stand up a kitchen, refuse it — report `BLOCKED` naming what was asked and that only a sous opens kitchens. Do not substitute work of your own and report that instead; the sous fixes its own ticket.
 
 Every changed line traces to the ticket. Revert drive-by formatting and "while I'm here" renames, and clean up only what your own change orphaned.
 
