@@ -74,9 +74,9 @@ def list_sessions() -> list[str]:
     return [mc(n) for n in names if has_session(mc(n), timeout=PROBE_TIMEOUT)]
 
 
-def list_windows(session: str) -> list[str]:
+def list_windows(session: str, timeout: int = TIMEOUT) -> list[str]:
     result = tmux("list-windows", "-t", session, "-F", "#{window_name}",
-                  session=session, check=True)
+                  session=session, timeout=timeout, check=True)
     return [
         w.strip() for w in result.stdout.strip().split("\n")
         if w.strip() and not w.strip().startswith("_")

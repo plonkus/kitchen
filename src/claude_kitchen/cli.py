@@ -12,6 +12,7 @@ from pathlib import Path
 from claude_kitchen.tmux import (
     mc, bare, list_sessions, list_windows, has_session,
     capture_pane, send_keys, tmux, wait_for_prompt, pane_busy, attach_cmd,
+    PROBE_TIMEOUT,
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
@@ -244,11 +245,19 @@ def cmd_statusline_segment(args):
     if not kitchen:
         return
 
-    # A statusline is wired into the user's prompt — it must NEVER raise. A
-    # stale AGENT_SESSION (session already torn down) renders nothing rather
-    # than an attach hint to a session that's gone.
+    # A statusline is wired into the user's prompt — it must NEVER raise, and it
+    # must never make the head chef WAIT. A stale AGENT_SESSION (session already
+    # torn down) renders nothing rather than an attach hint to a session that's
+    # gone.
+    #
+    # Both tmux calls below carry PROBE_TIMEOUT rather than the default 15s.
+    # This kitchen now has its own tmux server, so "my server is wedged" is a
+    # first-class state — and at the default budget a wedged server would freeze
+    # the prompt for 15 seconds on EVERY render. Bounded at PROBE_TIMEOUT the
+    # segment simply goes quiet, which is the same thing it does for a kitchen
+    # that is down.
     session = mc(kitchen)
-    if not has_session(session):
+    if not has_session(session, timeout=PROBE_TIMEOUT):
         return
 
     # Count live tmux windows, not cooks/*.json files. State files for cooks
@@ -260,9 +269,14 @@ def cmd_statusline_segment(args):
     base = state_dir(kitchen)
     total = active = 0
     try:
-        windows = list_windows(session)
-    except subprocess.CalledProcessError:
-        windows = []  # session vanished between has_session and the listing
+        windows = list_windows(session, timeout=PROBE_TIMEOUT)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # CalledProcessError: session vanished between has_session and the
+        # listing. TimeoutExpired: this kitchen's server answered the probe and
+        # then stopped answering — possible now that each kitchen has its own
+        # server, and it must degrade to a quiet segment, not a traceback in the
+        # head chef's prompt.
+        windows = []
     for win in windows:
         total += 1
         try:

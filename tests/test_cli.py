@@ -12,7 +12,7 @@ import pytest
 
 from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
 from claude_kitchen.state import write_status
-from claude_kitchen.tmux import CK_PREFIX
+from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT
 
 
 class TestResolveKitchen:
@@ -1830,7 +1830,7 @@ class TestCmdStatuslineSegment:
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
         assert out == "[ tmux -L ck-risotto attach -t ck-risotto ]  [ 2/4 agents active ]"
-        mock_win.assert_called_once_with("ck-risotto")
+        mock_win.assert_called_once_with("ck-risotto", timeout=PROBE_TIMEOUT)
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status", return_value={"status": "working"})
@@ -1931,6 +1931,40 @@ class TestCmdStatuslineSegment:
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
         assert out == "[ tmux -L ck-r attach -t ck-r ]  [ 1/2 agents active ]"
+
+    # ---- per-kitchen socket: the statusline must never stall or throw ----
+    # Each kitchen now has its own tmux server, so "MY server is wedged" is a
+    # reachable state for the very kitchen the statusline describes. At the
+    # default 15s budget that would freeze the head chef's prompt on every
+    # render; unguarded it would raise TimeoutExpired into it.
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.read_status")
+    @patch("claude_kitchen.cli.list_windows", return_value=["a"])
+    def test_tmux_probes_are_bounded_by_probe_timeout(
+        self, mock_win, mock_status, mock_has, monkeypatch, capsys,
+    ):
+        from claude_kitchen.cli import cmd_statusline_segment
+        from claude_kitchen.tmux import PROBE_TIMEOUT
+        monkeypatch.setenv("AGENT_SESSION", "ck-r")
+        cmd_statusline_segment(MagicMock())
+        assert mock_has.call_args.kwargs["timeout"] == PROBE_TIMEOUT
+        assert mock_win.call_args.kwargs["timeout"] == PROBE_TIMEOUT
+
+    @patch("claude_kitchen.cli.has_session", return_value=True)
+    @patch("claude_kitchen.cli.read_status")
+    @patch("claude_kitchen.cli.list_windows",
+           side_effect=subprocess.TimeoutExpired(cmd="tmux", timeout=2))
+    def test_wedged_own_server_degrades_instead_of_raising(
+        self, mock_win, mock_status, mock_has, monkeypatch, capsys,
+    ):
+        """This kitchen's server answers the probe and then stops answering.
+        The segment must still render (0/0), not put a traceback in the prompt."""
+        monkeypatch.setenv("AGENT_SESSION", "ck-wedged")
+        from claude_kitchen.cli import cmd_statusline_segment
+        cmd_statusline_segment(MagicMock())
+        out = capsys.readouterr().out.rstrip("\n")
+        assert out == "[ tmux -L ck-wedged attach -t ck-wedged ]  [ 0/0 agents active ]"
 
 
 class TestCmdRoles:
