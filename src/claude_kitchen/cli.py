@@ -1103,7 +1103,7 @@ def _ctx_for_channel(tokens):
 
 
 def cmd_setup(args):
-    """Check hook installation and environment. Print what's needed."""
+    """Check hook installation, skill and environment. Print what's needed."""
     all_good = True
     claude_hook_cmd = "kitchen hook"
     codex_hook_cmd = "kitchen"
@@ -1149,6 +1149,26 @@ def cmd_setup(args):
         if not has_new and not has_old:
             print(f"   And under [features]:")
             print(f"   hooks = true")
+        print()
+
+    # --- Skill (copied, not symlinked: a link into a working tree dies on checkout) ---
+    repo_root = _PKG_DIR
+    while repo_root != repo_root.parent and not (repo_root / "pyproject.toml").exists():
+        repo_root = repo_root.parent
+    skill_src = repo_root / "skill" / "SKILL.md"
+    skill_dir = Path.home() / ".claude" / "skills" / "claude-kitchen"
+    if skill_dir.is_symlink():
+        skill_dir.unlink()  # legacy install pointed at a working tree
+    skill_dst = skill_dir / "SKILL.md"
+    # Read the file rather than compare paths: resolve() is non-strict, so a
+    # path check calls a dangling link installed. Missing, dangling and stale
+    # all have to fail here — a check that lies is worse than no check.
+    if skill_dst.is_file() and skill_dst.read_text() == skill_src.read_text():
+        print("✅ Skill installed")
+    else:
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(skill_src, skill_dst)
+        print("✅ Skill installed (copied)")
         print()
 
     # --- mcp SDK ---
