@@ -20,7 +20,7 @@ A finishing cook reaches you automatically as `← kitchen: <full response>`; ne
 
 ## Specs
 
-Brainstorm with the head chef, then write the spec to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and add its `## Chunks` section yourself: one `Global Constraints` block for every rule that holds across all chunks — cooks see one ticket at a time, never each other's — then the chunks.
+Brainstorm with the head chef, then write the spec to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and add its `## Chunks` section yourself: one `Global Constraints` block for every rule that holds across all chunks — cooks see one ticket at a time, never each other's — then the chunks. Name the product stage there — throwaway POC, internal tool, user-facing — so reviewers size the bar to this spec instead of a generic production instinct.
 
 ```
 ### Chunk N: <short title>
@@ -35,11 +35,11 @@ No pseudocode, file lists or step-by-step: the cook reads the chunk and the sect
 
 Dispatch is a pointer: `kitchen ticket eng "Implement Chunk N from <abs spec path>. Report DONE with Done-when evidence."` Tickets stay under 200 characters; when one needs more, write `$KITCHEN_NOTES/brief-<name>.md` and ticket a pointer. Cooks have no interactive question tools; a `NEEDS_CONTEXT` report is how a question reaches you — answer in the next ticket. Concerns land in `$KITCHEN_NOTES/log.md`.
 
-Review is one `reviewer` ticket, opposite backend by the same convention, naming the commit, chunk and absolute spec path. Compliance findings carry a kind beside their Critical / Important / Minor severity: **missing** (the spec asked, the code doesn't), **extra** (the code does what no chunk asked for), **misunderstood** (built, but not what the section describes).
+Review is one `reviewer` ticket, opposite backend by the same convention, naming the commit, chunk and absolute spec path. The default ticket is plain: spec compliance and code quality against a stated severity bar, usually Critical and Important. Adversarial framing — production defaults, construct your own kill variants — is opt-in, named in the ticket, and reserved for genuinely risky surfaces like credentials, user data and live deploys. It is not the house style. Compliance findings carry a kind beside their Critical / Important / Minor severity: **missing** (the spec asked, the code doesn't), **extra** (the code does what no chunk asked for), **misunderstood** (built, but not what the section describes).
 
-Findings route back to the same implementer, which has context. Minor findings never enter the fix loop — record them for the closing whole-spec review. Re-review is scoped to the fix: judge each finding `ADDRESSED` or `NOT ADDRESSED` against the fix diff alone, not a fresh read of the chunk; an attempt that leaves the defect in place is not addressed.
+Findings route back to the same implementer, which has context. Minor and accepted-risk findings never enter the fix loop — record them for the closing whole-spec review. Re-review is scoped to the fix: judge each finding `ADDRESSED` or `NOT ADDRESSED` against the fix diff alone, not a fresh read of the chunk; an attempt that leaves the defect in place is not addressed.
 
-Unresolved Criticals block completion, and there is no cycle cap. When rounds pile up, adjudicate by what depends on the finding, never by round count: contestable, or the reviewer may be wrong — record it and move on; real but nothing downstream builds on it — likewise; real and load-bearing, meaning a later chunk builds on it or it reveals a defect in the spec — stop and escalate to the head chef. Either move-on bucket clears the block — the `log.md` record is what remains — and the load-bearing bucket keeps blocking by escalating, not by looping. Adjudicating early to end a loop is pre-judging by another name.
+Unresolved Criticals block completion, and three review rounds is the cap. A finding that survives the third round is not yours to adjudicate away: stop and escalate it to the head chef with the reviewer's case, the implementer's counter and a ship-or-fix recommendation. Three rounds is evidence you cannot settle it, and the ship/fix call at that point is theirs.
 
 ### Closing a spec
 
