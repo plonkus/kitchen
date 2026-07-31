@@ -3,8 +3,8 @@ import subprocess
 from unittest.mock import patch, MagicMock
 import pytest
 from claude_kitchen.tmux import (
-    mc, bare, list_sessions, list_windows,
-    has_session, capture_pane,
+    mc, bare, list_kitchens, list_windows,
+    has_session, capture_pane, SESSION,
 )
 
 CK_PREFIX = "ck-"
@@ -46,7 +46,7 @@ class TestListSessions:
     def test_lists_kitchens_from_disk(self, mock_has, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         _seed_kitchens(tmp_path / ".claude-kitchen", "risotto", "bolognese")
-        assert list_sessions() == ["ck-bolognese", "ck-risotto"]
+        assert list_kitchens() == ["bolognese", "risotto"]
 
     @patch("claude_kitchen.tmux.has_session", return_value=True)
     def test_ignores_dirs_without_kitchen_json(self, mock_has, tmp_path, monkeypatch):
@@ -57,17 +57,17 @@ class TestListSessions:
         _seed_kitchens(root, "risotto")
         (root / "projects" / "widget" / "wiki").mkdir(parents=True)
         (root / "closed").mkdir()
-        assert list_sessions() == ["ck-risotto"]
+        assert list_kitchens() == ["risotto"]
 
     @patch("claude_kitchen.tmux.has_session", return_value=False)
     def test_dead_server_is_omitted(self, mock_has, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         _seed_kitchens(tmp_path / ".claude-kitchen", "risotto")
-        assert list_sessions() == []
+        assert list_kitchens() == []
 
     def test_empty_when_no_state_root(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
-        assert list_sessions() == []
+        assert list_kitchens() == []
 
     @patch("claude_kitchen.tmux.tmux")
     def test_wedged_socket_does_not_block_the_others(self, mock_tmux, tmp_path, monkeypatch):
@@ -79,13 +79,13 @@ class TestListSessions:
         monkeypatch.setenv("HOME", str(tmp_path))
         _seed_kitchens(tmp_path / ".claude-kitchen", "alive", "wedged")
 
-        def probe(*args, session, timeout=None, **kwargs):
-            if session == "ck-wedged":
+        def probe(*args, kitchen, timeout=None, **kwargs):
+            if kitchen == "wedged":
                 raise subprocess.TimeoutExpired(cmd="tmux", timeout=timeout)
             return _mock_run(returncode=0)
 
         mock_tmux.side_effect = probe
-        assert list_sessions() == ["ck-alive"]
+        assert list_kitchens() == ["alive"]
         assert all(c.kwargs["timeout"] == PROBE_TIMEOUT
                    for c in mock_tmux.call_args_list)
 
@@ -98,14 +98,14 @@ class TestSocketRouting:
     def test_tmux_prepends_the_kitchen_socket(self, mock_run):
         from claude_kitchen.tmux import tmux
         mock_run.return_value = _mock_run()
-        tmux("has-session", "-t", "ck-risotto", session="ck-risotto")
+        tmux("has-session", "-t", SESSION, kitchen="ck-risotto")
         assert mock_run.call_args.args[0][:3] == ["tmux", "-L", "ck-risotto"]
 
     @patch("claude_kitchen.tmux.subprocess.run")
     def test_bare_kitchen_name_resolves_to_the_ck_socket(self, mock_run):
         from claude_kitchen.tmux import tmux
         mock_run.return_value = _mock_run()
-        tmux("kill-session", "-t", "ck-risotto", session="risotto")
+        tmux("kill-session", "-t", SESSION, kitchen="risotto")
         assert mock_run.call_args.args[0][:3] == ["tmux", "-L", "ck-risotto"]
 
     def test_session_is_required(self):
@@ -119,11 +119,11 @@ class TestSocketRouting:
 class TestAttachCmd:
     def test_prints_the_full_socket_qualified_form(self):
         from claude_kitchen.tmux import attach_cmd
-        assert attach_cmd("risotto") == "tmux -L ck-risotto attach -t ck-risotto"
+        assert attach_cmd("risotto") == "tmux -L ck-risotto attach"
 
     def test_idempotent_on_an_already_prefixed_name(self):
         from claude_kitchen.tmux import attach_cmd
-        assert attach_cmd("ck-risotto") == "tmux -L ck-risotto attach -t ck-risotto"
+        assert attach_cmd("ck-risotto") == "tmux -L ck-risotto attach"
 
 
 class TestListWindows:
@@ -183,7 +183,7 @@ class TestWaitForPrompt:
         ]
         assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
         sent = [c.args for c in mock_tmux.call_args_list]
-        assert ("send-keys", "-t", "ck-x:sous", "Enter") in sent
+        assert ("send-keys", "-t", "kitchen:sous", "Enter") in sent
 
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")

@@ -67,7 +67,7 @@ The moving parts:
 1. **`kitchen open`** writes a per-kitchen MCP config (`{"kitchen": {"command": "kitchen", "args": ["channel-server", "<name>"]}}`) and launches the sous as `claude --dangerously-load-development-channels server:kitchen --mcp-config … --append-system-prompt <sous-chef.md>`.
 2. Claude Code spawns **`channel.py`** as a normal stdio MCP server. Besides speaking MCP, it listens on `~/.claude-kitchen/<kitchen>/kitchen.sock`.
 3. Each JSON line arriving on the socket becomes a `notifications/claude/channel` JSON-RPC notification on the MCP stream. Claude Code renders it into the sous's context. That's the entire server — ~180 lines.
-4. **Hooks are installed globally but gated by environment.** Every cook window exports `AGENT_NAME`, `AGENT_SESSION`, `STATUS_DIR`. The hook exits silently when they're unset (your ad-hoc `claude` sessions are untouched) and is a no-op for `AGENT_NAME=sous` (otherwise the sous's own Stop events would echo back into its own channel — a feedback loop).
+4. **Hooks are installed globally but gated by environment.** Every cook window exports `AGENT_NAME`, `AGENT_KITCHEN`, `STATUS_DIR`. The hook exits silently when they're unset (your ad-hoc `claude` sessions are untouched) and is a no-op for `AGENT_NAME=sous` (otherwise the sous's own Stop events would echo back into its own channel — a feedback loop).
 
 ## Downstream in detail: typing into a TUI, reliably
 
@@ -101,7 +101,7 @@ To add a new backend you supply exactly that row: a launch command, two pane mar
 ## Why tmux instead of the API?
 
 - **Subscription auth.** Cooks are the ordinary CLIs logged in the ordinary way. A ten-cook brigade costs the same as your existing plans.
-- **Total observability.** `tmux -L ck-<kitchen> attach -t ck-<kitchen>` shows every cook's live screen. `kitchen peek <cook>` captures a pane snapshot for the sous. If a cook goes sideways, you type into its window directly.
+- **Total observability.** `tmux -L ck-<kitchen> attach` shows every cook's live screen (the kitchen's server holds one session, so no `-t` is needed; windows are `kitchen:<cook>`). `kitchen peek <cook>` captures a pane snapshot for the sous. If a cook goes sideways, you type into its window directly.
 - **Full-fidelity agents.** Each cook gets the complete product — plugins, skills, MCP servers, its own permission mode — not a stripped-down API harness.
 - **Isolation.** A crashed cook is a dead tmux window, not a corrupted orchestrator. The sous notices (no completion arrives, `pane_busy` false) and re-hires. Each kitchen also gets its own single-threaded tmux server (`-L ck-<kitchen>`), so a kitchen that saturates its server can't starve the others.
 

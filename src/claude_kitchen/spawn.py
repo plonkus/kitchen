@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from claude_kitchen.tmux import tmux, has_session, mc, CK_PREFIX
+from claude_kitchen.tmux import tmux, has_session, target, SESSION
 from claude_kitchen.state import MCP_CONFIG_NAME
 
 
@@ -30,8 +30,10 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     # Write our PID before exec — exec preserves the PID
     (state_dir / "sous.pid").write_text(str(os.getpid()))
 
-    session = mc(kitchen)
-    os.environ["AGENT_SESSION"] = session
+    # AGENT_KITCHEN, not AGENT_SESSION: the tmux session is a constant now, so
+    # the kitchen name is the only thing worth passing down and every consumer
+    # (resolve_kitchen, the statusline, the hook gate) reads this.
+    os.environ["AGENT_KITCHEN"] = kitchen
     os.environ["AGENT_NAME"] = "sous"
     os.environ["STATUS_DIR"] = str(state_dir)
     if slug:
@@ -92,14 +94,14 @@ _GEMINI_ROLE_FOOTER = (
 _CLEAN_ROOM_SETTINGS = '{"enabledPlugins":{"superpowers@superpowers-marketplace":false}}'
 
 
-def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
+def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,
                     effort: str = None, role_path: Path = None,
                     clean_room: bool = False, codex_home: str = None,
                     plugin_dirs: list = None, model: str = None) -> str:
     q = shlex.quote
     parts = [
         f"AGENT_NAME={q(name)}",
-        f"AGENT_SESSION={q(session)}",
+        f"AGENT_KITCHEN={q(kitchen)}",
         f"STATUS_DIR={q(status_dir)}",
     ]
     parts.extend(f"{k}={q(v)}" for k, v in os.environ.items() if k.startswith("KITCHEN_"))
@@ -146,7 +148,11 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         # identifiable on mobile (RC is CLI-default-on; this only names it).
         # `=` form: the flag's arg is optional, so a leading-dash name as a
         # separate token would parse as the next flag instead of the name.
-        rc_name = f"{session.removeprefix(CK_PREFIX)}/{name}"
+        # `<kitchen>/<cook>`. This used to strip the ck- prefix off the session
+        # name; the session is a constant now, so it comes straight from the
+        # kitchen. Getting this wrong would silently rename every cook on the
+        # head chef's phone to "kitchen/<cook>".
+        rc_name = f"{kitchen}/{name}"
         rc_flag = f" --remote-control={q(rc_name)}"
         return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{rc_flag}{effort_flag}{model_flag}{settings_flag}{plugin_flags}{role_flag}")}'
     elif backend == "codex":
@@ -175,22 +181,22 @@ def build_shell_cmd(backend: str, name: str, session: str, status_dir: str,
         raise ValueError(f"Unknown backend: {backend}")
 
 
-def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: str,
+def spawn_window(kitchen: str, name: str, cwd: str, backend: str, status_dir: str,
                  effort: str = None, role_path: Path = None,
                  clean_room: bool = False, codex_home: str = None,
                  plugin_dirs: list = None, model: str = None) -> bool:
     """Spawn a new tmux window with an agent. Returns True on success."""
-    cmd = build_shell_cmd(backend, name, session, status_dir,
+    cmd = build_shell_cmd(backend, name, kitchen, status_dir,
                           effort=effort, role_path=role_path,
                           clean_room=clean_room, codex_home=codex_home,
                           plugin_dirs=plugin_dirs, model=model)
 
-    if has_session(session):
-        result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd,
-                      session=session)
+    if has_session(kitchen):
+        result = tmux("new-window", "-t", target(), "-n", name, "-c", cwd, cmd,
+                      kitchen=kitchen)
     else:
-        result = tmux("new-session", "-d", "-s", session, "-n", name, "-c", cwd, cmd,
-                      session=session)
+        result = tmux("new-session", "-d", "-s", SESSION, "-n", name, "-c", cwd, cmd,
+                      kitchen=kitchen)
 
     return result.returncode == 0
 
@@ -212,10 +218,9 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
     to the parent kitchen's channel socket (see the cmd_hook sous carveout).
     """
     q = shlex.quote
-    session = mc(name)
     parts = [
         "AGENT_NAME=sous",
-        f"AGENT_SESSION={q(session)}",
+        f"AGENT_KITCHEN={q(name)}",
         f"STATUS_DIR={q(str(base))}",
     ]
     if slug:
@@ -244,15 +249,14 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     os.execvp, so the caller (a parent sous's Bash tool subprocess) keeps its
     own process. Returns True if the sous window spawned; False lets cmd_open
     tear the half-created kitchen down."""
-    session = mc(name)
     cmd = build_sous_cmd(name, base, sous_md_path, slug=slug, parent_base=parent_base)
-    if tmux("new-window", "-t", session, "-n", "sous", "-c", str(project),
-            cmd, session=session).returncode != 0:
+    if tmux("new-window", "-t", target(), "-n", "sous", "-c", str(project),
+            cmd, kitchen=name).returncode != 0:
         return False
     # The placeholder kill is cosmetic (the window is `_`-hidden from brigade);
     # a transient stall under launch load must not fail an otherwise-good launch.
     try:
-        tmux("kill-window", "-t", f"{session}:_placeholder", session=session)
+        tmux("kill-window", "-t", target("_placeholder"), kitchen=name)
     except subprocess.TimeoutExpired:
         pass
     # Record the sous pane's PID (parity with the execvp sous's sous.pid). It's
@@ -262,8 +266,8 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     # propagate (cmd_open would read it as a launch failure and tear the window
     # down) — just skip the pid.
     try:
-        panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}",
-                     session=session)
+        panes = tmux("list-panes", "-t", target("sous"), "-F", "#{pane_pid}",
+                     kitchen=name)
         if panes.returncode == 0 and panes.stdout.strip():
             (base / "sous.pid").write_text(panes.stdout.strip().splitlines()[0] + "\n")
     except subprocess.TimeoutExpired:

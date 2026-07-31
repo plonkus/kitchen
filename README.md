@@ -176,10 +176,10 @@ The current process becomes the Claude sous chef. Talk to it normally—describe
 In another terminal, watch the brigade:
 
 ```bash
-tmux -L ck-<project-slug>-<kitchen-name> attach -t ck-<project-slug>-<kitchen-name>
+tmux -L ck-<project-slug>-<kitchen-name> attach
 ```
 
-Each kitchen runs on its own tmux server (socket `ck-<kitchen>`), so the `-L` is required — a bare `tmux attach -t ck-…` will not find the session. `kitchen open` prints the exact command.
+Each kitchen runs on its own tmux server (socket `ck-<kitchen>`), so the `-L` is required — a bare `tmux attach -t ck-…` will not find the session. No `-t` is needed: the server holds a single session, named `kitchen`, whose windows are `kitchen:<cook>`. `kitchen open` prints the exact command.
 
 Kitchen namespaces sessions and state by project slug. For example, `kitchen open my-feature` in a repository named `widget` becomes kitchen `widget-my-feature`, while the git branch and worktree keep the name `my-feature`. A no-name `kitchen open` usually uses the repository name without doubling it.
 
@@ -241,7 +241,7 @@ Claude cooks receive role Markdown as an appended system prompt. Codex receives 
 
 ## How completion notifications work
 
-Every launched agent gets `AGENT_NAME`, `AGENT_SESSION`, and `STATUS_DIR`. Global hooks are gated on those variables, so ordinary agent sessions outside a kitchen are untouched.
+Every launched agent gets `AGENT_NAME`, `AGENT_KITCHEN`, and `STATUS_DIR`. Global hooks are gated on those variables, so ordinary agent sessions outside a kitchen are untouched.
 
 When a cook completes a turn:
 

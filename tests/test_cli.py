@@ -12,27 +12,27 @@ import pytest
 
 from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
 from claude_kitchen.state import write_status
-from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT
+from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION
 
 
 class TestResolveKitchen:
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-risotto"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["risotto"])
     def test_explicit_flag(self, mock_ls):
         assert resolve_kitchen(kitchen="risotto") == "risotto"
 
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-risotto"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["risotto"])
     def test_from_env(self, mock_ls, monkeypatch):
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         assert resolve_kitchen() == "risotto"
 
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-risotto"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["risotto"])
     def test_single_kitchen(self, mock_ls, monkeypatch):
-        monkeypatch.delenv("AGENT_SESSION", raising=False)
+        monkeypatch.delenv("AGENT_KITCHEN", raising=False)
         assert resolve_kitchen() == "risotto"
 
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-a", "ck-b"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["a", "b"])
     def test_ambiguous_raises(self, mock_ls, monkeypatch):
-        monkeypatch.delenv("AGENT_SESSION", raising=False)
+        monkeypatch.delenv("AGENT_KITCHEN", raising=False)
         with pytest.raises(SystemExit):
             resolve_kitchen()
 
@@ -78,7 +78,7 @@ def _codex_notify_payload(**fields):
 class TestHook:
     def test_stop_writes_status_and_sends_to_socket(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         _stdin_payload(
             monkeypatch,
@@ -104,7 +104,7 @@ class TestHook:
 
     def test_sous_stop_is_noop(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AGENT_NAME", "sous")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         # Assemble the legacy sentinel at runtime — keeps the residue grep
         # in Task 11 Step 1 clean.
@@ -129,7 +129,7 @@ class TestHook:
 
     def test_hook_noop_outside_kitchen(self, monkeypatch):
         monkeypatch.delenv("AGENT_NAME", raising=False)
-        monkeypatch.delenv("AGENT_SESSION", raising=False)
+        monkeypatch.delenv("AGENT_KITCHEN", raising=False)
         monkeypatch.delenv("STATUS_DIR", raising=False)
         # Should return without error
         cmd_hook(argparse.Namespace(command="hook"))
@@ -139,7 +139,7 @@ class TestHook:
         for Claude cooks. Must write status='working' and must NOT push to
         the channel socket (it's not a completion event)."""
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hello"})
         monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=payload)))
@@ -157,7 +157,7 @@ class TestHook:
         """Events other than UserPromptSubmit / Stop are ignored — no status
         write, no socket push."""
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash"})
         monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=payload)))
@@ -171,7 +171,7 @@ class TestHook:
 
     def test_hook_silent_on_bad_json(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value="not json{")))
 
@@ -180,7 +180,7 @@ class TestHook:
 
     def test_codex_notify_writes_status_and_sends_to_socket(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AGENT_NAME", "codex-eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         payload = _codex_notify_payload(
             **{"last-assistant-message": "captured codex summary"}
@@ -258,7 +258,7 @@ class TestClaudeStopTokenCapture:
         )
 
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         _stdin_payload(
             monkeypatch,
@@ -281,7 +281,7 @@ class TestClaudeStopTokenCapture:
                    "cache_creation_input_tokens": 0, "output_tokens": 50},
         )
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         _stdin_payload(monkeypatch,
             hook_event_name="Stop", last_assistant_message="hi",
@@ -298,7 +298,7 @@ class TestClaudeStopTokenCapture:
         """If the transcript file is missing (or transcript_path is empty),
         the Stop write proceeds without tokens — never crashes."""
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         _stdin_payload(monkeypatch,
             hook_event_name="Stop", last_assistant_message="hi",
@@ -383,7 +383,7 @@ class TestCodexTokenCapture:
 
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
         payload = _codex_notify_payload(**{
             "thread-id": thread_id,
@@ -403,7 +403,7 @@ class TestCodexTokenCapture:
         (not present-and-null). Status update still proceeds normally."""
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
         payload = _codex_notify_payload(**{
             "thread-id": "11111111-1111-1111-1111-111111111111",
@@ -427,7 +427,7 @@ class TestCodexTokenCapture:
 
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
         payload = _codex_notify_payload(**{
             "thread-id": thread_id,
@@ -454,7 +454,7 @@ class TestChannelCtxAttribute:
                 "cache_read_input_tokens": 173374, "output_tokens": 378,
             })
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         _stdin_payload(monkeypatch,
             hook_event_name="Stop", last_assistant_message="ok",
@@ -473,7 +473,7 @@ class TestChannelCtxAttribute:
     def test_claude_stop_omits_ctx_when_transcript_missing_and_no_prior(self, monkeypatch, tmp_path):
         """No prior tokens, transcript can't be read → ctx omitted entirely."""
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         _stdin_payload(monkeypatch,
             hook_event_name="Stop", last_assistant_message="ok",
@@ -500,7 +500,7 @@ class TestChannelCtxAttribute:
         })
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
         payload = _codex_notify_payload(**{"thread-id": thread_id,
                                            "last-assistant-message": "<redacted>"})
@@ -516,7 +516,7 @@ class TestChannelCtxAttribute:
     def test_codex_notify_omits_ctx_when_rollout_missing(self, monkeypatch, tmp_path):
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
         payload = _codex_notify_payload(**{
             "thread-id": "11111111-1111-1111-1111-111111111111",
@@ -544,7 +544,7 @@ class TestStatusPreservationAcrossNonStopWriters:
         })
 
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hi"})
         monkeypatch.setattr("sys.stdin", MagicMock(read=MagicMock(return_value=payload)))
@@ -595,7 +595,7 @@ class TestStatusPreservationAcrossNonStopWriters:
         })
 
         monkeypatch.setenv("AGENT_NAME", "eng")
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         # Transcript path points at a file that doesn't exist — helper
         # returns None, Stop branch must not write tokens (preserving prior).
@@ -673,7 +673,7 @@ class TestBrigadeAlignedOutput:
     width (longest of working/booting/unknown/failed/idle) so ctx
     aligns vertically. No summary suffix."""
 
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-risotto"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["risotto"])
     @patch("claude_kitchen.cli.list_windows",
            return_value=["alpha", "longername", "x", "frsh"])
     @patch("claude_kitchen.cli.read_status")
@@ -1031,8 +1031,8 @@ class TestCmdOpenSoftCutover:
             return {"proj-foo": ns_base, "foo": bare_base}[name]
 
         # Only the legacy bare session is live; the namespaced one is not.
-        def has_session_for(session):
-            return session == "ck-foo"
+        def has_session_for(kitchen, **kw):
+            return kitchen == "foo"
 
         args = MagicMock()
         args.name = "foo"
@@ -1062,8 +1062,9 @@ class TestResolveKitchenProbe:
     @patch("claude_kitchen.cli._cwd_project", return_value=Path("/proj"))
     def test_probes_namespaced_when_bare_absent(self, mock_cwd, mock_ns):
         # bare ck-foo missing, namespaced ck-proj-foo present → resolve to it.
-        def has_session_for(session):
-            return session == "ck-proj-foo"
+        # has_session now takes a bare kitchen name — the socket is derived inside.
+        def has_session_for(kitchen, **kw):
+            return kitchen == "proj-foo"
         with patch("claude_kitchen.cli.has_session", side_effect=has_session_for):
             assert resolve_kitchen("foo") == "proj-foo"
 
@@ -1185,7 +1186,7 @@ class TestCmdHireRole:
         # Role content delivered via send_keys after wait_for_prompt
         mock_send.assert_called_once()
         args_call = mock_send.call_args.args
-        assert args_call[0] == "ck-risotto"
+        assert args_call[0] == "risotto"
         assert args_call[1] == "rev-codex"
         # role content + ack footer both arrive in one send
         assert "reviewer" in args_call[2].lower()
@@ -1495,7 +1496,7 @@ class TestCmdSuspend:
         from claude_kitchen.cli import cmd_suspend
         cmd_suspend(MagicMock(kitchen="risotto"))
         assert mock_tmux.call_args.args == ("kill-server",)
-        assert mock_tmux.call_args.kwargs["session"] == "ck-risotto"
+        assert mock_tmux.call_args.kwargs["kitchen"] == "risotto"
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.tmux")
@@ -1532,7 +1533,7 @@ class TestCmdSuspend:
         from claude_kitchen.cli import cmd_suspend
         cmd_suspend(MagicMock(kitchen="risotto"))
         out = capsys.readouterr().out
-        assert "tmux -L ck-risotto attach -t ck-risotto" in out
+        assert "tmux -L ck-risotto attach" in out
         assert "kitchen open --resume risotto" in out
 
 
@@ -1550,7 +1551,7 @@ class TestOpenDoesNotSweepCooksItCannotSee:
         import inspect
         src = inspect.getsource(cmd_open)
         # The sweep must sit on the has_session TRUE branch.
-        assert "_sweep_cooks(base, session)" in src
+        assert "_sweep_cooks(base, name)" in src
 
     def test_resume_keeps_cook_records_for_an_unreachable_session(
             self, tmp_path, monkeypatch):
@@ -1897,9 +1898,9 @@ class TestCmdStatuslineSegment:
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows")
-    @patch("claude_kitchen.cli.list_sessions", return_value=[])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=[])
     def test_no_kitchen_prints_nothing(self, mock_ls, mock_win, mock_status, mock_has, monkeypatch, capsys):
-        monkeypatch.delenv("AGENT_SESSION", raising=False)
+        monkeypatch.delenv("AGENT_KITCHEN", raising=False)
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         assert capsys.readouterr().out == ""
@@ -1907,9 +1908,9 @@ class TestCmdStatuslineSegment:
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
     @patch("claude_kitchen.cli.list_windows")
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-a", "ck-b"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["a", "b"])
     def test_ambiguous_without_agent_session_is_silent(self, mock_ls, mock_win, mock_status, mock_has, monkeypatch, capsys):
-        monkeypatch.delenv("AGENT_SESSION", raising=False)
+        monkeypatch.delenv("AGENT_KITCHEN", raising=False)
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         assert capsys.readouterr().out == ""
@@ -1920,7 +1921,7 @@ class TestCmdStatuslineSegment:
     def test_with_agent_session_prints_attach_and_counts(
         self, mock_win, mock_status, mock_has, monkeypatch, capsys,
     ):
-        monkeypatch.setenv("AGENT_SESSION", "ck-risotto")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         mock_status.side_effect = [
             {"status": "working"}, {"status": "booting"},
             {"status": "idle"}, {"status": "failed"},
@@ -1928,20 +1929,20 @@ class TestCmdStatuslineSegment:
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux -L ck-risotto attach -t ck-risotto ]  [ 2/4 agents active ]"
-        mock_win.assert_called_once_with("ck-risotto", timeout=PROBE_TIMEOUT)
+        assert out == "[ tmux -L ck-risotto attach ]  [ 2/4 agents active ]"
+        mock_win.assert_called_once_with("risotto", timeout=PROBE_TIMEOUT)
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status", return_value={"status": "working"})
     @patch("claude_kitchen.cli.list_windows", return_value=["cook0"])
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-solo"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["solo"])
     def test_single_session_without_agent_session_omits_attach_hint(
         self, mock_ls, mock_win, mock_status, mock_has, monkeypatch, capsys,
     ):
         """Called from outside sous (no AGENT_SESSION) but only one kitchen
         is running → segment still renders, but without the attach hint
         since the caller isn't in sous context."""
-        monkeypatch.delenv("AGENT_SESSION", raising=False)
+        monkeypatch.delenv("AGENT_KITCHEN", raising=False)
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
@@ -1953,11 +1954,11 @@ class TestCmdStatuslineSegment:
     def test_no_live_windows_reports_zero_over_zero(
         self, mock_win, mock_status, mock_has, monkeypatch, capsys,
     ):
-        monkeypatch.setenv("AGENT_SESSION", "ck-empty")
+        monkeypatch.setenv("AGENT_KITCHEN", "empty")
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux -L ck-empty attach -t ck-empty ]  [ 0/0 agents active ]"
+        assert out == "[ tmux -L ck-empty attach ]  [ 0/0 agents active ]"
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
@@ -1968,7 +1969,7 @@ class TestCmdStatuslineSegment:
         """Regression: a kitchen with stale cooks/*.json for dead windows must
         still report only its LIVE cooks. Pre-fix this globbed every json file
         and rendered e.g. `5/18` for a 9-cook kitchen."""
-        monkeypatch.setenv("AGENT_SESSION", "ck-r")
+        monkeypatch.setenv("AGENT_KITCHEN", "r")
         # State dir littered with 16 orphan files (no live window) — the
         # pre-fix glob would have counted all of them.
         with patch("claude_kitchen.cli.state_dir", return_value=tmp_path):
@@ -1981,7 +1982,7 @@ class TestCmdStatuslineSegment:
             from claude_kitchen.cli import cmd_statusline_segment
             cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux -L ck-r attach -t ck-r ]  [ 1/2 agents active ]"
+        assert out == "[ tmux -L ck-r attach ]  [ 1/2 agents active ]"
 
     @patch("claude_kitchen.cli.has_session", return_value=False)
     @patch("claude_kitchen.cli.list_windows")
@@ -1991,7 +1992,7 @@ class TestCmdStatuslineSegment:
         """Regression: a dead/closed session referenced by AGENT_SESSION must
         render empty and never raise — not an attach hint to a gone session,
         and not a CalledProcessError from list_windows(check=True)."""
-        monkeypatch.setenv("AGENT_SESSION", "ck-ghost")
+        monkeypatch.setenv("AGENT_KITCHEN", "ghost")
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         assert capsys.readouterr().out == ""
@@ -2006,11 +2007,11 @@ class TestCmdStatuslineSegment:
     ):
         """Regression (TOCTOU): the session disappears between has_session and
         list_windows. Must degrade to 0/0, never propagate the error."""
-        monkeypatch.setenv("AGENT_SESSION", "ck-closing")
+        monkeypatch.setenv("AGENT_KITCHEN", "closing")
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux -L ck-closing attach -t ck-closing ]  [ 0/0 agents active ]"
+        assert out == "[ tmux -L ck-closing attach ]  [ 0/0 agents active ]"
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
@@ -2021,7 +2022,7 @@ class TestCmdStatuslineSegment:
         """Regression: a cook file that fails to parse is counted inactive (but
         still counted in the total), restoring the tolerance the old glob had.
         Pre-fix the unguarded read_status raised and the statusline threw."""
-        monkeypatch.setenv("AGENT_SESSION", "ck-r")
+        monkeypatch.setenv("AGENT_KITCHEN", "r")
         mock_status.side_effect = [
             {"status": "working"},
             json.JSONDecodeError("Expecting value", "doc", 0),
@@ -2029,7 +2030,7 @@ class TestCmdStatuslineSegment:
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux -L ck-r attach -t ck-r ]  [ 1/2 agents active ]"
+        assert out == "[ tmux -L ck-r attach ]  [ 1/2 agents active ]"
 
     # ---- per-kitchen socket: the statusline must never stall or throw ----
     # Each kitchen now has its own tmux server, so "MY server is wedged" is a
@@ -2045,7 +2046,7 @@ class TestCmdStatuslineSegment:
     ):
         from claude_kitchen.cli import cmd_statusline_segment
         from claude_kitchen.tmux import PROBE_TIMEOUT
-        monkeypatch.setenv("AGENT_SESSION", "ck-r")
+        monkeypatch.setenv("AGENT_KITCHEN", "r")
         cmd_statusline_segment(MagicMock())
         assert mock_has.call_args.kwargs["timeout"] == PROBE_TIMEOUT
         assert mock_win.call_args.kwargs["timeout"] == PROBE_TIMEOUT
@@ -2059,11 +2060,11 @@ class TestCmdStatuslineSegment:
     ):
         """This kitchen's server answers the probe and then stops answering.
         The segment must still render (0/0), not put a traceback in the prompt."""
-        monkeypatch.setenv("AGENT_SESSION", "ck-wedged")
+        monkeypatch.setenv("AGENT_KITCHEN", "wedged")
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux -L ck-wedged attach -t ck-wedged ]  [ 0/0 agents active ]"
+        assert out == "[ tmux -L ck-wedged attach ]  [ 0/0 agents active ]"
 
 
 class TestCmdRoles:
@@ -2078,7 +2079,7 @@ class TestCmdRoles:
 
 
 class TestBrigadeOutput:
-    @patch("claude_kitchen.cli.list_sessions", return_value=["ck-risotto"])
+    @patch("claude_kitchen.cli.list_kitchens", return_value=["risotto"])
     @patch("claude_kitchen.cli.list_windows", return_value=["cook1", "cook2"])
     @patch("claude_kitchen.cli.read_status")
     def test_brigade_shows_sous_and_cooks(self, mock_status, mock_win, mock_sess, capsys):
@@ -2150,7 +2151,7 @@ class TestSubSousUpwardPush:
         child_base.mkdir()
         parent_base.mkdir()
         monkeypatch.setenv("AGENT_NAME", "sous")
-        monkeypatch.setenv("AGENT_SESSION", "ck-widget-child")
+        monkeypatch.setenv("AGENT_KITCHEN", "widget-child")
         monkeypatch.setenv("STATUS_DIR", str(child_base))
         monkeypatch.setenv("PARENT_STATUS_DIR", str(parent_base))
         _stdin_payload(monkeypatch, hook_event_name="Stop",
@@ -2171,7 +2172,7 @@ class TestSubSousUpwardPush:
 
     def test_root_sous_stop_does_not_push(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AGENT_NAME", "sous")
-        monkeypatch.setenv("AGENT_SESSION", "ck-root")
+        monkeypatch.setenv("AGENT_KITCHEN", "root")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         monkeypatch.delenv("PARENT_STATUS_DIR", raising=False)
         _stdin_payload(monkeypatch, hook_event_name="Stop",
@@ -2186,7 +2187,7 @@ class TestSubSousUpwardPush:
     def test_self_loop_guard_blocks_push(self, monkeypatch, tmp_path):
         # PARENT_STATUS_DIR == own base → guarded, no push.
         monkeypatch.setenv("AGENT_NAME", "sous")
-        monkeypatch.setenv("AGENT_SESSION", "ck-x")
+        monkeypatch.setenv("AGENT_KITCHEN", "x")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
         monkeypatch.setenv("PARENT_STATUS_DIR", str(tmp_path))
         _stdin_payload(monkeypatch, hook_event_name="Stop",
@@ -2206,7 +2207,7 @@ class TestSubSousUpwardPush:
         child_base.mkdir()
         parent_base.mkdir()
         monkeypatch.setenv("AGENT_NAME", "sous")
-        monkeypatch.setenv("AGENT_SESSION", "ck-widget-child")
+        monkeypatch.setenv("AGENT_KITCHEN", "widget-child")
         monkeypatch.setenv("STATUS_DIR", str(child_base))
         monkeypatch.setenv("PARENT_STATUS_DIR", str(parent_base))
         _stdin_payload(monkeypatch, hook_event_name="UserPromptSubmit", prompt="hi")
@@ -2259,7 +2260,7 @@ class TestCmdOpenSubSous:
         # parent_base wired from the inherited STATUS_DIR.
         assert ca.kwargs["parent_base"] == tmp_path / "parent"
         # Readiness barrier on the `sous` window before returning.
-        mock_wait.assert_called_once_with("ck-widget-child", "sous", "claude")
+        mock_wait.assert_called_once_with("widget-child", "sous", "claude")
 
     @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
     @patch("claude_kitchen.cli.project_slug", return_value="widget")
