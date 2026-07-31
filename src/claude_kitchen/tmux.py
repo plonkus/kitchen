@@ -6,59 +6,123 @@ import subprocess
 import time
 from typing import Optional
 
+from claude_kitchen.state import state_root
+
 # Per-call tmux timeout. Generous enough that fast queries (has-session,
 # new-session, list-windows) don't spuriously time out when the tmux server is
 # briefly serialized behind another kitchen launching at the same time — the
 # `kitchen open --sub-sous` x2 race that used to crash both opens at 5s.
 TIMEOUT = 15
+
+# Probe budget for "is this kitchen's server alive?". Enumerating kitchens costs
+# one probe per socket, so a wedged server must cost this much and no more —
+# otherwise one bad kitchen stalls every listing (and `brigade` with it).
+PROBE_TIMEOUT = 2
+
 CK_PREFIX = "ck-"
+
+# Every kitchen's tmux server holds exactly one session, and the SOCKET already
+# carries the kitchen name (`-L ck-<slug>`), so naming the session after the
+# kitchen too was pure redundancy. A static name buys a shorter attach command
+# (`tmux -L ck-<slug> attach`, no `-t`) and window targets that read
+# `kitchen:<cook>`.
+#
+# The session name used to be the carrier of kitchen identity — exported as
+# AGENT_SESSION and stripped back to a kitchen name by resolve_kitchen, the
+# statusline and the remote-control naming. It cannot be, now that it is a
+# constant: identity moved to AGENT_KITCHEN (see spawn.build_shell_cmd).
+SESSION = "kitchen"
 
 _buffer_counter = itertools.count()
 
 
-def tmux(*args: str, timeout: int = TIMEOUT,
+def socket(kitchen: str) -> str:
+    """The tmux socket name for a kitchen: `ck-<slug>`. Idempotent, so it is
+    safe to hand it a name that already carries the prefix."""
+    return kitchen if kitchen.startswith(CK_PREFIX) else CK_PREFIX + kitchen
+
+
+# Legacy alias. The old name reads as "make session name" and every call site
+# now means "which socket", so `socket` is the honest spelling.
+mc = socket
+
+
+def bare(name: str) -> str:
+    """Strip the ck- prefix off a socket name."""
+    return name[len(CK_PREFIX):] if name.startswith(CK_PREFIX) else name
+
+
+def target(window: str = None) -> str:
+    """A tmux -t target inside a kitchen: `kitchen` or `kitchen:<cook>`."""
+    return f"{SESSION}:{window}" if window else SESSION
+
+
+def tmux(*args: str, kitchen: str, timeout: int = TIMEOUT,
          input: Optional[str] = None, check: bool = False) -> subprocess.CompletedProcess:
+    """Run tmux against `kitchen`'s OWN server socket (`-L ck-<slug>`).
+
+    One tmux server per kitchen. tmux is single-threaded, so a shared server
+    cannot use more than one core and one busy kitchen starves every other —
+    16 kitchens on the default socket saturated it and took them all down at
+    once. `kitchen` is keyword-only and required so no call can silently land
+    back on the default socket."""
     return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, timeout=timeout,
-        input=input, check=check,
+        ["tmux", "-L", socket(kitchen), *args], capture_output=True, text=True,
+        timeout=timeout, input=input, check=check,
     )
 
 
-def mc(session: str) -> str:
-    """Ensure session name has ck- prefix."""
-    return session if session.startswith(CK_PREFIX) else CK_PREFIX + session
+def attach_cmd(kitchen: str) -> str:
+    """The command the head chef runs to attach to a kitchen.
+
+    No `-t`: the kitchen's server holds exactly one session, so attach is
+    unambiguous. A bare `tmux attach -t ck-foo` finds nothing — the session is
+    not on the default socket and is not called that any more."""
+    return f"tmux -L {socket(kitchen)} attach"
 
 
-def bare(session: str) -> str:
-    """Strip ck- prefix."""
-    return session[len(CK_PREFIX):] if session.startswith(CK_PREFIX) else session
+def list_kitchens() -> list[str]:
+    """Live kitchens, by bare name.
 
-
-def list_sessions() -> list[str]:
-    result = tmux("list-sessions", "-F", "#{session_name}")
-    if result.returncode != 0:
+    There is no shared server left to enumerate, so candidates come from disk
+    (one state dir per kitchen; `kitchen.json` present == not closed) and each
+    is probed on its own socket. One tmux call per kitchen, each with its own
+    short budget — an unresponsive kitchen reports as absent instead of hanging
+    the whole listing."""
+    root = state_root()
+    if not root.is_dir():
         return []
-    return [s.strip() for s in result.stdout.strip().split("\n")
-            if s.strip().startswith(CK_PREFIX)]
+    names = sorted(d.name for d in root.iterdir() if (d / "kitchen.json").exists())
+    return [n for n in names if has_session(n, timeout=PROBE_TIMEOUT)]
 
 
-def list_windows(session: str) -> list[str]:
-    result = tmux("list-windows", "-t", session, "-F", "#{window_name}", check=True)
+def list_windows(kitchen: str, timeout: int = TIMEOUT) -> list[str]:
+    result = tmux("list-windows", "-t", target(), "-F", "#{window_name}",
+                  kitchen=kitchen, timeout=timeout, check=True)
     return [
         w.strip() for w in result.stdout.strip().split("\n")
         if w.strip() and not w.strip().startswith("_")
     ]
 
 
-def has_session(session: str) -> bool:
-    return tmux("has-session", "-t", session).returncode == 0
+def has_session(kitchen: str, timeout: int = TIMEOUT) -> bool:
+    """True if this kitchen's session is up on its own socket.
+
+    A server that doesn't answer within `timeout` counts as absent: on a
+    per-kitchen socket "wedged" and "gone" are the same answer to every caller,
+    and the alternative is one hung kitchen blocking every command."""
+    try:
+        return tmux("has-session", "-t", target(), kitchen=kitchen,
+                    timeout=timeout).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
-def capture_pane(session: str, window: str, full: bool = False) -> Optional[str]:
-    cmd = ["capture-pane", "-t", f"{session}:{window}", "-p"]
+def capture_pane(kitchen: str, window: str, full: bool = False) -> Optional[str]:
+    cmd = ["capture-pane", "-t", target(window), "-p"]
     if full:
         cmd.extend(["-S", "-"])
-    result = tmux(*cmd)
+    result = tmux(*cmd, kitchen=kitchen)
     if result.returncode != 0 or not result.stdout.strip():
         return None
     return result.stdout
@@ -102,10 +166,10 @@ _BUSY_MARKERS = {
 _NO_STREAMING_MARKER = {"claude"}
 
 
-def _pane_tail(session: str, window: str) -> list[str]:
+def _pane_tail(kitchen: str, window: str) -> list[str]:
     """Last 40 non-blank lines of the pane — the busy/idle comparison surface
     for pane_busy."""
-    content = capture_pane(session, window) or ""
+    content = capture_pane(kitchen, window) or ""
     return [ln for ln in content.splitlines() if ln.strip()][-40:]
 
 
@@ -120,7 +184,7 @@ def _busy_marker_hit(tail: list[str], backend: str) -> bool:
     return any(re.search(pattern, ln, re.IGNORECASE) for ln in tail[-6:])
 
 
-def pane_busy(session: str, window: str, backend: str, settle: float = 0.35) -> bool:
+def pane_busy(kitchen: str, window: str, backend: str, settle: float = 0.35) -> bool:
     """True if the cook is mid-turn, False if idle at the prompt (or empty pane).
 
     Contract: `True` means the backend's busy MARKER is present, OR — for a
@@ -145,16 +209,16 @@ def pane_busy(session: str, window: str, backend: str, settle: float = 0.35) -> 
     state-dir context to infer it) — callers pass it (send_keys already has
     `backend`; peek reads it from the cook's state file). Unknown backend raises
     ValueError."""
-    first = _pane_tail(session, window)
+    first = _pane_tail(kitchen, window)
     if _busy_marker_hit(first, backend):
         return True
     if backend not in _NO_STREAMING_MARKER:
         return False
     time.sleep(settle)
-    return _pane_tail(session, window) != first
+    return _pane_tail(kitchen, window) != first
 
 
-def wait_for_prompt(session: str, window: str, backend: str,
+def wait_for_prompt(kitchen: str, window: str, backend: str,
                     timeout: int = 180, stall_timeout: int = 45) -> bool:
     """Wait until the agent's welcome banner appears, then return True.
 
@@ -185,19 +249,20 @@ def wait_for_prompt(session: str, window: str, backend: str,
         # moment; a TimeoutExpired here is transient, not fatal — swallow it and
         # retry on the next tick instead of crashing the open mid-flight.
         try:
-            content = capture_pane(session, window)
+            content = capture_pane(kitchen, window)
             if content:
                 if marker in content:
                     return True
                 if (backend == "codex" and not update_dismissed
                         and ("Update available!" in content
                              or "Press enter to continue" in content)):
-                    tmux("send-keys", "-t", f"{session}:{window}", "3", "Enter",
-                         check=True)
+                    tmux("send-keys", "-t", target(window), "3", "Enter",
+                         kitchen=kitchen, check=True)
                     update_dismissed = True
                 if (backend == "claude" and not channels_confirmed
                         and "Loading development channels" in content):
-                    tmux("send-keys", "-t", f"{session}:{window}", "Enter", check=True)
+                    tmux("send-keys", "-t", target(window), "Enter",
+                         kitchen=kitchen, check=True)
                     channels_confirmed = True
                 if content != last:
                     last, last_change = content, time.time()
@@ -237,7 +302,7 @@ _SETTLE_POLLS = 24
 _SETTLE_CEILING = 30.0
 
 
-def _cursor_col(session: str, window: str) -> int:
+def _cursor_col(kitchen: str, window: str) -> int:
     """The cursor's column in the composer (cursor-scoped, not whole-pane).
 
     Right after a paste the cursor sits at the END of the pasted payload (a large
@@ -262,12 +327,12 @@ def _cursor_col(session: str, window: str) -> int:
     false-"did not land") does not occur in practice; if it ever did on some
     exotic backend/width, the landed precondition fails LOUD (raise), never a
     silent loss."""
-    target = f"{session}:{window}"
-    out = tmux("display-message", "-t", target, "-p", "#{cursor_x}").stdout.strip()
+    out = tmux("display-message", "-t", target(window), "-p", "#{cursor_x}",
+               kitchen=kitchen).stdout.strip()
     return int(out) if out.isdigit() else -1
 
 
-def send_keys(session: str, window: str, text: str, backend: Optional[str] = None):
+def send_keys(kitchen: str, window: str, text: str, backend: Optional[str] = None):
     # Bracketed paste keeps embedded newlines as newlines instead of Enter.
     # Named buffer prevents concurrent sends in the brigade from clobbering
     # each other's payload between load and paste.
@@ -300,7 +365,7 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # column (see _cursor_col). This closes codex's paste-mode-commit race
     # against the trailing Enter without false-positiving on a mere repaint.
     # Enter-only — NEVER re-paste, or a swallowed Enter would duplicate the text.
-    target = f"{session}:{window}"
+    tgt = target(window)
     signalled = False
     stable = 0
 
@@ -312,15 +377,16 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
 
     # Empty-composer cursor column, captured BEFORE the paste — the accepted-state
     # target the submit loop watches for.
-    empty_col = _cursor_col(session, window)
+    empty_col = _cursor_col(kitchen, window)
     if empty_col < 0:
         raise RuntimeError(
-            f"send_keys: could not read the composer cursor on {target}")
+            f"send_keys: could not read the composer cursor on {tgt}")
 
     buf = f"kitchen-{os.getpid()}-{next(_buffer_counter)}"
-    baseline = capture_pane(session, window) or ""
-    tmux("load-buffer", "-b", buf, "-", input=text, check=True)
-    tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", target, check=True)
+    baseline = capture_pane(kitchen, window) or ""
+    tmux("load-buffer", "-b", buf, "-", kitchen=kitchen, input=text, check=True)
+    tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", tgt,
+         kitchen=kitchen, check=True)
     head = next((s for s in (line.strip() for line in text.splitlines()) if s), "")[:24]
     ceiling = time.time() + _SETTLE_CEILING
     prev_col = None
@@ -328,9 +394,9 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     while polls < _SETTLE_POLLS and time.time() < ceiling:
         polls += 1
         time.sleep(0.05)
-        col = _cursor_col(session, window)
+        col = _cursor_col(kitchen, window)
         if not signalled:
-            pane = capture_pane(session, window) or ""
+            pane = capture_pane(kitchen, window) or ""
             text_signalled = (
                 pane.count("[Pasted ") > baseline.count("[Pasted ")
                 or (head and pane.count(head) > baseline.count(head))
@@ -357,7 +423,7 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # answered, which is a different diagnosis from a paste that never landed.
     if not (signalled and stable >= 3):
         raise RuntimeError(
-            f"send_keys: paste did not settle on {target} "
+            f"send_keys: paste did not settle on {tgt} "
             f"(signalled={signalled}, stable={stable}, "
             f"polls={polls}/{_SETTLE_POLLS}); refusing to submit "
             f"into an unknown composer")
@@ -365,15 +431,15 @@ def send_keys(session: str, window: str, text: str, backend: Optional[str] = Non
     # Precondition: the payload is actually sitting in the composer (cursor moved
     # off the empty column). Otherwise the loop's "back to empty" success check
     # could fire without a real submit.
-    if _cursor_col(session, window) == empty_col:
+    if _cursor_col(kitchen, window) == empty_col:
         raise RuntimeError(
-            f"send_keys: paste did not land in the composer on {target}")
+            f"send_keys: paste did not land in the composer on {tgt}")
 
     for _ in range(_SUBMIT_ATTEMPTS):
-        tmux("send-keys", "-t", target, "Enter", check=True)
+        tmux("send-keys", "-t", tgt, "Enter", kitchen=kitchen, check=True)
         time.sleep(_SUBMIT_POLL)
-        if _cursor_col(session, window) == empty_col:
+        if _cursor_col(kitchen, window) == empty_col:
             return  # composer cleared → input accepted (submitted or queued)
     raise RuntimeError(
-        f"send_keys: ticket never left the composer on {target} after "
+        f"send_keys: ticket never left the composer on {tgt} after "
         f"{_SUBMIT_ATTEMPTS} Enter attempts; submission not confirmed")

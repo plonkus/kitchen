@@ -27,7 +27,7 @@ def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
 class TestBuildShellCmd:
     def test_claude_cook(self):
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-risotto",
+            backend="claude", name="eng", kitchen="risotto",
             status_dir="/tmp/state",
         )
         assert "claude" in cmd
@@ -37,7 +37,7 @@ class TestBuildShellCmd:
 
     def test_codex_cook(self):
         cmd = build_shell_cmd(
-            backend="codex", name="reviewer", session="ck-risotto",
+            backend="codex", name="reviewer", kitchen="risotto",
             status_dir="/tmp/state",
         )
         assert "codex" in cmd
@@ -48,7 +48,7 @@ class TestBuildShellCmd:
         as two adjacent tokens, surviving the bash -lc shell-quoting layer.
         Bypasses any global notify wrapper (SkyComputerUseClient et al.)."""
         cmd = build_shell_cmd(
-            backend="codex", name="rev", session="ck-r",
+            backend="codex", name="rev", kitchen="r",
             status_dir="/tmp/state",
         )
         argv = _codex_argv_from_shell_cmd(cmd)
@@ -67,7 +67,7 @@ class TestBuildShellCmd:
     def test_claude_cook_has_no_notify_override(self):
         """Claude has no equivalent notify mechanism; the override is codex-only."""
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r",
+            backend="claude", name="eng", kitchen="r",
             status_dir="/tmp/state",
         )
         assert "notify=" not in cmd, "notify override leaked to claude cook"
@@ -76,7 +76,7 @@ class TestBuildShellCmd:
         """Effort flag and notify override must both make it through, in
         the right argv shape (each behind its own -c)."""
         cmd = build_shell_cmd(
-            backend="codex", name="rev", session="ck-r",
+            backend="codex", name="rev", kitchen="r",
             status_dir="/tmp/state", effort="high",
         )
         argv = _codex_argv_from_shell_cmd(cmd)
@@ -100,7 +100,7 @@ class TestBuildShellCmd:
             ("ultra", "ultra"),
         ):
             cmd = build_shell_cmd(
-                backend="codex", name="rev", session="ck-r",
+                backend="codex", name="rev", kitchen="r",
                 status_dir="/tmp/state", effort=effort,
             )
             argv = _codex_argv_from_shell_cmd(cmd)
@@ -114,7 +114,7 @@ class TestBuildShellCmd:
         alias must land as `--effort max`. `max` itself passes verbatim."""
         for effort, want in (("max", "max"), ("ultra", "max")):
             toks = _claude_inner_tokens(build_shell_cmd(
-                backend="claude", name="eng", session="ck-r",
+                backend="claude", name="eng", kitchen="r",
                 status_dir="/tmp/state", effort=effort,
             ))
             i = toks.index("--effort")
@@ -123,7 +123,7 @@ class TestBuildShellCmd:
     def test_unknown_backend_raises(self):
         with pytest.raises(ValueError, match="Unknown backend"):
             build_shell_cmd(
-                backend="gpt", name="eng", session="ck-risotto",
+                backend="gpt", name="eng", kitchen="risotto",
                 status_dir="/tmp/state",
             )
 
@@ -132,7 +132,7 @@ class TestBuildShellCmd:
         monkeypatch.setenv("KITCHEN_WIKI", "/tmp/w")
         monkeypatch.setenv("FOO", "bar")
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-risotto",
+            backend="claude", name="eng", kitchen="risotto",
             status_dir="/tmp/state",
         )
         assert "KITCHEN_NOTES=/tmp/n" in cmd
@@ -144,7 +144,7 @@ class TestBuildShellCmd:
             if k.startswith("KITCHEN_"):
                 monkeypatch.delenv(k)
         cmd = build_shell_cmd(
-            backend="codex", name="eng", session="ck-risotto",
+            backend="codex", name="eng", kitchen="risotto",
             status_dir="/tmp/state",
         )
         assert "KITCHEN_" not in cmd
@@ -166,7 +166,7 @@ class TestCleanRoom:
         prompt — the three exclusions verified to give MEM=NO + SP=NO while
         subscription auth + the kitchen Stop hook stay intact."""
         cmd = build_shell_cmd(
-            backend="claude", name="eval1", session="ck-r",
+            backend="claude", name="eval1", kitchen="r",
             status_dir="/tmp/state", clean_room=True,
         )
         toks = _claude_inner_tokens(cmd)
@@ -182,7 +182,7 @@ class TestCleanRoom:
 
     def test_default_is_not_clean_room(self):
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r",
+            backend="claude", name="eng", kitchen="r",
             status_dir="/tmp/state",
         )
         toks = _claude_inner_tokens(cmd)
@@ -195,7 +195,7 @@ class TestCleanRoom:
         completion path — survives. Verified empirically: notify fires under a
         fresh seeded CODEX_HOME."""
         cmd = build_shell_cmd(
-            backend="codex", name="eval1", session="ck-r", status_dir="/tmp/state",
+            backend="codex", name="eval1", kitchen="r", status_dir="/tmp/state",
             clean_room=True, codex_home="/tmp/state/codex-home/eval1",
         )
         toks = _claude_inner_tokens(cmd)  # same bash -lc payload shape
@@ -211,7 +211,7 @@ class TestCleanRoom:
 
     def test_codex_without_codex_home_omits_it(self):
         cmd = build_shell_cmd(
-            backend="codex", name="rev", session="ck-r", status_dir="/tmp/state",
+            backend="codex", name="rev", kitchen="r", status_dir="/tmp/state",
         )
         assert "CODEX_HOME" not in cmd
 
@@ -220,7 +220,7 @@ class TestCleanRoom:
         clean-room claude cook, alongside (not replacing) the memory + settings
         knobs — additive opt-in to the blank slate."""
         cmd = build_shell_cmd(
-            backend="claude", name="eval1", session="ck-r", status_dir="/tmp/state",
+            backend="claude", name="eval1", kitchen="r", status_dir="/tmp/state",
             clean_room=True, plugin_dirs=["/skills/a", "/skills/b"],
         )
         toks = _claude_inner_tokens(cmd)
@@ -232,7 +232,7 @@ class TestCleanRoom:
 
     def test_no_plugin_dirs_by_default(self):
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            backend="claude", name="eng", kitchen="r", status_dir="/tmp/state",
         )
         assert "--plugin-dir" not in cmd
 
@@ -241,7 +241,7 @@ class TestCleanRoom:
         build_shell_cmd — a (nonsensical) claude call with codex_home set must
         NOT leak it, so the invariant is local, not just upheld by cmd_hire."""
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            backend="claude", name="eng", kitchen="r", status_dir="/tmp/state",
             codex_home="/tmp/state/codex-home/eng",
         )
         assert "CODEX_HOME" not in cmd
@@ -253,7 +253,7 @@ class TestRoleInjection:
         role_file.parent.mkdir()
         role_file.write_text("# eng — implementer\nbody with 'quotes' & specials\nmultiline")
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r",
+            backend="claude", name="eng", kitchen="r",
             status_dir="/tmp/state", role_path=role_file,
         )
         assert "--append-system-prompt-file" in cmd
@@ -264,7 +264,7 @@ class TestRoleInjection:
 
     def test_claude_no_role_omits_flag(self):
         cmd = build_shell_cmd(
-            backend="claude", name="cook1", session="ck-r",
+            backend="claude", name="cook1", kitchen="r",
             status_dir="/tmp/state",
         )
         assert "--append-system-prompt-file" not in cmd
@@ -289,7 +289,7 @@ class TestPromptSuggestionDisabled:
 
     def test_claude_cook_disables_ghost_text(self):
         cmd = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r",
+            backend="claude", name="eng", kitchen="r",
             status_dir="/tmp/state",
         )
         # Present, AND in the exported env (so the exec'd claude inherits it),
@@ -298,14 +298,14 @@ class TestPromptSuggestionDisabled:
 
     def test_codex_cook_has_no_ghost_var(self):
         cmd = build_shell_cmd(
-            backend="codex", name="rev", session="ck-r",
+            backend="codex", name="rev", kitchen="r",
             status_dir="/tmp/state",
         )
         assert "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION" not in cmd
 
     def test_gemini_cook_has_no_ghost_var(self):
         cmd = build_shell_cmd(
-            backend="gemini", name="gm", session="ck-r",
+            backend="gemini", name="gm", kitchen="r",
             status_dir="/tmp/state",
         )
         assert "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION" not in cmd
@@ -375,13 +375,13 @@ class TestSpawnSous:
             (nasty, f"--remote-control=r/{nasty}"),   # injection stays one token
         ):
             toks = _claude_inner_tokens(build_shell_cmd(
-                backend="claude", name=name, session="ck-r",
+                backend="claude", name=name, kitchen="r",
                 status_dir="/tmp/state",
             ))
             assert toks.count(want) == 1, f"{name!r} → {toks}"
         for backend in ("codex", "gemini"):
             cmd = build_shell_cmd(
-                backend=backend, name="eng", session="ck-r",
+                backend=backend, name="eng", kitchen="r",
                 status_dir="/tmp/state",
             )
             assert "--remote-control" not in cmd, f"{backend} cook leaked RC flag"
@@ -422,6 +422,33 @@ def _sous_argv_from_cmd(cmd: str) -> list[str]:
     return inner[i + 1:]
 
 
+class TestKitchenIdentityIsNotTheSessionName:
+    """The session name is the constant "kitchen" now, so it cannot carry
+    kitchen identity. Everything that used to derive identity from it must read
+    the kitchen directly — pinned here because both failures are SILENT."""
+
+    def test_remote_control_name_is_kitchen_slash_cook(self):
+        # PR #14: cooks show as "<kitchen>/<cook>" on the head chef's phone.
+        # Deriving this from the session name would rename every cook in every
+        # kitchen to "kitchen/<cook>" and quietly undo that feature.
+        cmd = build_shell_cmd(backend="claude", name="eng",
+                              kitchen="domo-source", status_dir="/tmp/s")
+        assert "--remote-control=domo-source/eng" in cmd
+        assert "--remote-control=kitchen/eng" not in cmd
+
+    def test_cook_env_carries_the_kitchen_not_the_session(self):
+        cmd = build_shell_cmd(backend="claude", name="eng",
+                              kitchen="domo-source", status_dir="/tmp/s")
+        assert "AGENT_KITCHEN=domo-source" in cmd
+        assert "AGENT_SESSION" not in cmd
+
+    def test_window_targets_use_the_static_session(self):
+        from claude_kitchen.tmux import target, SESSION
+        assert SESSION == "kitchen"
+        assert target("eng") == "kitchen:eng"
+        assert target() == "kitchen"
+
+
 class TestBuildSousCmd:
     def test_core_claude_flags(self, tmp_path):
         cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "sous-chef.md")
@@ -454,7 +481,7 @@ class TestBuildSousCmd:
     def test_identity_env(self, tmp_path):
         cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
         assert "AGENT_NAME=sous" in cmd
-        assert "AGENT_SESSION=ck-widget-child" in cmd
+        assert "AGENT_KITCHEN=widget-child" in cmd  # kitchen name, not a session name
         # STATUS_DIR stays THIS kitchen's base (not the parent's).
         assert f"STATUS_DIR={shlex.quote(str(tmp_path))}" in cmd
 
@@ -488,7 +515,8 @@ class TestSpawnSousWindow:
         assert ok is True
         first = mock_tmux.call_args_list[0]
         assert first.args[0] == "new-window"
-        assert "ck-widget-child" in first.args
+        assert first.kwargs["kitchen"] == "widget-child"  # socket
+        assert "kitchen" in first.args                    # static session target
         assert "sous" in first.args
         kinds = [c.args[0] for c in mock_tmux.call_args_list]
         # _placeholder removed; pane pid queried for sous.pid.
@@ -533,7 +561,7 @@ class TestModelSelection:
     def test_model_alias_passed_through(self):
         for alias in ("fable", "sonnet", "opus"):
             cmd = build_shell_cmd(
-                backend="claude", name="eng", session="ck-r",
+                backend="claude", name="eng", kitchen="r",
                 status_dir="/tmp/state", model=alias,
             )
             toks = _claude_inner_tokens(cmd)
@@ -548,7 +576,7 @@ class TestModelSelection:
             if k.startswith("KITCHEN_"):
                 monkeypatch.delenv(k, raising=False)
         default = build_shell_cmd(
-            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            backend="claude", name="eng", kitchen="r", status_dir="/tmp/state",
         )
         toks = _claude_inner_tokens(default)
         exec_argv = toks[toks.index("exec") + 1:]
@@ -560,7 +588,7 @@ class TestModelSelection:
         ]
         # And model=None is byte-for-byte identical to omitting the kwarg.
         assert default == build_shell_cmd(
-            backend="claude", name="eng", session="ck-r", status_dir="/tmp/state",
+            backend="claude", name="eng", kitchen="r", status_dir="/tmp/state",
             model=None,
         )
 
@@ -568,7 +596,7 @@ class TestModelSelection:
         """The codex branch never emits --model even if a model is passed
         (cli.py fails such a call loud before it reaches here)."""
         cmd = build_shell_cmd(
-            backend="codex", name="rev", session="ck-r",
+            backend="codex", name="rev", kitchen="r",
             status_dir="/tmp/state", model="opus",
         )
         assert "--model" not in cmd

@@ -10,8 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from claude_kitchen.tmux import (
-    mc, bare, list_sessions, list_windows, has_session,
-    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy,
+    list_kitchens, list_windows, has_session, target,
+    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy, attach_cmd,
+    PROBE_TIMEOUT, SESSION,
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
@@ -88,21 +89,21 @@ def resolve_kitchen(kitchen: str = None) -> str:
         # namespaced kitchen when no literal `ck-<kitchen>` session exists —
         # so `kitchen close foo` reaches `ck-<slug>-foo`. If the bare session
         # does exist (a legacy kitchen) we keep targeting it.
-        if not has_session(mc(kitchen)):
+        if not has_session(kitchen):
             project = _cwd_project()
-            if project and has_session(mc(namespaced(project, kitchen))):
+            if project and has_session(namespaced(project, kitchen)):
                 return namespaced(project, kitchen)
         return kitchen
-    env = os.environ.get("AGENT_SESSION", "")
+    env = os.environ.get("AGENT_KITCHEN", "")
     if env:
-        return bare(env)
-    sessions = list_sessions()
-    if len(sessions) == 1:
-        return bare(sessions[0])
-    if not sessions:
+        return env
+    kitchens = list_kitchens()
+    if len(kitchens) == 1:
+        return kitchens[0]
+    if not kitchens:
         print("No active kitchens.", file=sys.stderr)
     else:
-        print(f"Multiple kitchens active: {', '.join(bare(s) for s in sessions)}", file=sys.stderr)
+        print(f"Multiple kitchens active: {', '.join(kitchens)}", file=sys.stderr)
         print("Use --kitchen <name> to specify.", file=sys.stderr)
     sys.exit(1)
 
@@ -210,12 +211,12 @@ def run_hook(hook_dir: Path, hook_name: str, name: str, cwd: Path = None, source
         print(f"Warning: {hook_name}.sh exited {result.returncode}", file=sys.stderr)
 
 
-def _sweep_cooks(base: Path, session: str) -> list[str]:
+def _sweep_cooks(base: Path, kitchen: str) -> list[str]:
     """Delete cook JSON files whose tmux window no longer exists. Returns names swept."""
     cooks_dir = base / "cooks"
     if not cooks_dir.is_dir():
         return []
-    live = set(list_windows(session))
+    live = set(list_windows(kitchen))
     swept = []
     for f in cooks_dir.glob("*.json"):
         if f.stem not in live:
@@ -227,28 +228,35 @@ def _sweep_cooks(base: Path, session: str) -> list[str]:
 def cmd_statusline_segment(args):
     """Print the kitchen-state segment for embedding in a statusline.
 
-    Soft-resolves the current kitchen (AGENT_SESSION env, else single-active
-    session). Outside any kitchen → empty output, exit 0, so a wrapper script
+    Soft-resolves the current kitchen (AGENT_KITCHEN env, else the single live
+    kitchen). Outside any kitchen → empty output, exit 0, so a wrapper script
     calling this never breaks a user's statusline.
 
     Stdin (Claude Code session JSON) is ignored — this command is designed to
     be invoked from a wrapper that already consumed stdin. Reading it here
     would deadlock when called with no pipe.
     """
-    env = os.environ.get("AGENT_SESSION", "")
+    env = os.environ.get("AGENT_KITCHEN", "")
     if env:
-        kitchen = bare(env)
+        kitchen = env
     else:
-        sessions = list_sessions()
-        kitchen = bare(sessions[0]) if len(sessions) == 1 else None
+        kitchens = list_kitchens()
+        kitchen = kitchens[0] if len(kitchens) == 1 else None
     if not kitchen:
         return
 
-    # A statusline is wired into the user's prompt — it must NEVER raise. A
-    # stale AGENT_SESSION (session already torn down) renders nothing rather
-    # than an attach hint to a session that's gone.
-    session = mc(kitchen)
-    if not has_session(session):
+    # A statusline is wired into the user's prompt — it must NEVER raise, and it
+    # must never make the head chef WAIT. A stale AGENT_KITCHEN (kitchen already
+    # torn down) renders nothing rather than an attach hint to a kitchen that's
+    # gone.
+    #
+    # Both tmux calls below carry PROBE_TIMEOUT rather than the default 15s.
+    # This kitchen now has its own tmux server, so "my server is wedged" is a
+    # first-class state — and at the default budget a wedged server would freeze
+    # the prompt for 15 seconds on EVERY render. Bounded at PROBE_TIMEOUT the
+    # segment simply goes quiet, which is the same thing it does for a kitchen
+    # that is down.
+    if not has_session(kitchen, timeout=PROBE_TIMEOUT):
         return
 
     # Count live tmux windows, not cooks/*.json files. State files for cooks
@@ -260,9 +268,14 @@ def cmd_statusline_segment(args):
     base = state_dir(kitchen)
     total = active = 0
     try:
-        windows = list_windows(session)
-    except subprocess.CalledProcessError:
-        windows = []  # session vanished between has_session and the listing
+        windows = list_windows(kitchen, timeout=PROBE_TIMEOUT)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # CalledProcessError: session vanished between has_session and the
+        # listing. TimeoutExpired: this kitchen's server answered the probe and
+        # then stopped answering — possible now that each kitchen has its own
+        # server, and it must degrade to a quiet segment, not a traceback in the
+        # head chef's prompt.
+        windows = []
     for win in windows:
         total += 1
         try:
@@ -273,14 +286,17 @@ def cmd_statusline_segment(args):
 
     segments = []
     if env:
-        segments.append(f"[ tmux attach -t {env} ]")
+        # Full `-L` form: the kitchen has its own tmux socket, so the bare
+        # `tmux attach -t <session>` this used to print no longer finds it. No
+        # `-t`: the kitchen's server holds exactly one session.
+        segments.append(f"[ {attach_cmd(kitchen)} ]")
     segments.append(f"[ {active}/{total} agents active ]")
     print("  ".join(segments))
 
 
 def cmd_sweep(args):
     kitchen = resolve_kitchen(args.kitchen)
-    swept = _sweep_cooks(state_dir(kitchen), mc(kitchen))
+    swept = _sweep_cooks(state_dir(kitchen), kitchen)
     if swept:
         print(f"Swept {len(swept)} stale cook(s): {', '.join(sorted(swept))}")
     else:
@@ -297,7 +313,7 @@ def _legacy_bare_kitchen(requested: str, project: Path):
     """
     base = state_dir(requested)
     kitchen_file = base / "kitchen.json"
-    if not kitchen_file.exists() or not has_session(mc(requested)):
+    if not kitchen_file.exists() or not has_session(requested):
         return None
     try:
         src = json.loads(kitchen_file.read_text()).get("source")
@@ -339,7 +355,7 @@ def _abort_sub_sous(name: str, base: Path, kj: dict):
     a stray worktree, or a dangling branch. Best-effort: a slow/again-timing-out
     tmux must not block the rest of the cleanup."""
     try:
-        tmux("kill-session", "-t", mc(name))
+        tmux("kill-session", "-t", target(), kitchen=name)
     except subprocess.TimeoutExpired:
         pass
     worktree = kj.get("worktree")
@@ -383,7 +399,6 @@ def cmd_open(args):
             f"as '{namespaced(project, requested)}' to align with the new convention."
         )
 
-    session = mc(name)
     resuming = kitchen_file.exists()
 
     # --sub-sous is fresh-open only (POC v0): it stands up a brand-new child
@@ -391,7 +406,7 @@ def cmd_open(args):
     # and reattach paths assume the execvp sous in the caller's terminal, so
     # reject the combination loudly rather than half-wire it.
     if args.sub_sous:
-        if args.resume or resuming or has_session(session):
+        if args.resume or resuming or has_session(name):
             sys.exit(
                 f"--sub-sous is fresh-open only: it can't combine with --resume "
                 f"or reattach an existing kitchen/session (\"{name}\")."
@@ -450,9 +465,20 @@ def cmd_open(args):
     _seed(wiki_dir(slug), _WIKI_TEMPLATES)
     _seed(notes_dir(name), _NOTES_TEMPLATES)
 
-    if not has_session(session):
-        tmux("new-session", "-d", "-s", session, "-n", "_placeholder")
-    _sweep_cooks(base, session)
+    if has_session(name):
+        # Sweep ONLY when the session was already up on this kitchen's own
+        # socket — there the window list is authoritative about which cooks are
+        # still alive. When we have to CREATE the session, every cook record
+        # looks orphaned by construction, and that is exactly the case where the
+        # cooks may still be running: on a suspended kitchen the records are the
+        # memory `suspend` exists to keep, and after the socket move a kitchen's
+        # cooks can be alive on a different server this tmux can't even see.
+        # Deleting their state there destroys the sous's only record of what
+        # they were doing. Orphan files are inert (brigade and the statusline
+        # count live windows, not files); `kitchen sweep` clears them on demand.
+        _sweep_cooks(base, name)
+    else:
+        tmux("new-session", "-d", "-s", SESSION, "-n", "_placeholder", kitchen=name)
     mcp_config = {
         "mcpServers": {
             "kitchen": {
@@ -475,7 +501,7 @@ def cmd_open(args):
         print(f"Kitchen \"{name}\" — child sous booting in its own session.")
     else:
         print(f"Kitchen \"{name}\" is open. Sous chef on the line.")
-    print(f"   tmux attach -t {session}")
+    print(f"   {attach_cmd(name)}")
 
     sous_md = _PKG_DIR / "sous-chef.md"
     if not sous_md.exists():
@@ -496,7 +522,7 @@ def cmd_open(args):
                 failure = "tmux could not launch the sous window"
             # Mirror cmd_hire's readiness barrier so the parent's first
             # `kitchen ticket sous --kitchen <name>` doesn't hit a booting pane.
-            elif not wait_for_prompt(session, "sous", "claude"):
+            elif not wait_for_prompt(name, "sous", "claude"):
                 failure = "the child sous never reached its prompt"
         except subprocess.TimeoutExpired:
             failure = "tmux stayed unresponsive under launch load"
@@ -547,7 +573,6 @@ def _validate_skill_path(raw: str) -> str:
 
 def cmd_hire(args):
     kitchen = resolve_kitchen(args.kitchen)
-    session = mc(kitchen)
     base = state_dir(kitchen)
     name = args.name
     backend = args.backend
@@ -613,7 +638,7 @@ def cmd_hire(args):
 
     effort = getattr(args, "effort", None)
     ok = spawn_window(
-        session=session, name=name, cwd=cwd,
+        kitchen=kitchen, name=name, cwd=cwd,
         backend=backend, status_dir=str(base),
         effort=effort, role_path=role_to_pass, clean_room=clean_room,
         codex_home=codex_home, plugin_dirs=plugin_dirs, model=model,
@@ -632,7 +657,7 @@ def cmd_hire(args):
     # Keep this barrier: the sous will call `kitchen ticket <cook>` immediately
     # after hire returns. Without it, the first ticket lands in a booting pane
     # and is lost. Also required for the codex send_keys role delivery below.
-    if not wait_for_prompt(session, name, backend):
+    if not wait_for_prompt(kitchen, name, backend):
         update_status(base, name, status="failed")
         if codex_home:
             shutil.rmtree(codex_home, ignore_errors=True)
@@ -641,7 +666,7 @@ def cmd_hire(args):
     # Clean-room codex cooks have no role_path — they boot bare and the sous
     # tickets the eval prompt (same as clean-room claude).
     if backend == "codex" and role_path:
-        send_keys(session, name, role_path.read_text() + _ROLE_ACK_FOOTER,
+        send_keys(kitchen, name, role_path.read_text() + _ROLE_ACK_FOOTER,
                   backend=backend)
 
     print(f"{name} is on the station. Yes, chef!")
@@ -649,13 +674,12 @@ def cmd_hire(args):
 
 def cmd_ticket(args):
     kitchen = resolve_kitchen(args.kitchen)
-    session = mc(kitchen)
     base = state_dir(kitchen)
     name = args.cook
     message = args.message
 
     backend = (read_status(base, name) or {}).get("backend")
-    send_keys(session, name, message, backend=backend)
+    send_keys(kitchen, name, message, backend=backend)
 
     # Mark cook as working. Codex has no UserPromptSubmit-equivalent hook
     # event (Codex `notify` only fires on completion), so for Codex cooks
@@ -669,9 +693,8 @@ def cmd_ticket(args):
 
 def cmd_peek(args):
     kitchen = resolve_kitchen(args.kitchen)
-    session = mc(kitchen)
     base = state_dir(kitchen)
-    content = capture_pane(session, args.cook, full=args.full)
+    content = capture_pane(kitchen, args.cook, full=args.full)
     if content:
         print(content)
     else:
@@ -680,7 +703,7 @@ def cmd_peek(args):
     # state file (pane_busy needs it — markers are backend-specific).
     backend = (read_status(base, args.cook) or {}).get("backend")
     if backend:
-        state = "busy" if pane_busy(session, args.cook, backend) else "idle"
+        state = "busy" if pane_busy(kitchen, args.cook, backend) else "idle"
         print(f"\n[{args.cook}: {state}]")
 
 
@@ -699,18 +722,17 @@ def cmd_roles(args):
 
 
 def cmd_brigade(kitchen: str = None):
-    sessions = list_sessions()
+    kitchens = list_kitchens()
     if kitchen:
-        sessions = [s for s in sessions if bare(s) == kitchen]
+        kitchens = [k for k in kitchens if k == kitchen]
 
-    if not sessions:
+    if not kitchens:
         print("No active kitchens.")
         return
 
-    for session in sorted(sessions):
-        name = bare(session)
+    for name in kitchens:
         base = state_dir(name)
-        windows = list_windows(session)
+        windows = list_windows(name)
 
         print(f"kitchen: {name}")
 
@@ -729,8 +751,7 @@ def cmd_brigade(kitchen: str = None):
 
 def cmd_clock_out(args):
     kitchen = resolve_kitchen(args.kitchen)
-    session = mc(kitchen)
-    tmux("kill-window", "-t", f"{session}:{args.cook}")
+    tmux("kill-window", "-t", target(args.cook), kitchen=kitchen)
     # Clean up status file
     base = state_dir(kitchen)
     cook_file = base / "cooks" / f"{args.cook}.json"
@@ -743,13 +764,13 @@ def cmd_clock_out(args):
 
 
 def _hook_gate() -> tuple[str, str, Path] | None:
-    """Check env vars required for hooks. Returns (name, session, status_dir) or None."""
+    """Check env vars required for hooks. Returns (name, kitchen, status_dir) or None."""
     name = os.environ.get("AGENT_NAME", "")
-    session = os.environ.get("AGENT_SESSION", "")
+    kitchen = os.environ.get("AGENT_KITCHEN", "")
     status = os.environ.get("STATUS_DIR", "")
-    if not (name and session and status):
+    if not (name and kitchen and status):
         return None
-    return name, session, Path(status)
+    return name, kitchen, Path(status)
 
 
 def _parent_push_base(base: Path) -> Path | None:
@@ -771,7 +792,7 @@ def cmd_hook(args):
     ctx = _hook_gate()
     if not ctx:
         return
-    name, session, base = ctx
+    name, kitchen, base = ctx
 
     codex = args.command == "hook-codex"
     try:
@@ -822,7 +843,7 @@ def cmd_hook(args):
         if event == "UserPromptSubmit":
             update_status(
                 base, name,
-                agent=name, session=session, status="working",
+                agent=name, kitchen=kitchen, status="working",
             )
             return
         if event != "Stop":
@@ -849,7 +870,7 @@ def cmd_hook(args):
             raise
 
     updates = {
-        "agent": name, "session": session, "status": "idle",
+        "agent": name, "kitchen": kitchen, "status": "idle",
         "ts": ts, "summary": summary,
     }
     if codex:
@@ -932,7 +953,7 @@ def cmd_hook_agy(args):
     gate = _hook_gate()
     if not gate:
         return
-    name, session, base = gate
+    name, kitchen, base = gate
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except (json.JSONDecodeError, ValueError):
@@ -941,7 +962,7 @@ def cmd_hook_agy(args):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     # update_status (not write_status) preserves durable fields like `backend`
     # (written "gemini" at hire) across this completion transition.
-    update_status(base, name, agent=name, session=session, status="idle",
+    update_status(base, name, agent=name, kitchen=kitchen, status="idle",
                   ts=ts, summary=summary, session_id=payload.get("conversationId", ""))
     from claude_kitchen.channel import send_to_socket, SOCK_NAME
     send_to_socket(base / SOCK_NAME, {"cook": name, "summary": summary, "ts": ts})
@@ -1283,9 +1304,27 @@ def cmd_setup(args):
         sys.exit(1)
 
 
+def cmd_suspend(args):
+    """Kill a kitchen's tmux server and touch nothing on disk.
+
+    `close` without the destruction: the cooks are gone, the kitchen's memory —
+    kitchen.json, cooks/*.json, notes/, the wiki — is not. Winding a kitchen
+    down used to mean destroying it, so nobody ever did, which is how one tmux
+    server ended up carrying 16 kitchens and 117 panes.
+
+    kill-server rather than kill-session: the point is to give the machine the
+    process back, and the kitchen owns its server outright."""
+    kitchen = resolve_kitchen(args.kitchen)
+    if not has_session(kitchen):
+        sys.exit(f"Kitchen \"{kitchen}\" has no running tmux server — already suspended.")
+    tmux("kill-server", kitchen=kitchen)
+    print(f"Kitchen \"{kitchen}\" suspended. Cooks are gone; notes and cook records are untouched.")
+    print(f"   kitchen open --resume {kitchen}    # bring the sous back")
+    print(f"   {attach_cmd(kitchen)}    # once it is back up")
+
+
 def cmd_close(args):
     kitchen = resolve_kitchen(args.kitchen)
-    session = mc(kitchen)
     base = state_dir(kitchen)
 
     # Run on-close hook and remove worktree BEFORE killing tmux
@@ -1305,7 +1344,7 @@ def cmd_close(args):
             print(f"Warning: bad kitchen.json: {e}", file=sys.stderr)
         kitchen_file.unlink(missing_ok=True)
 
-    tmux("kill-session", "-t", session)
+    tmux("kill-server", kitchen=kitchen)
 
     # Clean up mcp config, socket, pid, and stale cook state
     for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
@@ -1360,6 +1399,9 @@ def main():
     p_sweep = sub.add_parser("sweep", help="Delete stale cook state files (orphans)")
     p_sweep.add_argument("--kitchen", help="Target kitchen")
 
+    p_suspend = sub.add_parser("suspend", help="Kill a kitchen's tmux server, keeping all its state on disk")
+    p_suspend.add_argument("kitchen", nargs="?", help="Kitchen name")
+
     p_close = sub.add_parser("close", help="Close a kitchen")
     p_close.add_argument("kitchen", nargs="?", help="Kitchen name")
     p_close.add_argument("--force", action="store_true", help="Remove worktree even with unpushed changes")
@@ -1400,6 +1442,8 @@ def main():
         cmd_clock_out(args)
     elif args.command == "sweep":
         cmd_sweep(args)
+    elif args.command == "suspend":
+        cmd_suspend(args)
     elif args.command == "close":
         cmd_close(args)
     elif args.command == "setup":

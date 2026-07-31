@@ -3,8 +3,8 @@ import subprocess
 from unittest.mock import patch, MagicMock
 import pytest
 from claude_kitchen.tmux import (
-    mc, bare, list_sessions, list_windows,
-    has_session, capture_pane,
+    mc, bare, list_kitchens, list_windows,
+    has_session, capture_pane, SESSION,
 )
 
 CK_PREFIX = "ck-"
@@ -31,17 +31,99 @@ class TestNaming:
         assert bare("risotto") == "risotto"
 
 
+def _seed_kitchens(root, *names):
+    """Lay out state dirs the way `kitchen open` does: <root>/<name>/kitchen.json."""
+    for n in names:
+        (root / n).mkdir(parents=True)
+        (root / n / "kitchen.json").write_text("{}\n")
+
+
 class TestListSessions:
-    @patch("claude_kitchen.tmux.tmux")
-    def test_filters_ck_sessions(self, mock_tmux):
-        mock_tmux.return_value = _mock_run("ck-risotto\nck-bolognese\nother\n")
-        result = list_sessions()
-        assert result == ["ck-risotto", "ck-bolognese"]
+    """No shared server to enumerate any more: candidates come from disk and
+    each is probed on its OWN socket."""
+
+    @patch("claude_kitchen.tmux.has_session", return_value=True)
+    def test_lists_kitchens_from_disk(self, mock_has, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        _seed_kitchens(tmp_path / ".claude-kitchen", "risotto", "bolognese")
+        assert list_kitchens() == ["bolognese", "risotto"]
+
+    @patch("claude_kitchen.tmux.has_session", return_value=True)
+    def test_ignores_dirs_without_kitchen_json(self, mock_has, tmp_path, monkeypatch):
+        # `projects/` (the wiki root) and a closed kitchen (kitchen.json unlinked)
+        # both live under the state root but are not kitchens.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".claude-kitchen"
+        _seed_kitchens(root, "risotto")
+        (root / "projects" / "widget" / "wiki").mkdir(parents=True)
+        (root / "closed").mkdir()
+        assert list_kitchens() == ["risotto"]
+
+    @patch("claude_kitchen.tmux.has_session", return_value=False)
+    def test_dead_server_is_omitted(self, mock_has, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        _seed_kitchens(tmp_path / ".claude-kitchen", "risotto")
+        assert list_kitchens() == []
+
+    def test_empty_when_no_state_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert list_kitchens() == []
 
     @patch("claude_kitchen.tmux.tmux")
-    def test_empty_on_failure(self, mock_tmux):
-        mock_tmux.return_value = _mock_run(returncode=1)
-        assert list_sessions() == []
+    def test_wedged_socket_does_not_block_the_others(self, mock_tmux, tmp_path, monkeypatch):
+        """THE regression this design exists for: one kitchen's tmux server
+        stops answering. Its probe times out, and every OTHER kitchen still
+        lists. Each probe carries the short PROBE_TIMEOUT, so the cost is
+        bounded per kitchen instead of hanging the listing."""
+        from claude_kitchen.tmux import PROBE_TIMEOUT
+        monkeypatch.setenv("HOME", str(tmp_path))
+        _seed_kitchens(tmp_path / ".claude-kitchen", "alive", "wedged")
+
+        def probe(*args, kitchen, timeout=None, **kwargs):
+            if kitchen == "wedged":
+                raise subprocess.TimeoutExpired(cmd="tmux", timeout=timeout)
+            return _mock_run(returncode=0)
+
+        mock_tmux.side_effect = probe
+        assert list_kitchens() == ["alive"]
+        assert all(c.kwargs["timeout"] == PROBE_TIMEOUT
+                   for c in mock_tmux.call_args_list)
+
+
+class TestSocketRouting:
+    """Every tmux invocation must carry `-L ck-<kitchen>` — the whole point of
+    the design. Asserted on the real argv, one layer below the tmux() wrapper."""
+
+    @patch("claude_kitchen.tmux.subprocess.run")
+    def test_tmux_prepends_the_kitchen_socket(self, mock_run):
+        from claude_kitchen.tmux import tmux
+        mock_run.return_value = _mock_run()
+        tmux("has-session", "-t", SESSION, kitchen="ck-risotto")
+        assert mock_run.call_args.args[0][:3] == ["tmux", "-L", "ck-risotto"]
+
+    @patch("claude_kitchen.tmux.subprocess.run")
+    def test_bare_kitchen_name_resolves_to_the_ck_socket(self, mock_run):
+        from claude_kitchen.tmux import tmux
+        mock_run.return_value = _mock_run()
+        tmux("kill-session", "-t", SESSION, kitchen="risotto")
+        assert mock_run.call_args.args[0][:3] == ["tmux", "-L", "ck-risotto"]
+
+    def test_session_is_required(self):
+        # Keyword-only and mandatory, so no call can silently land back on the
+        # shared default socket.
+        from claude_kitchen.tmux import tmux
+        with pytest.raises(TypeError):
+            tmux("list-sessions")
+
+
+class TestAttachCmd:
+    def test_prints_the_full_socket_qualified_form(self):
+        from claude_kitchen.tmux import attach_cmd
+        assert attach_cmd("risotto") == "tmux -L ck-risotto attach"
+
+    def test_idempotent_on_an_already_prefixed_name(self):
+        from claude_kitchen.tmux import attach_cmd
+        assert attach_cmd("ck-risotto") == "tmux -L ck-risotto attach"
 
 
 class TestListWindows:
@@ -101,7 +183,7 @@ class TestWaitForPrompt:
         ]
         assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
         sent = [c.args for c in mock_tmux.call_args_list]
-        assert ("send-keys", "-t", "ck-x:sous", "Enter") in sent
+        assert ("send-keys", "-t", "kitchen:sous", "Enter") in sent
 
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")
