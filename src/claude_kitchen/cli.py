@@ -11,7 +11,7 @@ from pathlib import Path
 
 from claude_kitchen.tmux import (
     mc, bare, list_sessions, list_windows, has_session,
-    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy,
+    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy, attach_cmd,
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
@@ -273,7 +273,9 @@ def cmd_statusline_segment(args):
 
     segments = []
     if env:
-        segments.append(f"[ tmux attach -t {env} ]")
+        # Full `-L` form: the kitchen has its own tmux socket, so the bare
+        # `tmux attach -t <session>` this used to print no longer finds it.
+        segments.append(f"[ {attach_cmd(env)} ]")
     segments.append(f"[ {active}/{total} agents active ]")
     print("  ".join(segments))
 
@@ -339,7 +341,7 @@ def _abort_sub_sous(name: str, base: Path, kj: dict):
     a stray worktree, or a dangling branch. Best-effort: a slow/again-timing-out
     tmux must not block the rest of the cleanup."""
     try:
-        tmux("kill-session", "-t", mc(name))
+        tmux("kill-session", "-t", mc(name), session=name)
     except subprocess.TimeoutExpired:
         pass
     worktree = kj.get("worktree")
@@ -451,7 +453,7 @@ def cmd_open(args):
     _seed(notes_dir(name), _NOTES_TEMPLATES)
 
     if not has_session(session):
-        tmux("new-session", "-d", "-s", session, "-n", "_placeholder")
+        tmux("new-session", "-d", "-s", session, "-n", "_placeholder", session=session)
     _sweep_cooks(base, session)
     mcp_config = {
         "mcpServers": {
@@ -475,7 +477,7 @@ def cmd_open(args):
         print(f"Kitchen \"{name}\" — child sous booting in its own session.")
     else:
         print(f"Kitchen \"{name}\" is open. Sous chef on the line.")
-    print(f"   tmux attach -t {session}")
+    print(f"   {attach_cmd(session)}")
 
     sous_md = _PKG_DIR / "sous-chef.md"
     if not sous_md.exists():
@@ -730,7 +732,7 @@ def cmd_brigade(kitchen: str = None):
 def cmd_clock_out(args):
     kitchen = resolve_kitchen(args.kitchen)
     session = mc(kitchen)
-    tmux("kill-window", "-t", f"{session}:{args.cook}")
+    tmux("kill-window", "-t", f"{session}:{args.cook}", session=session)
     # Clean up status file
     base = state_dir(kitchen)
     cook_file = base / "cooks" / f"{args.cook}.json"
@@ -1305,7 +1307,7 @@ def cmd_close(args):
             print(f"Warning: bad kitchen.json: {e}", file=sys.stderr)
         kitchen_file.unlink(missing_ok=True)
 
-    tmux("kill-session", "-t", session)
+    tmux("kill-session", "-t", session, session=session)
 
     # Clean up mcp config, socket, pid, and stale cook state
     for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):

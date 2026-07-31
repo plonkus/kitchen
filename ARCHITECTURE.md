@@ -40,7 +40,7 @@ Two independent channels, one per direction:
 |---|---|
 | **Head chef** | You. Talk to the sous in natural language; give goals, not commands. |
 | **Sous chef** | Claude Code running in your terminal, with `sous-chef.md` appended to its system prompt. It hires cooks, writes tickets, reviews results, and iterates. Its prompt forbids it from reading source or running tests itself — its context is reserved for coordination; cooks burn theirs instead. |
-| **Cooks** | Stock agent CLIs, one per tmux window. Optionally given a role prompt (`eng`, `qa`, `reviewer`) at hire time. `tmux attach` and watch any of them live — or grab the keyboard and take over. |
+| **Cooks** | Stock agent CLIs, one per tmux window. Optionally given a role prompt (`eng`, `qa`, `reviewer`) at hire time. `tmux -L ck-<kitchen> attach` and watch any of them live — or grab the keyboard and take over. |
 
 ## Upstream in detail: hook → socket → MCP channel
 
@@ -101,9 +101,9 @@ To add a new backend you supply exactly that row: a launch command, two pane mar
 ## Why tmux instead of the API?
 
 - **Subscription auth.** Cooks are the ordinary CLIs logged in the ordinary way. A ten-cook brigade costs the same as your existing plans.
-- **Total observability.** `tmux attach -t ck-<kitchen>` shows every cook's live screen. `kitchen peek <cook>` captures a pane snapshot for the sous. If a cook goes sideways, you type into its window directly.
+- **Total observability.** `tmux -L ck-<kitchen> attach -t ck-<kitchen>` shows every cook's live screen. `kitchen peek <cook>` captures a pane snapshot for the sous. If a cook goes sideways, you type into its window directly.
 - **Full-fidelity agents.** Each cook gets the complete product — plugins, skills, MCP servers, its own permission mode — not a stripped-down API harness.
-- **Isolation.** A crashed cook is a dead tmux window, not a corrupted orchestrator. The sous notices (no completion arrives, `pane_busy` false) and re-hires.
+- **Isolation.** A crashed cook is a dead tmux window, not a corrupted orchestrator. The sous notices (no completion arrives, `pane_busy` false) and re-hires. Each kitchen also gets its own single-threaded tmux server (`-L ck-<kitchen>`), so a kitchen that saturates its server can't starve the others.
 
 ## State on disk
 

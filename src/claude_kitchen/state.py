@@ -22,12 +22,18 @@ MCP_CONFIG_NAME = "kitchen-mcp.json"
 LEGACY_MCP_CONFIG_NAME = ".mcp.json"
 
 
+def state_root() -> Path:
+    """Root of all kitchen state — one subdirectory per kitchen. This is the
+    kitchen registry now that there's no shared tmux server to enumerate."""
+    return Path.home() / ".claude-kitchen"
+
+
 def state_dir(kitchen: str) -> Path:
-    return Path.home() / ".claude-kitchen" / kitchen
+    return state_root() / kitchen
 
 
 def wiki_dir(slug: str) -> Path:
-    return Path.home() / ".claude-kitchen" / "projects" / slug / "wiki"
+    return state_root() / "projects" / slug / "wiki"
 
 
 def notes_dir(kitchen: str) -> Path:

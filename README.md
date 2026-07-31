@@ -176,8 +176,10 @@ The current process becomes the Claude sous chef. Talk to it normally—describe
 In another terminal, watch the brigade:
 
 ```bash
-tmux attach -t ck-<project-slug>-<kitchen-name>
+tmux -L ck-<project-slug>-<kitchen-name> attach -t ck-<project-slug>-<kitchen-name>
 ```
+
+Each kitchen runs on its own tmux server (socket `ck-<kitchen>`), so the `-L` is required — a bare `tmux attach -t ck-…` will not find the session. `kitchen open` prints the exact command.
 
 Kitchen namespaces sessions and state by project slug. For example, `kitchen open my-feature` in a repository named `widget` becomes kitchen `widget-my-feature`, while the git branch and worktree keep the name `my-feature`. A no-name `kitchen open` usually uses the repository name without doubling it.
 

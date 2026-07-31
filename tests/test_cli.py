@@ -1829,7 +1829,7 @@ class TestCmdStatuslineSegment:
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux attach -t ck-risotto ]  [ 2/4 agents active ]"
+        assert out == "[ tmux -L ck-risotto attach -t ck-risotto ]  [ 2/4 agents active ]"
         mock_win.assert_called_once_with("ck-risotto")
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
@@ -1858,7 +1858,7 @@ class TestCmdStatuslineSegment:
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux attach -t ck-empty ]  [ 0/0 agents active ]"
+        assert out == "[ tmux -L ck-empty attach -t ck-empty ]  [ 0/0 agents active ]"
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
@@ -1882,7 +1882,7 @@ class TestCmdStatuslineSegment:
             from claude_kitchen.cli import cmd_statusline_segment
             cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux attach -t ck-r ]  [ 1/2 agents active ]"
+        assert out == "[ tmux -L ck-r attach -t ck-r ]  [ 1/2 agents active ]"
 
     @patch("claude_kitchen.cli.has_session", return_value=False)
     @patch("claude_kitchen.cli.list_windows")
@@ -1911,7 +1911,7 @@ class TestCmdStatuslineSegment:
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux attach -t ck-closing ]  [ 0/0 agents active ]"
+        assert out == "[ tmux -L ck-closing attach -t ck-closing ]  [ 0/0 agents active ]"
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.read_status")
@@ -1930,7 +1930,7 @@ class TestCmdStatuslineSegment:
         from claude_kitchen.cli import cmd_statusline_segment
         cmd_statusline_segment(MagicMock())
         out = capsys.readouterr().out.rstrip("\n")
-        assert out == "[ tmux attach -t ck-r ]  [ 1/2 agents active ]"
+        assert out == "[ tmux -L ck-r attach -t ck-r ]  [ 1/2 agents active ]"
 
 
 class TestCmdRoles:

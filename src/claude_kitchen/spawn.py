@@ -186,9 +186,11 @@ def spawn_window(session: str, name: str, cwd: str, backend: str, status_dir: st
                           plugin_dirs=plugin_dirs, model=model)
 
     if has_session(session):
-        result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd)
+        result = tmux("new-window", "-t", session, "-n", name, "-c", cwd, cmd,
+                      session=session)
     else:
-        result = tmux("new-session", "-d", "-s", session, "-n", name, "-c", cwd, cmd)
+        result = tmux("new-session", "-d", "-s", session, "-n", name, "-c", cwd, cmd,
+                      session=session)
 
     return result.returncode == 0
 
@@ -245,12 +247,12 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     session = mc(name)
     cmd = build_sous_cmd(name, base, sous_md_path, slug=slug, parent_base=parent_base)
     if tmux("new-window", "-t", session, "-n", "sous", "-c", str(project),
-            cmd).returncode != 0:
+            cmd, session=session).returncode != 0:
         return False
     # The placeholder kill is cosmetic (the window is `_`-hidden from brigade);
     # a transient stall under launch load must not fail an otherwise-good launch.
     try:
-        tmux("kill-window", "-t", f"{session}:_placeholder")
+        tmux("kill-window", "-t", f"{session}:_placeholder", session=session)
     except subprocess.TimeoutExpired:
         pass
     # Record the sous pane's PID (parity with the execvp sous's sous.pid). It's
@@ -260,7 +262,8 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     # propagate (cmd_open would read it as a launch failure and tear the window
     # down) — just skip the pid.
     try:
-        panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}")
+        panes = tmux("list-panes", "-t", f"{session}:sous", "-F", "#{pane_pid}",
+                     session=session)
         if panes.returncode == 0 and panes.stdout.strip():
             (base / "sous.pid").write_text(panes.stdout.strip().splitlines()[0] + "\n")
     except subprocess.TimeoutExpired:
