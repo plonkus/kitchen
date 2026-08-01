@@ -16,4 +16,4 @@ Hiring carries no task — the ticket is always a separate command.
 
 Run `kitchen --help` for the current flags and `kitchen roles` for the available cook roles, and prefer those over anything remembered. This file lists no flags on purpose: that list is what drifts.
 
-If `$AGENT_SESSION` is set you are already the sous of a running kitchen — do not run `kitchen open`. If it is not set, a human opens the kitchen.
+If `$AGENT_KITCHEN` is set you are already inside a running kitchen — do not run `kitchen open`. If it is not set, a human opens the kitchen. (`$AGENT_SESSION` is the pre-#17 spelling and is no longer exported; keying off it never fires.)
