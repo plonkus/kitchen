@@ -20,7 +20,7 @@ from claude_kitchen.state import (
     MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
-from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window
+from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window, check_sous_pid
 
 _PKG_DIR = Path(__file__).parent
 
@@ -398,6 +398,12 @@ def cmd_open(args):
             f"kitchen '{requested}' predates namespacing; consider close+reopen "
             f"as '{namespaced(project, requested)}' to align with the new convention."
         )
+
+    # Before ANY mutation. Everything below this line writes: kitchen.json, the
+    # MCP config, the tmux session — and on the has_session branch _sweep_cooks,
+    # which deletes cook records. A duplicate open must be a no-op, not a
+    # half-applied one that aborts at the end.
+    check_sous_pid(base)
 
     resuming = kitchen_file.exists()
 

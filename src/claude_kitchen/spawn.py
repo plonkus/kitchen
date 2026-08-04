@@ -9,8 +9,13 @@ from claude_kitchen.tmux import tmux, has_session, target, SESSION
 from claude_kitchen.state import MCP_CONFIG_NAME
 
 
-def _check_sous_pid(state_dir: Path):
-    """Exit if another sous is already running for this kitchen."""
+def check_sous_pid(state_dir: Path):
+    """Exit if another sous is already running for this kitchen.
+
+    Called at the TOP of cmd_open, not from spawn_sous: a refused open must
+    change nothing, and everything cmd_open does before launching the sous —
+    rewriting kitchen.json and the MCP config, creating the session, and on the
+    has_session branch _sweep_cooks — is a mutation."""
     pid_file = state_dir / "sous.pid"
     if pid_file.exists():
         try:
@@ -25,8 +30,6 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
                project: Path = None, slug: str = None,
                resume_session_id: str = None):
     """Replace current process with Claude as sous chef."""
-    _check_sous_pid(state_dir)
-
     # Write our PID before exec — exec preserves the PID
     (state_dir / "sous.pid").write_text(str(os.getpid()))
 

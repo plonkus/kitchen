@@ -1,6 +1,7 @@
 """Tests for the kitchen CLI."""
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -1577,6 +1578,77 @@ class TestOpenDoesNotSweepCooksItCannotSee:
             cmd_open(args)
         assert (base / "cooks" / "eng.json").read_text() == '{"status":"working"}'
         assert mock_spawn.call_args.kwargs["resume_session_id"] == "sid-1"
+
+
+class TestSecondOpenIsANoOp:
+    """`kitchen open` on a kitchen whose sous is already running must change
+    NOTHING. The guard lives in spawn_sous, which is the last statement of
+    cmd_open, so a duplicate open used to rewrite kitchen.json and
+    kitchen-mcp.json and stand up a whole tmux server before aborting with
+    "Sous chef already running".
+
+    The hazard is the has_session TRUE branch: there the same pre-guard path
+    runs _sweep_cooks, so a duplicate open could delete the records of cooks
+    that are alive on a different tmux server — the trap that had to be
+    hand-repaired on two kitchens. An aborted command must not mutate."""
+
+    @patch("claude_kitchen.spawn.os.execvp")
+    def _run_second_open(self, has_session_value, mock_exec, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        base = tmp_path / ".claude-kitchen" / "widget"
+        (base / "cooks").mkdir(parents=True)
+
+        kitchen_json = base / "kitchen.json"
+        mcp_json = base / "kitchen-mcp.json"
+        cook_json = base / "cooks" / "eng.json"
+        # indent=2 so cmd_open's compact rewrite is detectable byte-wise; a
+        # re-serialised identical dict would otherwise compare equal.
+        kitchen_json.write_text(json.dumps(
+            {"source": str(project), "slug": "widget", "sous_session_id": "sid-1"},
+            indent=2) + "\n")
+        mcp_json.write_text('{"sentinel": "untouched"}\n')
+        cook_json.write_text('{"status":"working"}')
+        # A sous that is genuinely alive — os.kill(pid, 0) succeeds on us.
+        (base / "sous.pid").write_text(str(os.getpid()))
+
+        before = (kitchen_json.read_text(), mcp_json.read_text(), cook_json.read_text())
+
+        args = MagicMock(project=str(project), resume=False, sub_sous=False,
+                         worktree_path=None)
+        args.name = "widget"
+        with patch("claude_kitchen.cli.has_session", return_value=has_session_value), \
+             patch("claude_kitchen.cli.tmux") as mock_tmux, \
+             patch("claude_kitchen.cli.project_slug", return_value="widget"), \
+             patch("claude_kitchen.cli.namespaced", return_value="widget"), \
+             patch("claude_kitchen.cli._sweep_cooks") as mock_sweep:
+            mock_tmux.return_value = MagicMock(returncode=0)
+            with pytest.raises(SystemExit) as exc:
+                cmd_open(args)
+
+        after = (kitchen_json.read_text(), mcp_json.read_text(), cook_json.read_text())
+        return before, after, mock_tmux, mock_sweep, mock_exec, exc
+
+    def test_second_open_writes_nothing_and_creates_no_server(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        before, after, mock_tmux, mock_sweep, mock_exec, exc = \
+            self._run_second_open(False, tmp_path=tmp_path)
+
+        assert "already running" in str(exc.value)
+        assert after == before, "a refused open must not rewrite kitchen state"
+        mock_tmux.assert_not_called(), "a refused open must not create a tmux server"
+        mock_exec.assert_not_called()
+
+    def test_second_open_does_not_sweep_cook_records(self, tmp_path, monkeypatch):
+        """The dangerous branch: session reachable, so the pre-guard path would
+        have reached _sweep_cooks."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        before, after, mock_tmux, mock_sweep, mock_exec, exc = \
+            self._run_second_open(True, tmp_path=tmp_path)
+
+        assert "already running" in str(exc.value)
+        mock_sweep.assert_not_called(), "a refused open must never sweep cook records"
+        assert after == before
 
 
 class TestCmdClose:
