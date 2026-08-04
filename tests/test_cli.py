@@ -1115,6 +1115,71 @@ class TestRequireSous:
         _require_sous("open", argparse.Namespace(nested=True))
 
 
+class TestCallerGuardAtCommandLevel:
+    """The guard as the commands actually see it: a real Namespace with
+    nested=False, not a MagicMock whose every attribute is truthy."""
+
+    @patch("claude_kitchen.cli.spawn_sous")
+    @patch("claude_kitchen.cli.create_worktree")
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_project")
+    @patch("claude_kitchen.cli.state_dir")
+    def test_open_refuses_a_cook_and_mutates_nothing(
+        self, mock_state, mock_resolve, mock_tmux, mock_wt, mock_spawn, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("AGENT_NAME", "eng")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_state.return_value = tmp_path
+        args = argparse.Namespace(name="risotto", project="/tmp/myproject", worktree_path=None,
+                                  resume=False, sub_sous=False, nested=False)
+
+        with pytest.raises(SystemExit, match="AGENT_NAME=eng.*--nested"):
+            cmd_open(args)
+
+        # The guard sits above every writer, so the refusal leaves no kitchen
+        # state, no MCP config, no worktree, no tmux session, no sous.
+        assert list(tmp_path.iterdir()) == []
+        for m in (mock_resolve, mock_tmux, mock_wt, mock_spawn):
+            m.assert_not_called()
+
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_hire_refuses_a_cook_and_spawns_nothing(
+        self, mock_rk, mock_state, mock_rp, mock_spawn, mock_wait, mock_send, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("AGENT_NAME", "eng")
+        mock_state.return_value = tmp_path
+        with pytest.raises(SystemExit, match="AGENT_NAME=eng.*--nested"):
+            cmd_hire(self._hire_args(nested=False))
+
+        assert not (tmp_path / "cooks").exists()  # no booting status written
+        mock_spawn.assert_not_called()
+
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_hire_with_nested_hires(
+        self, mock_rk, mock_state, mock_rp, mock_spawn, mock_wait, mock_send, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("AGENT_NAME", "eng")
+        mock_state.return_value = tmp_path
+        cmd_hire(self._hire_args(nested=True))
+        mock_spawn.assert_called_once()
+
+    @staticmethod
+    def _hire_args(nested):
+        return argparse.Namespace(name="probe", kitchen="risotto", backend="claude", project=None,
+                                  role=None, effort=None, clean_room=False, with_skill=[],
+                                  model=None, nested=nested)
+
+
 class TestCmdHireFailures:
     @patch("claude_kitchen.cli.send_keys")
     @patch("claude_kitchen.cli.wait_for_prompt", return_value=False)
