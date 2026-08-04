@@ -16,4 +16,4 @@ Hiring carries no task — the ticket is always a separate command.
 
 Run `kitchen --help` for the current flags and `kitchen roles` for the available cook roles, and prefer those over anything remembered. This file lists no flags on purpose: that list is what drifts.
 
-If `$AGENT_KITCHEN` is set you are already inside a running kitchen — do not run `kitchen open`. If it is not set, a human opens the kitchen. (`$AGENT_SESSION` is the pre-#17 spelling and is no longer exported; keying off it never fires.)
+`$AGENT_KITCHEN` is the only signal that you are inside a kitchen — cooks are given no kitchen MCP tools, so reasoning from their absence gets you a confident wrong answer. Set, and `$AGENT_NAME` is anything but `sous`: you are a cook in a running kitchen — do the work in your ticket and report back, and do not hire, clock out or open. Set, and `$AGENT_NAME` is `sous`: the kitchen is already open, so don't reopen it. Unset: a human opens the kitchen. (`$AGENT_SESSION` is the pre-#17 spelling and is no longer exported; keying off it never fires.)
