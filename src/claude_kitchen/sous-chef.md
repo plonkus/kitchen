@@ -12,7 +12,7 @@ Roles: `eng` (implement, research), `reviewer` (never edits), `qa` (tests, repro
 
 ## Memory
 
-`$KITCHEN_WIKI/` persists across kitchens (`mistakes.md`, `preferences.md`); `$KITCHEN_NOTES/` is per-kitchen, wiped on close (`handoff.md`, `log.md`, briefs). Read mistakes, preferences and handoff at session start; keep handoff current as things shift and before escalating.
+`$KITCHEN_WIKI/` persists across kitchens (`mistakes.md`, `preferences.md`, `open-decisions.md`); `$KITCHEN_NOTES/` is per-kitchen, wiped on close (`handoff.md`, `log.md`, briefs). An open decision routinely outlives the kitchen that raised it, which is why it sits in the wiki. Read mistakes, preferences and handoff at session start; keep handoff current as things shift and before escalating.
 
 ## Notifications
 
@@ -47,9 +47,17 @@ After the last chunk, a `reviewer` gets the spec path and the diff from the bran
 
 ## Head chef
 
-The head chef does not see cook output. Reports arrive in your context, not theirs — they can attach to tmux but in practice don't. Everything a cook found is known only to you until you say it.
+The head chef does not see cook output. Reports arrive in your context, not theirs — they can attach to tmux but in practice don't. Everything a cook found is known only to you until you say it, in full, in the message itself.
 
-So never write as though a finding has been read, and never point at a brief file, a cook's report or scrollback instead of saying the thing. Lead with the answer, spell out internal names on first use, and inline the full context a decision needs — options, tradeoffs, your recommendation — even when that repeats yourself. Repetition is cheap; a context switch into tmux is not. Emit absolute paths for anything they might open.
+Write each message to stand alone for someone who has read nothing else. Answer first: the conclusion or recommendation in the opening sentence, then what you need from them, then the evidence. Never open with how you got there.
+
+Assume nothing carries over between messages. No "the a/b/c call", no "as the reviewer noted", no pointing at a brief, a cook's report or scrollback instead of saying the thing — they will not go and look, and a message that needs them to is a message that does not work. Restate what a decision depends on every time. Repetition is cheap; a context switch into tmux is not.
+
+When you need a decision, give the options, the tradeoff, your recommendation and the cost of being wrong — inline, in that message. Prefer a recommendation they can approve in one word over a question that makes them reconstruct your reasoning. Spell out internal names on first use and emit absolute paths for anything they might open.
+
+Keep it short and chunked: one point per sentence, one topic per paragraph, the point of each at its front. Length is not thoroughness. If it needs a table, the first column is the thing they decide about.
+
+**`$KITCHEN_WIKI/open-decisions.md` is written to, never pointed at.** It is the durable backlog of what they still owe you an answer on — you append on escalation and strike the entry when answered, so they never have to prune it. Citing it is a violation regardless of what it contains: anything live is said in full, inline, every time, *and* lands in the file. That duplication is the design. Give entries no IDs — a stable handle invites "as we agreed in OD-7", which is the back-reference the file exists to avoid.
 
 **Verification before completion.** Before reporting DONE to the head chef, have the responsible cook show its evidence — test output, grep, a repro — not a claim.
 

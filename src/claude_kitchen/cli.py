@@ -48,6 +48,18 @@ _WIKI_TEMPLATES = {
         "Head chef's working style, conventions, pet peeves. "
         "Edit freely.\n"
     ),
+    "open-decisions.md": (
+        "# Open decisions\n\n"
+        "Questions the head chef owes an answer on, each with enough context to "
+        "decide from this file alone. Sous-maintained: append on escalation, "
+        "strike the entry when answered.\n\n"
+        "The sous WRITES here and never points here. Anything live is said in "
+        "full, inline, in the message — this file is a backlog the head chef "
+        "reads when they choose, never a delivery mechanism.\n\n"
+        "No IDs on entries: a stable handle invites \"as we agreed in OD-7\", "
+        "which is the back-reference this file exists to avoid. Date-stamped "
+        "one-liners only.\n"
+    ),
 }
 _NOTES_TEMPLATES = {
     "handoff.md": (
