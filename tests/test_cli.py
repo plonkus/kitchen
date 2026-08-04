@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary, _require_sous
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION
 
@@ -1090,6 +1090,29 @@ class TestResolveKitchenProbe:
     def test_no_probe_outside_project_root(self, mock_cwd):
         with patch("claude_kitchen.cli.has_session", return_value=False):
             assert resolve_kitchen("foo") == "foo"
+
+
+class TestRequireSous:
+    """The caller guard on hire/open. A sub-sous exports AGENT_NAME=sous exactly
+    like a top-level sous (spawn.py:40 / spawn.py:225), so the sous case covers
+    both with no special case."""
+
+    @pytest.mark.parametrize("agent_name", ["sous", None])
+    def test_sous_and_bare_terminal_pass(self, monkeypatch, agent_name):
+        if agent_name:
+            monkeypatch.setenv("AGENT_NAME", agent_name)
+        else:
+            monkeypatch.delenv("AGENT_NAME", raising=False)
+        _require_sous("hire", argparse.Namespace(nested=False))
+
+    def test_cook_is_refused_naming_itself_and_the_flag(self, monkeypatch):
+        monkeypatch.setenv("AGENT_NAME", "eng")
+        with pytest.raises(SystemExit, match="AGENT_NAME=eng.*--nested"):
+            _require_sous("hire", argparse.Namespace(nested=False))
+
+    def test_cook_with_nested_passes(self, monkeypatch):
+        monkeypatch.setenv("AGENT_NAME", "eng")
+        _require_sous("open", argparse.Namespace(nested=True))
 
 
 class TestCmdHireFailures:

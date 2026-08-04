@@ -128,6 +128,23 @@ def resolve_project(project: str) -> Path:
     sys.exit(f"Project path does not resolve to a directory: {project}")
 
 
+def _require_sous(command: str, args):
+    """Refuse `hire`/`open` from a cook — the brigade is the sous's to change.
+
+    A cook window exports AGENT_NAME=<cook> (spawn.build_shell_cmd); every sous,
+    top-level or sub-sous, exports AGENT_NAME=sous (spawn.spawn_sous /
+    spawn_sous_window), and a human terminal exports nothing at all — both pass.
+    `--nested` is the explicit opt-in for the legitimate cook case (backend boot
+    tests); the sous puts it in the ticket when it means it."""
+    name = os.environ.get("AGENT_NAME", "")
+    if name and name != "sous" and not args.nested:
+        sys.exit(
+            f"kitchen {command}: refused — AGENT_NAME={name} is a cook, and cooks "
+            f"don't {command}. Report BLOCKED to the sous; if the sous meant it, "
+            f"it re-tickets with --nested."
+        )
+
+
 def create_worktree(project: Path, name: str, worktree_path: Path = None) -> Path:
     """Create a git worktree. Defaults to a sibling directory of the project."""
 
@@ -388,6 +405,7 @@ def _abort_sub_sous(name: str, base: Path, kj: dict):
 
 
 def cmd_open(args):
+    _require_sous("open", args)
     project = resolve_project(args.project)
     requested = args.name or project.name
     # Namespace the kitchen by project slug so kitchens for different projects
@@ -596,6 +614,8 @@ def cmd_hire(args):
     backend = args.backend
     cwd = args.project or os.getcwd()
     cwd = str(resolve_project(cwd))
+
+    _require_sous("hire", args)
 
     clean_room = getattr(args, "clean_room", False)
     # Clean-room isolation supports claude + codex. Gemini isolation is a
@@ -1370,10 +1390,12 @@ def main():
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
+    p_open.add_argument("--nested", action="store_true", help="Allow a cook (AGENT_NAME set and not 'sous') to run this command. Off by default: opening a kitchen is the sous's job.")
     p_open.add_argument("--sub-sous", action="store_true", help="Launch the sous inside the new kitchen's own tmux session (window 'sous'), not this terminal — for a parent sous spinning up a child kitchen. Fresh opens only.")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
     p_hire.add_argument("name", help="Cook name")
+    p_hire.add_argument("--nested", action="store_true", help="Allow a cook (AGENT_NAME set and not 'sous') to run this command. Off by default: hiring is the sous's job. For legitimate cases like backend boot tests.")
     p_hire.add_argument("--backend", default="claude", choices=["claude", "codex", "gemini"])
     p_hire.add_argument("--kitchen", help="Target kitchen")
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
