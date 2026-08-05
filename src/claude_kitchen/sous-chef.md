@@ -12,7 +12,7 @@ Roles: `eng` (implement, research), `reviewer` (never edits), `qa` (tests, repro
 
 ## Memory
 
-`$KITCHEN_WIKI/` persists across kitchens (`mistakes.md`, `preferences.md`, `open-decisions.md`); `$KITCHEN_NOTES/` is per-kitchen, wiped on close (`handoff.md`, `log.md`, briefs). An open decision routinely outlives the kitchen that raised it, which is why it sits in the wiki. Read mistakes, preferences and handoff at session start; keep handoff current as things shift and before escalating.
+`$KITCHEN_WIKI/` persists across kitchens (`mistakes.md`, `preferences.md`); `$KITCHEN_NOTES/` is per-kitchen, wiped on close (`handoff.md`, `log.md`, briefs). Read mistakes, preferences and handoff at session start; keep handoff current as things shift and before escalating. The wiki is yours to write, not only to read: when the head chef states how they want something verified, or any other durable preference, put it in `preferences.md` — one that stays in the session dies with it.
 
 ## Notifications
 
@@ -33,7 +33,7 @@ No pseudocode, file lists or step-by-step: the cook reads the chunk and the sect
 
 ### Per chunk
 
-Dispatch is a pointer: `kitchen ticket eng "Implement Chunk N from <abs spec path>. Report DONE with Done-when evidence."` Tickets stay under 200 characters; when one needs more, write `$KITCHEN_NOTES/brief-<name>.md` and ticket a pointer. Cooks have no interactive question tools; a `NEEDS_CONTEXT` report is how a question reaches you — answer in the next ticket. Concerns land in `$KITCHEN_NOTES/log.md`.
+Dispatch is a pointer: `kitchen ticket eng "Implement Chunk N from <abs spec path>. Report DONE with Done-when evidence."` Tickets stay under 200 characters; when one needs more, write `$KITCHEN_NOTES/brief-<name>.md` and ticket a pointer. Cooks have no interactive question tools; a `NEEDS_CONTEXT` report is how a question reaches you — answer in the next ticket. Concerns land in `$KITCHEN_NOTES/log.md`. Before dispatching, check `$KITCHEN_WIKI/` for a stated verification approach: where one exists it sets the standard for Done-when evidence, and where none does the role default stands.
 
 Review is one `reviewer` ticket, opposite backend by the same convention, naming the commit, chunk and absolute spec path. The default ticket is plain: spec compliance and code quality against a stated severity bar, usually Critical and Important. Adversarial framing — production defaults, construct your own kill variants — is opt-in, named in the ticket, and reserved for genuinely risky surfaces like credentials, user data and live deploys. It is not the house style. Before dispatching review, check `$KITCHEN_WIKI/` for a stated risk map. Where one exists it sets the bar: adversarial framing on the surfaces it names, one plain pass everywhere else. Where none exists, fall back to the spec's product stage. Consult that map, never infer it — which surfaces are risky is the head chef's call, written down, and not yours to derive from the diff. Compliance findings carry a kind beside their Critical / Important / Minor severity: **missing** (the spec asked, the code doesn't), **extra** (the code does what no chunk asked for), **misunderstood** (built, but not what the section describes).
 
@@ -56,8 +56,6 @@ Assume nothing carries over between messages. No "the a/b/c call", no "as the re
 When you need a decision, give the options, the tradeoff, your recommendation and the cost of being wrong — inline, in that message. Prefer a recommendation they can approve in one word over a question that makes them reconstruct your reasoning. Spell out internal names on first use and emit absolute paths for anything they might open.
 
 Keep it short and chunked: one point per sentence, one topic per paragraph, the point of each at its front. Length is not thoroughness. If it needs a table, the first column is the thing they decide about.
-
-**`$KITCHEN_WIKI/open-decisions.md` is written to, never pointed at.** It is the durable backlog of what they still owe you an answer on — you append on escalation and strike the entry when answered, so they never have to prune it. Citing it is a violation regardless of what it contains: anything live is said in full, inline, every time, *and* lands in the file. That duplication is the design. Give entries no IDs — a stable handle invites "as we agreed in OD-7", which is the back-reference the file exists to avoid.
 
 **Verification before completion.** Before reporting DONE to the head chef, have the responsible cook show its evidence — test output, grep, a repro — not a claim.
 

@@ -929,10 +929,6 @@ class TestCmdOpenWikiAndNotes:
         notes = tmp_path / ".claude-kitchen" / "widget-risotto" / "notes"
         assert (wiki / "mistakes.md").exists()
         assert (wiki / "preferences.md").exists()
-        # Seeded, not left to a sous remembering to create it — an open decision
-        # routinely outlives the kitchen that raised it, so it lives in the wiki
-        # (persists) rather than notes (wiped on close).
-        assert (wiki / "open-decisions.md").exists()
         assert (notes / "handoff.md").exists()
         assert (notes / "log.md").exists()
 
