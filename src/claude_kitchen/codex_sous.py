@@ -38,6 +38,11 @@ BRIDGE_WINDOW = "_bridge"
 # Both windows are `_`-prefixed so `kitchen brigade` hides them, and both live in
 # the kitchen's own tmux session so `kitchen close` kills them with the session.
 
+# The only notifications anything here waits on. A subscribed connection also
+# streams reasoning/message/tool-output deltas by the hundred per turn; keeping
+# them would grow a long-lived client's buffer without bound for no reader.
+_LIFECYCLE = ("turn/started", "turn/completed")
+
 
 class Client:
     """One websocket JSON-RPC session against the app-server.
@@ -59,21 +64,19 @@ class Client:
             msg = json.loads(raw)
             if "id" in msg and ("result" in msg or "error" in msg):
                 self._resp[msg["id"]] = msg
-            else:
+            elif msg.get("method") in _LIFECYCLE:
                 self.notes.append(msg)
 
-    async def wait_note(self, method: str, timeout: float = 300):
-        """Block until a notification with this method arrives; return its params."""
-        seen = 0
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            while seen < len(self.notes):
-                note = self.notes[seen]
-                seen += 1
-                if note.get("method") == method:
-                    return note.get("params", {})
-            await asyncio.sleep(0.05)
-        raise TimeoutError(f"no {method} notification within {timeout}s")
+    def _check_alive(self):
+        """Surface a dead reader NOW rather than after a caller's timeout.
+
+        Without this, a closed socket looks exactly like a slow server: the
+        response never arrives and every call blocks for its full timeout —
+        two silent minutes per cook report, in a tmux window nobody is watching.
+        """
+        if self._rx.done():
+            self._rx.result()  # re-raises whatever killed the reader
+            raise ConnectionError("app-server closed the connection")
 
     async def call(self, method: str, params: dict = None, timeout: float = 120):
         self._id += 1
@@ -88,8 +91,32 @@ class Client:
                 if "error" in msg:
                     raise RuntimeError(f"{method} failed: {msg['error']}")
                 return msg["result"]
+            self._check_alive()
             await asyncio.sleep(0.02)
         raise TimeoutError(f"{method} timed out after {timeout}s")
+
+    async def wait_note(self, method: str, turn_id: str = None,
+                        timeout: float = 300):
+        """Block until a matching notification arrives; return its params.
+
+        `turn_id` matters: the sous's thread can have more than one turn in
+        flight, so "some turn finished" is not "MY turn finished".
+        """
+        seen = 0
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            while seen < len(self.notes):
+                note = self.notes[seen]
+                seen += 1
+                params = note.get("params", {})
+                if note.get("method") != method:
+                    continue
+                if turn_id and params.get("turn", {}).get("id") != turn_id:
+                    continue
+                return params
+            self._check_alive()
+            await asyncio.sleep(0.05)
+        raise TimeoutError(f"no {method} notification within {timeout}s")
 
     @classmethod
     async def connect(cls, port: int):
@@ -115,19 +142,14 @@ def _free_port() -> int:
     return port
 
 
-def start_app_server(kitchen: str, base: Path, slug: str = None,
-                     timeout: int = 60) -> int:
-    """Launch the app-server in its own tmux window and return its port.
+def _app_server_window(kitchen: str, base: Path, slug: str = None) -> int:
+    """Launch the app-server in its own tmux window. Returns its port.
 
     The kitchen env goes HERE, not on the TUI. A claude sous runs its own tool
     calls, so exporting AGENT_KITCHEN around it is enough; a codex sous does
     not — the TUI is a viewer and every shell command the sous runs is executed
     by the app-server process. Set it on the TUI instead and the sous's first
     `kitchen ticket` answers "No active kitchens."
-
-    Readiness is a successful `initialize`, not a TCP connect: the listener is
-    up well before the server will answer, and cmd_open's very next move is
-    thread/start.
     """
     port = _free_port()
     q = shlex.quote
@@ -143,111 +165,92 @@ def start_app_server(kitchen: str, base: Path, slug: str = None,
     if r.returncode != 0:
         sys.exit(f"could not launch the codex app-server window on port {port}: "
                  f"{r.stderr.strip()}")
-
-    async def wait():
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                c = await Client.connect(port)
-            except (OSError, websockets.exceptions.WebSocketException):
-                await asyncio.sleep(0.3)
-                continue
-            await c.close()
-            return True
-        return False
-
-    if not asyncio.run(wait()):
-        sys.exit(f"codex app-server never answered on port {port} (window "
-                 f"{APP_SERVER_WINDOW} has the log)")
     return port
 
 
-def create_sous_thread(port: int, sous_prompt: str, cwd: Path) -> str:
-    """Create the sous's thread and seed it with one throwaway turn.
+async def _connect_when_ready(port: int, timeout: int = 60) -> Client:
+    """Readiness is a successful `initialize`, not a TCP connect: the listener
+    is up well before the server will answer."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            return await Client.connect(port)
+        except (OSError, websockets.exceptions.WebSocketException):
+            await asyncio.sleep(0.3)
+    raise TimeoutError(f"codex app-server never answered on port {port}")
+
+
+def bootstrap(kitchen: str, base: Path, sous_prompt: str, project: Path,
+              slug: str = None) -> tuple[int, str]:
+    """Stand the sous's app-server and thread up. Returns (port, thread_id).
+
+    One owner for the whole startup — one window, one event loop, one
+    connection — so that a failure anywhere in it tears the app-server window
+    back down instead of leaving an orphan behind a half-open kitchen.
 
     The seed turn is load-bearing, not a smoke test: a thread with zero turns
     has no rollout file on disk, and `codex … resume <id>` fails with "no
     rollout found for thread id". So the thread must speak once before the TUI
-    can attach to it.
+    can attach to it — and it must speak SUCCESSFULLY, or the sous the head
+    chef is about to be handed is already broken.
     """
+    port = _app_server_window(kitchen, base, slug)
+
     async def go():
-        c = await Client.connect(port)
+        c = await _connect_when_ready(port)
         thread = (await c.call("thread/start", {
-            "cwd": str(cwd),
+            "cwd": str(project),
             "developerInstructions": sous_prompt,
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
         }))["thread"]
-        await c.call("turn/start", {
+        turn = (await c.call("turn/start", {
             "threadId": thread["id"],
             "input": [{"type": "text",
                        "text": "You are booting. Reply with one short line "
                                "(\"Ready, chef.\") and wait.",
                        "text_elements": []}],
-        })
-        await c.wait_note("turn/completed")
+        }))["turn"]
+        done = await c.wait_note("turn/completed", turn_id=turn["id"])
+        status = done["turn"]["status"]
+        if status != "completed":
+            raise RuntimeError(
+                f"the sous's first turn ended {status}: {done['turn'].get('error')}"
+            )
         await c.close()
         return thread["id"]
 
-    return asyncio.run(go())
+    try:
+        return port, asyncio.run(go())
+    except Exception as e:
+        tmux("kill-window", "-t", target(APP_SERVER_WINDOW), kitchen=kitchen)
+        sys.exit(f"codex sous failed to start: {e}")
 
 
-class Sous:
-    """The bridge's live handle on the sous's thread.
+async def push(port: int, thread_id: str, text: str):
+    """Deliver one cook report into the sous's thread.
 
-    One long-lived connection, not a fresh one per report, because knowing
-    whether the sous is mid-turn requires being SUBSCRIBED: a connection that
-    merely opened the socket sees nothing (verified — it receives only
-    thread/status/changed), while one that has called thread/resume receives
-    turn/started and turn/completed for turns any other client — including the
-    human's TUI — starts. Asking the thread instead of listening is not an
-    option: thread/read reconstructs turns from the rollout on disk, which lags
-    the turn in progress.
+    Always `turn/start`, never `turn/steer`. An idle sous starts a turn on the
+    report — the whole point. A BUSY sous queues it and runs it when the current
+    turn ends (verified against app-server 0.147.0: turn/start on a thread with
+    a turn in flight returns a new turn in `inProgress` and it runs afterwards).
+    Steering the in-flight turn instead would deliver a report a few seconds
+    sooner and cost a race — the expected turn can complete between reading its
+    id and sending the steer, and app-server rejects a steer whose expectedTurnId
+    is no longer running, which drops the report on the floor.
+
+    A connection per report, rather than one held open for the kitchen's life:
+    nothing here needs to be subscribed any more, and a socket that is opened
+    when it is used cannot go quietly stale between cooks.
     """
-
-    def __init__(self, client: Client, thread_id: str):
-        self.c = client
-        self.thread_id = thread_id
-        self._seen = 0
-        self._turn = None
-
-    @classmethod
-    async def attach(cls, port: int, thread_id: str):
-        c = await Client.connect(port)
-        # Subscribes this connection to the thread's notifications. The TUI
-        # rejoins the same thread the same way; they coexist.
-        await c.call("thread/resume", {"threadId": thread_id})
-        return cls(c, thread_id)
-
-    def in_flight_turn(self):
-        """Id of the turn the sous is running right now, or None if it's idle."""
-        while self._seen < len(self.c.notes):
-            note = self.c.notes[self._seen]
-            self._seen += 1
-            if note.get("method") == "turn/started":
-                self._turn = note["params"]["turn"]["id"]
-            elif note.get("method") == "turn/completed":
-                self._turn = None
-        return self._turn
-
-    async def push(self, text: str):
-        """Deliver one cook report into the sous's thread.
-
-        Idle sous → turn/start, which is the whole point: the report arrives as
-        a turn and the sous acts on it, unprompted. Sous mid-turn → turn/steer,
-        which folds the report into the turn already running. turn/start would
-        also work there (it queues), but a sous mid-thought about cook A should
-        hear about cook B now, not after it finishes.
-        """
-        item = [{"type": "text", "text": text, "text_elements": []}]
-        turn_id = self.in_flight_turn()
-        if turn_id:
-            await self.c.call("turn/steer", {"threadId": self.thread_id,
-                                             "expectedTurnId": turn_id,
-                                             "input": item})
-        else:
-            await self.c.call("turn/start", {"threadId": self.thread_id,
-                                             "input": item})
+    c = await Client.connect(port)
+    try:
+        await c.call("turn/start", {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": text, "text_elements": []}],
+        })
+    finally:
+        await c.close()
 
 
 def _format(data: dict) -> str:
@@ -268,10 +271,9 @@ async def run_bridge(kitchen: str):
     port, thread_id = kj["codex_ws_port"], kj["codex_thread_id"]
     sock_path = base / SOCK_NAME
     _claim_socket(sock_path)
-    sous = await Sous.attach(port, thread_id)
 
     async def notify(data: dict):
-        await sous.push(_format(data))
+        await push(port, thread_id, _format(data))
 
     server = await asyncio.start_unix_server(
         lambda r, w: handle_connection(r, w, notify), path=str(sock_path)

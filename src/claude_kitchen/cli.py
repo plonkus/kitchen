@@ -423,6 +423,23 @@ def cmd_open(args):
 
     resuming = kitchen_file.exists()
 
+    # A kitchen's backend is fixed at open. Reopening one under the OTHER
+    # backend does not switch it, it runs both halves at once: the codex
+    # `_bridge` window is still alive and still owns kitchen.sock, so the
+    # claude channel-server stands down (see channel._claim_socket) and every
+    # cook report keeps going to the dead codex thread while the claude sous
+    # sits there hearing nothing. Refuse instead. Kitchens opened before
+    # --backend existed have no stored value and are claude by construction.
+    if resuming:
+        stored = json.loads(kitchen_file.read_text()).get("backend", "claude")
+        if stored != args.backend:
+            sys.exit(
+                f"Kitchen \"{name}\" was opened with --backend {stored}; "
+                f"reopening it as {args.backend} would leave both channels "
+                f"wired up. Reopen it with --backend {stored}, or "
+                f"`kitchen close {name}` first."
+            )
+
     # --sub-sous is fresh-open only (POC v0): it stands up a brand-new child
     # kitchen with the sous living in that kitchen's own tmux session. Resume
     # and reattach paths assume the execvp sous in the caller's terminal, so
@@ -538,12 +555,10 @@ def cmd_open(args):
         #
         # Imported here, not at module scope: this is the only path that needs
         # websockets, and `kitchen hook` runs on every cook turn.
-        from claude_kitchen.codex_sous import (
-            create_sous_thread, start_app_server, start_bridge,
-        )
+        from claude_kitchen.codex_sous import bootstrap, start_bridge
         print("   codex sous: starting app-server and seeding the thread…")
-        port = start_app_server(name, base, slug)
-        thread_id = create_sous_thread(port, sous_md.read_text(), project)
+        port, thread_id = bootstrap(name, base, sous_md.read_text(), project,
+                                    slug=slug)
         kj = json.loads(kitchen_file.read_text())
         kj.update(backend="codex", codex_ws_port=port, codex_thread_id=thread_id)
         kitchen_file.write_text(json.dumps(kj) + "\n")
