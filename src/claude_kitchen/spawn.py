@@ -65,6 +65,36 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     os.execvp("claude", claude_args)
 
 
+def spawn_codex_sous(kitchen: str, state_dir: Path, port: int, thread_id: str,
+                     project: Path = None, slug: str = None):
+    """Replace current process with Codex as sous chef.
+
+    The claude analogue (spawn_sous) hands Claude its prompt and its channel
+    MCP server on the command line. Neither has a codex equivalent, so both
+    already happened before this call: cmd_open created the thread with the
+    prompt as developerInstructions, and the codex-channel bridge owns the
+    socket. All that is left is attaching a TUI to that thread — `resume`
+    rejoins it in place, since the app-server already has it loaded."""
+    _check_sous_pid(state_dir)
+    (state_dir / "sous.pid").write_text(str(os.getpid()))
+
+    os.environ["AGENT_KITCHEN"] = kitchen
+    os.environ["AGENT_NAME"] = "sous"
+    os.environ["STATUS_DIR"] = str(state_dir)
+    if slug:
+        from claude_kitchen.state import wiki_dir, notes_dir
+        os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
+        os.environ["KITCHEN_NOTES"] = str(notes_dir(kitchen))
+
+    if project:
+        os.chdir(project)
+    # No --dangerously-bypass-approvals-and-sandbox: approvals and sandbox are
+    # properties of the THREAD here, set once at thread/start. A codex cook
+    # passes the flag because it owns its own session.
+    os.execvp("codex", ["codex", "--remote", f"ws://127.0.0.1:{port}",
+                        "resume", thread_id])
+
+
 # Kitchen passes --effort through to each backend's native scale, aliasing
 # only what that backend doesn't take literally. Verified 2026-07-17:
 # Claude 2.1.214: low | medium | high | xhigh | max

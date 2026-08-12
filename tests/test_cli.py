@@ -722,6 +722,7 @@ class TestCmdOpen:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         cmd_open(args)
 
@@ -770,6 +771,7 @@ class TestCmdOpen:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         cmd_open(args)
 
@@ -849,6 +851,7 @@ class TestCmdOpenNoOriginRepo:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         state = tmp_path / "state"
         (state / "cooks").mkdir(parents=True)
@@ -892,6 +895,7 @@ class TestCmdOpenFailures:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
         with patch("claude_kitchen.cli._PKG_DIR", tmp_path):
             with pytest.raises(SystemExit, match="sous-chef.md not found"):
                 cmd_open(args)
@@ -921,6 +925,7 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         cmd_open(args)
 
@@ -962,6 +967,7 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         cmd_open(args)
         assert (tmp_path / ".claude-kitchen" / "projects" / "widget" / "wiki" / "mistakes.md").exists()
@@ -997,6 +1003,7 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         with pytest.raises(SystemExit, match=r"Run `kitchen close renamed-risotto` and reopen\."):
             cmd_open(args)
@@ -1041,6 +1048,7 @@ class TestCmdOpenSoftCutover:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
+        args.backend = "claude"
 
         with patch("claude_kitchen.cli.state_dir", side_effect=state_dir_for), \
              patch("claude_kitchen.cli.has_session", side_effect=has_session_for):

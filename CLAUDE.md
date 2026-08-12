@@ -1,6 +1,6 @@
 # claude-kitchen
 
-Multi-agent orchestration over tmux. A sous chef — always Claude — runs in the user's terminal, dispatching cooks (Claude, Codex or Gemini) in tmux windows; cook hooks push notifications through a unix socket into the sous's context as `<channel>` tags.
+Multi-agent orchestration over tmux. A sous chef — Claude by default, or Codex via `kitchen open --backend codex` — runs in the user's terminal, dispatching cooks (Claude, Codex or Gemini) in tmux windows; cook hooks push notifications through a unix socket into the sous's context as `<channel>` tags.
 
 ## Code style
 
@@ -17,3 +17,4 @@ These are the things that cost someone an afternoon. None are discoverable by re
 - **`server:kitchen · no MCP server configured` at startup is harmless.** A known race — the server connects fine a moment later. Do not "fix" it.
 - **Prompt injection differs by backend.** `sous-chef.md` reaches the sous via `--append-system-prompt` on `kitchen open`. Claude cooks get their role via `--append-system-prompt-file` at launch; Codex has no equivalent flag, so Codex cooks receive the role through `send_keys` as the first message after `wait_for_prompt` succeeds. A role that never arrives on a Codex cook is almost always a `wait_for_prompt` timeout, not a missing file.
 - **`AGENT_KITCHEN` carries kitchen identity, not `AGENT_SESSION`.** The tmux session name is the constant `kitchen` now, so every consumer — `resolve_kitchen`, the statusline, the hook gate — reads `AGENT_KITCHEN`. A cook missing it is mute: `_hook_gate()` returns `None` and every hook silently no-ops.
+- **A Codex sous does not use channels.** `kitchen open --backend codex` runs a `codex app-server` on a loopback ws port, creates the sous's thread with `sous-chef.md` as `developerInstructions`, and attaches the TUI with `codex --remote … resume`. The `codex-channel` bridge owns the same `kitchen.sock` and turns each cook hook line into a `turn/start` — or `turn/steer` when the sous is mid-turn.
