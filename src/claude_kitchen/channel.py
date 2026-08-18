@@ -4,6 +4,7 @@ import json
 import socket as sock_mod
 import sys
 from pathlib import Path
+from typing import get_args, get_origin
 
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
@@ -11,6 +12,62 @@ from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage, JSONRPCNotification
 
 SOCK_NAME = "kitchen.sock"
+
+# The capability that makes a sous hear anything. Claude reads it from a
+# DIFFERENT place depending on the protocol era it negotiates with us:
+# `experimental` on the handshake era (2025-11-25), `extensions` on the modern
+# era (2026-07-28, SEP-2133). Declaring only one is not an error anywhere — the
+# connection succeeds, the socket binds, cook reports arrive, and Claude
+# silently drops every notification, logging "Channel notifications skipped:
+# server did not declare claude/channel capability" where nobody looks. So
+# declare it in both, and refuse to start if the SDK grows a third place.
+CHANNEL_CAPABILITY = "claude/channel"
+
+
+def _capability_maps(capabilities) -> list[str]:
+    """Names of every free-form capability map the installed SDK exposes.
+
+    Both `experimental` and `extensions` are `dict[str, dict[str, Any]]` on
+    ServerCapabilities; the typed sub-capabilities (`tools`, `logging`, …) are
+    models. An era that moves the capability again will land as another field
+    of that same free-form shape, and this finds it without being told.
+
+    Matched structurally, not by the annotation's text: this whole outage was a
+    silent formatting assumption, and `str(annotation)` renders `Any` as
+    `typing.Any` on some versions and not others."""
+    def is_map(annotation) -> bool:
+        for arg in get_args(annotation) or (annotation,):
+            if get_origin(arg) is dict and get_args(arg)[0] is str:
+                return get_origin(get_args(arg)[1]) is dict
+        return False
+
+    return [
+        name for name, field in type(capabilities).model_fields.items()
+        if is_map(field.annotation)
+    ]
+
+
+def _refuse_if_deaf(capabilities):
+    """Exit rather than serve a connection that cannot deliver.
+
+    A server that binds the socket but cannot push is worse than no server at
+    all: it owns `kitchen.sock`, so cook hooks succeed and the sous hears
+    nothing, and the replacement that would have worked stands down because the
+    path is taken. Checked BEFORE the socket is claimed, so a deaf build dies
+    without taking the kitchen with it."""
+    missing = [
+        name for name in _capability_maps(capabilities)
+        if CHANNEL_CAPABILITY not in (getattr(capabilities, name) or {})
+    ]
+    if missing:
+        sys.exit(
+            f"kitchen channel-server: this mcp SDK carries capabilities in "
+            f"{', '.join(missing)}, where we do not advertise "
+            f"{CHANNEL_CAPABILITY}. A sous negotiating that protocol era would "
+            f"connect, bind the socket and never hear a cook. Advertise "
+            f"{CHANNEL_CAPABILITY} in {', '.join(missing)} in "
+            f"create_initialization_options (channel.py)."
+        )
 
 
 async def handle_connection(reader: asyncio.StreamReader, writer, notify):
@@ -102,13 +159,16 @@ async def run_server(kitchen: str):
     base = state_dir(kitchen)
     base.mkdir(parents=True, exist_ok=True)
     sock_path = base / SOCK_NAME
-    _claim_socket(sock_path)
 
     server = Server("kitchen")
     init_options = server.create_initialization_options(
         notification_options=NotificationOptions(),
-        experimental_capabilities={"claude/channel": {}},
+        experimental_capabilities={CHANNEL_CAPABILITY: {}},
     )
+    # Before the socket is claimed: a server that cannot deliver must not own
+    # the path the next one needs.
+    _refuse_if_deaf(init_options.capabilities)
+    _claim_socket(sock_path)
 
     # Mutable container so notify closure can access write_stream
     # after stdio_server connects.
@@ -128,7 +188,7 @@ async def run_server(kitchen: str):
             meta["ctx"] = data["ctx"]
         notification = JSONRPCNotification(
             jsonrpc="2.0",
-            method="notifications/claude/channel",
+            method=f"notifications/{CHANNEL_CAPABILITY}",
             params={"content": summary, "meta": meta},
         )
         await ws.send(SessionMessage(message=JSONRPCMessage(notification)))

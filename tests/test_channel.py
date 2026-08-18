@@ -252,3 +252,75 @@ class TestClaimSocket:
         assert sock_path.exists(), "must NOT unlink on unexpected OSError"
         err = capsys.readouterr().err
         assert "refusing to bind" in err
+
+
+class TestChannelCapabilityAdvertisement:
+    """The regression that made every kitchen one restart from deaf: mcp 2.0.0 can
+    serve the 2026-07-28 era, where Claude never receives ServerCapabilities at
+    all, so `claude/channel` is never seen and every cook report is dropped —
+    silently, with a clean connection and a bound socket.
+
+    These run against the REAL SDK, not a mock, so the next SDK move fails in CI
+    instead of in a kitchen."""
+
+    def _capabilities(self):
+        """Built exactly the way run_server builds them, against the REAL SDK."""
+        from mcp.server.lowlevel import NotificationOptions, Server
+        from claude_kitchen.channel import CHANNEL_CAPABILITY
+        server = Server("kitchen")
+        return server.create_initialization_options(
+            notification_options=NotificationOptions(),
+            experimental_capabilities={CHANNEL_CAPABILITY: {}},
+        ).capabilities
+
+    def test_advertised_in_every_place_this_sdk_carries_capabilities(self):
+        from claude_kitchen.channel import CHANNEL_CAPABILITY, _capability_maps
+        caps = self._capabilities()
+        maps = _capability_maps(caps)
+        assert maps, "the SDK exposes no free-form capability map — the shape changed"
+        for name in maps:
+            assert CHANNEL_CAPABILITY in (getattr(caps, name) or {}), (
+                f"claude/channel is missing from ServerCapabilities.{name}; a sous "
+                f"negotiating the era that reads {name} would be silently deaf"
+            )
+
+    def test_a_new_capability_map_is_a_failure_not_a_shrug(self):
+        """mcp 2.0.0 added `extensions` alongside `experimental`, and the server
+        kept advertising only `experimental`. Nothing failed — Claude just went
+        quiet. Any SDK that adds another capability map must fail here."""
+        caps = self._capabilities()
+        assert _CAP_MAPS(caps) == ["experimental"], (
+            f"this SDK carries capabilities in {_CAP_MAPS(caps)}; channel.py "
+            f"advertises claude/channel only in `experimental`"
+        )
+
+    def test_a_server_that_cannot_deliver_refuses_to_start(self):
+        from claude_kitchen.channel import _refuse_if_deaf
+        caps = self._capabilities()
+        caps.experimental = {}        # the exact shape of the outage
+        with pytest.raises(SystemExit) as e:
+            _refuse_if_deaf(caps)
+        assert "experimental" in str(e.value)
+
+    def test_refuses_before_it_claims_the_socket(self, tmp_path, monkeypatch):
+        """A deaf server must not own kitchen.sock — that is what stopped the
+        working replacement from binding during the outage."""
+        import claude_kitchen.channel as ch
+        claimed = []
+        monkeypatch.setattr(ch, "_claim_socket", lambda p, **kw: claimed.append(p))
+        monkeypatch.setattr(ch, "state_dir", lambda k: tmp_path, raising=False)
+        monkeypatch.setattr("claude_kitchen.state.state_dir", lambda k: tmp_path)
+        monkeypatch.setattr(ch, "_refuse_if_deaf", _boom)
+        with pytest.raises(SystemExit):
+            asyncio.run(ch.run_server("whatever"))
+        assert claimed == [], "the socket was claimed by a server that cannot deliver"
+        assert not (tmp_path / ch.SOCK_NAME).exists()
+
+
+def _CAP_MAPS(caps):
+    from claude_kitchen.channel import _capability_maps
+    return _capability_maps(caps)
+
+
+def _boom(_caps):
+    raise SystemExit("deaf")
