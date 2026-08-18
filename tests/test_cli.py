@@ -722,7 +722,6 @@ class TestCmdOpen:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         cmd_open(args)
 
@@ -771,7 +770,6 @@ class TestCmdOpen:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         cmd_open(args)
 
@@ -851,7 +849,6 @@ class TestCmdOpenNoOriginRepo:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         state = tmp_path / "state"
         (state / "cooks").mkdir(parents=True)
@@ -895,7 +892,6 @@ class TestCmdOpenFailures:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
         with patch("claude_kitchen.cli._PKG_DIR", tmp_path):
             with pytest.raises(SystemExit, match="sous-chef.md not found"):
                 cmd_open(args)
@@ -925,7 +921,6 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         cmd_open(args)
 
@@ -967,7 +962,6 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         cmd_open(args)
         assert (tmp_path / ".claude-kitchen" / "projects" / "widget" / "wiki" / "mistakes.md").exists()
@@ -1003,7 +997,6 @@ class TestCmdOpenWikiAndNotes:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         with pytest.raises(SystemExit, match=r"Run `kitchen close renamed-risotto` and reopen\."):
             cmd_open(args)
@@ -1048,7 +1041,6 @@ class TestCmdOpenSoftCutover:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = False
-        args.backend = "claude"
 
         with patch("claude_kitchen.cli.state_dir", side_effect=state_dir_for), \
              patch("claude_kitchen.cli.has_session", side_effect=has_session_for):
@@ -1576,7 +1568,7 @@ class TestOpenDoesNotSweepCooksItCannotSee:
         (base / "kitchen.json").write_text(json.dumps(
             {"source": str(project), "slug": "widget", "sous_session_id": "sid-1"}) + "\n")
         args = MagicMock(name_=None, project=str(project), resume=True,
-                         sub_sous=False, worktree_path=None, backend="claude")
+                         sub_sous=False, worktree_path=None)
         args.name = "widget"
         with patch("claude_kitchen.cli.has_session", return_value=False), \
              patch("claude_kitchen.cli.tmux") as mock_tmux, \
@@ -2380,7 +2372,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = True
-        args.backend = "claude"
 
         cmd_open(args)
 
@@ -2422,7 +2413,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = True
-        args.backend = "claude"
 
         cmd_open(args)
         assert mock_spawn_win.call_args.kwargs["parent_base"] is None
@@ -2443,7 +2433,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = True
-        args.backend = "claude"
         with pytest.raises(SystemExit, match="fresh-open only"):
             cmd_open(args)
 
@@ -2468,7 +2457,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = True
         args.sub_sous = True
-        args.backend = "claude"
         with pytest.raises(SystemExit, match="fresh-open only"):
             cmd_open(args)
 
@@ -2506,7 +2494,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = True
-        args.backend = "claude"
 
         with patch("claude_kitchen.cli.resolve_project", return_value=repo):
             with pytest.raises(SystemExit, match="already exists"):
@@ -2550,7 +2537,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = True
-        args.backend = "claude"
 
         with pytest.raises(SystemExit, match="cleaned up"):
             cmd_open(args)
@@ -2594,7 +2580,6 @@ class TestCmdOpenSubSous:
         args.worktree_path = None
         args.resume = False
         args.sub_sous = True
-        args.backend = "claude"
 
         with pytest.raises(SystemExit, match="never reached its prompt"):
             cmd_open(args)
