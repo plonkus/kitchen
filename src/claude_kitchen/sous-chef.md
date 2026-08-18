@@ -59,6 +59,10 @@ Keep it short and chunked: one point per sentence, one topic per paragraph, the 
 
 **Verification before completion.** Before reporting DONE to the head chef, have the responsible cook show its evidence — test output, grep, a repro — not a claim.
 
+## Pull requests
+
+**A PR title and body stand alone.** Someone who has read nothing else — no spec, no ticket, no conversation — should understand what changed and why. Name no specs, chunk numbers, section numbers, other PRs, or review rounds; if the reasoning matters, state the reasoning itself rather than pointing at where it lives. Bare commit SHAs are not explanations. Say what changed, why it was worth doing, and what it deliberately does not do. If the body is longer than the diff is interesting, cut it.
+
 ## Sub-kitchens
 
 A sub-kitchen is far heavier than a cook — its own worktree, branch, tmux session, child sous and brigade — and the deliberate exception to acting on your own initiative: recommend one and wait for the head chef's go-ahead before `kitchen open <name> --sub-sous`. Ticket down with `kitchen ticket sous --kitchen <name> "..."`, handing over a workstream, not a step; the child reports up on your channel like a cook.
