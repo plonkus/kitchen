@@ -239,8 +239,9 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
     """Build the `bash -lc` command that launches a child sous in a tmux
     window — the windowed analogue of spawn_sous's in-place execvp argv.
 
-    Two deliberate differences from a root sous (spawn_sous): NO
-    --remote-control (POC scope), and the sous prompt is delivered via
+    Three deliberate differences from a root sous (spawn_sous): NO
+    --remote-control (POC scope), --disallowedTools AskUserQuestion (nobody is
+    watching this window), and the sous prompt is delivered via
     --append-system-prompt-file (the cook role-file pattern) rather than
     --append-system-prompt, keeping the multi-line prompt out of the
     shell-quoted command string.
@@ -264,7 +265,13 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
         parts.append(f"PARENT_STATUS_DIR={q(str(parent_base))}")
     env = "export " + " ".join(parts)
     claude = (
+        # Block AskUserQuestion, same as a cook (build_shell_cmd): it renders an
+        # interactive picker in a tmux window nobody is watching and blocks
+        # forever. A sub-sous has a working escalation route — it reports UP
+        # through PARENT_STATUS_DIR — so given both paths it must take that one.
+        # The ROOT sous keeps the tool: the head chef sits in front of it.
         "exec claude --dangerously-skip-permissions "
+        "--disallowedTools AskUserQuestion "
         "--dangerously-load-development-channels server:kitchen "
         f"--mcp-config {q(str(base / MCP_CONFIG_NAME))} "
         f"--append-system-prompt-file {q(str(sous_md_path))}"
