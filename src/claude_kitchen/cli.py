@@ -20,7 +20,9 @@ from claude_kitchen.state import (
     MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
-from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window, check_sous_pid
+from claude_kitchen.spawn import (
+    spawn_window, spawn_sous, spawn_sous_window, spawn_codex_sous, check_sous_pid,
+)
 
 _PKG_DIR = Path(__file__).parent
 
@@ -376,6 +378,20 @@ def _abort_sub_sous(name: str, base: Path, kj: dict):
 
 
 def cmd_open(args):
+    # Backend is a choice, not a migration: --backend claude is the default and
+    # its path below is untouched. Reject the combinations the codex sous does
+    # not implement HERE, before cmd_open writes anything.
+    if args.backend == "codex":
+        if args.resume:
+            sys.exit(
+                "--resume is claude-only: it replays a Claude session_id captured "
+                "by the sous Stop hook. A codex sous records codex_thread_id in "
+                "kitchen.json and `codex resume` could reattach to it, but that "
+                "path is not wired yet."
+            )
+        if args.sub_sous:
+            sys.exit("--sub-sous is claude-only (prototype scope).")
+
     project = resolve_project(args.project)
     requested = args.name or project.name
     # Namespace the kitchen by project slug so kitchens for different projects
@@ -406,6 +422,23 @@ def cmd_open(args):
     check_sous_pid(base)
 
     resuming = kitchen_file.exists()
+
+    # A kitchen's backend is fixed at open. Reopening one under the OTHER
+    # backend does not switch it, it runs both halves at once: the codex
+    # `_bridge` window is still alive and still owns kitchen.sock, so the
+    # claude channel-server stands down (see channel._claim_socket) and every
+    # cook report keeps going to the dead codex thread while the claude sous
+    # sits there hearing nothing. Refuse instead. Kitchens opened before
+    # --backend existed have no stored value and are claude by construction.
+    if resuming:
+        stored = json.loads(kitchen_file.read_text()).get("backend", "claude")
+        if stored != args.backend:
+            sys.exit(
+                f"Kitchen \"{name}\" was opened with --backend {stored}; "
+                f"reopening it as {args.backend} would leave both channels "
+                f"wired up. Reopen it with --backend {stored}, or "
+                f"`kitchen close {name}` first."
+            )
 
     # --sub-sous is fresh-open only (POC v0): it stands up a brand-new child
     # kitchen with the sous living in that kitchen's own tmux session. Resume
@@ -485,15 +518,16 @@ def cmd_open(args):
         _sweep_cooks(base, name)
     else:
         tmux("new-session", "-d", "-s", SESSION, "-n", "_placeholder", kitchen=name)
-    mcp_config = {
-        "mcpServers": {
-            "kitchen": {
-                "command": "kitchen",
-                "args": ["channel-server", name],
+    if args.backend == "claude":
+        mcp_config = {
+            "mcpServers": {
+                "kitchen": {
+                    "command": "kitchen",
+                    "args": ["channel-server", name],
+                }
             }
         }
-    }
-    (base / MCP_CONFIG_NAME).write_text(json.dumps(mcp_config, indent=2) + "\n")
+        (base / MCP_CONFIG_NAME).write_text(json.dumps(mcp_config, indent=2) + "\n")
     # Self-heal kitchens opened before the rename: a legacy base/.mcp.json is
     # cook-discoverable and would still auto-spawn a channel-server.
     (base / LEGACY_MCP_CONFIG_NAME).unlink(missing_ok=True)
@@ -512,6 +546,24 @@ def cmd_open(args):
     sous_md = _PKG_DIR / "sous-chef.md"
     if not sous_md.exists():
         sys.exit(f"sous-chef.md not found at {sous_md}")
+
+    if args.backend == "codex":
+        # A codex sous is an app-server thread the TUI attaches to, so the
+        # thread exists before the sous does: the prompt rides thread/start as
+        # developerInstructions (codex has no --append-system-prompt), and the
+        # bridge needs the thread id to push cook reports at it.
+        #
+        # Imported here, not at module scope: this is the only path that needs
+        # websockets, and `kitchen hook` runs on every cook turn.
+        from claude_kitchen.codex_sous import bootstrap, start_bridge
+        print("   codex sous: starting app-server and seeding the thread…")
+        port, thread_id = bootstrap(name, base, sous_md.read_text(), project,
+                                    slug=slug)
+        kj = json.loads(kitchen_file.read_text())
+        kj.update(backend="codex", codex_ws_port=port, codex_thread_id=thread_id)
+        kitchen_file.write_text(json.dumps(kj) + "\n")
+        start_bridge(name)
+        spawn_codex_sous(name, base, port, thread_id, project, slug=slug)
 
     if args.sub_sous:
         # A parent sous's env carries STATUS_DIR=<parent base>; inherited by
@@ -1357,6 +1409,7 @@ def main():
     p_open.add_argument("name", nargs="?", default=None, help="Kitchen/worktree name (omit to use cwd without worktree)")
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
+    p_open.add_argument("--backend", default="claude", choices=["claude", "codex"], help="Which agent runs the sous chef (default: claude). A codex sous runs on a codex app-server; cook reports reach it through the codex-channel bridge instead of Claude channels.")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
     p_open.add_argument("--sub-sous", action="store_true", help="Launch the sous inside the new kitchen's own tmux session (window 'sous'), not this terminal — for a parent sous spinning up a child kitchen. Fresh opens only.")
 
@@ -1418,6 +1471,9 @@ def main():
     p_channel = sub.add_parser("channel-server", help="(internal) Run channel MCP server")
     p_channel.add_argument("kitchen", help="Kitchen name")
 
+    p_codex_channel = sub.add_parser("codex-channel", help="(internal) Run the cook→codex-sous bridge")
+    p_codex_channel.add_argument("kitchen", help="Kitchen name")
+
     args = parser.parse_args()
 
     if args.command == "open":
@@ -1451,3 +1507,6 @@ def main():
     elif args.command == "channel-server":
         from claude_kitchen.channel import main as channel_main
         channel_main(args.kitchen)
+    elif args.command == "codex-channel":
+        from claude_kitchen.codex_sous import bridge_main
+        bridge_main(args.kitchen)

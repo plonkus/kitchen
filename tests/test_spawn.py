@@ -472,6 +472,25 @@ class TestBuildSousCmd:
         assert argv[k + 1] == str(sous_md)
         assert "--append-system-prompt" not in argv  # the bare (inlining) form
 
+    def test_sub_sous_cannot_ask_an_interactive_question(self, tmp_path):
+        """A sub-sous runs in a tmux window nobody is watching, so an
+        AskUserQuestion picker blocks forever and fires no hook. It has a
+        working escalation route (it reports UP through PARENT_STATUS_DIR), and
+        given both paths a dogfood sub-sous took the blocking one — so remove
+        the tool, exactly as cooks already have it."""
+        argv = _sous_argv_from_cmd(build_sous_cmd("c", tmp_path, tmp_path / "s.md"))
+        k = argv.index("--disallowedTools")
+        assert argv[k + 1] == "AskUserQuestion"
+
+    def test_root_sous_keeps_ask_user_question(self, tmp_path, monkeypatch):
+        """The counterpart, pinned deliberately: the ROOT sous is the one the
+        head chef sits in front of, so it MUST keep the tool. Only the windowed
+        sub-sous loses it."""
+        monkeypatch.setattr(os, "execvp", MagicMock())
+        spawn_sous("widget", tmp_path, "prompt")
+        argv = os.execvp.call_args[0][1]
+        assert "--disallowedTools" not in argv
+
     def test_no_remote_control(self, tmp_path):
         """POC decision: the child sous does NOT get --remote-control."""
         cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
