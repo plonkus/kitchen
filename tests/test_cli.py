@@ -1191,7 +1191,8 @@ class TestCmdHireRole:
         assert args_call[1] == "rev-codex"
         # role content + ack footer both arrive in one send
         assert "reviewer" in args_call[2].lower()
-        assert "You review code, specs, and plans" in args_call[2]
+        # anchor on the H1, not prose: role bodies get rewritten, headers don't
+        assert args_call[2].startswith("# reviewer")
         assert "Ready, chef." in args_call[2]
 
     @patch("claude_kitchen.cli.send_keys")
@@ -1742,6 +1743,57 @@ class TestCmdSetupExit:
         with pytest.raises(SystemExit) as exc:
             cmd_setup(MagicMock())
         assert exc.value.code == 1
+
+
+class TestCmdSetupCodexHook:
+    """The hook is detected by presence, not by one exact spelling: Codex
+    chains a prior notify wrapper by re-encoding kitchen's hook as escaped,
+    space-free JSON."""
+
+    CHAINED = (
+        'notify = ["/Applications/Wrapper.app/Contents/MacOS/Wrapper", "turn-ended", '
+        '"--previous-notify", "[\\"kitchen\\",\\"hook-codex\\"]"]\n'
+    )
+    PLAIN = 'notify = ["kitchen", "hook-codex"]\n'
+
+    def _prep(self, tmp_path, notify_line):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text(json.dumps({
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "kitchen hook"}]}],
+                "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "kitchen hook"}]}],
+            }
+        }))
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text("[features]\nhooks = true\n" + notify_line)
+        sp = tmp_path / ".claude" / "plugins" / "cache" / "superpowers-marketplace" / "superpowers"
+        sp.mkdir(parents=True)
+
+    @pytest.mark.parametrize("notify_line", [CHAINED, PLAIN])
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_hook_detected(self, mock_run, notify_line, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._prep(tmp_path, notify_line)
+        from claude_kitchen.cli import cmd_setup
+        cmd_setup(MagicMock())  # exits non-zero on a blocker
+        out = capsys.readouterr().out
+        assert "✅ Codex hook installed" in out
+        assert "❌ Codex hook not found" not in out
+
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_missing_hook_still_fails(self, mock_run, monkeypatch, tmp_path, capsys):
+        """Another tool's notify wrapper, with no kitchen hook chained behind it."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._prep(tmp_path, 'notify = ["/Applications/Wrapper.app/Contents/MacOS/Wrapper", "turn-ended"]\n')
+        from claude_kitchen.cli import cmd_setup
+        with pytest.raises(SystemExit) as exc:
+            cmd_setup(MagicMock())
+        assert exc.value.code == 1
+        assert "❌ Codex hook not found" in capsys.readouterr().out
 
 
 class TestCmdSetupStatusline:

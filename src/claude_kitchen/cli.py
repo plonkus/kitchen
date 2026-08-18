@@ -1103,7 +1103,7 @@ def _ctx_for_channel(tokens):
 
 
 def cmd_setup(args):
-    """Check hook installation and skill status. Print what's needed."""
+    """Check hook installation and environment. Print what's needed."""
     all_good = True
     claude_hook_cmd = "kitchen hook"
     codex_hook_cmd = "kitchen"
@@ -1135,7 +1135,9 @@ def cmd_setup(args):
     codex_content = codex_config.read_text() if codex_config.exists() else ""
     has_new = re.search(r"\bhooks\s*=\s*true", codex_content) is not None
     has_old = re.search(r"\bcodex_hooks\s*=\s*true", codex_content) is not None
-    if 'notify = ["kitchen", "hook-codex"]' in codex_content:
+    # Chained behind another notify wrapper, Codex re-encodes kitchen's hook as
+    # escaped, space-free JSON — detect its presence, not one exact spelling.
+    if re.search(r'\\?"kitchen\\?"\s*,\s*\\?"hook-codex\\?"', codex_content):
         print("✅ Codex hook installed")
         if has_old and not has_new:
             print("⚠️  [features].codex_hooks is deprecated by Codex. Change to: hooks = true")
@@ -1147,22 +1149,6 @@ def cmd_setup(args):
         if not has_new and not has_old:
             print(f"   And under [features]:")
             print(f"   hooks = true")
-        print()
-
-    # --- Skill symlink (auto-install/update) ---
-    repo_root = _PKG_DIR
-    while repo_root != repo_root.parent and not (repo_root / "pyproject.toml").exists():
-        repo_root = repo_root.parent
-    skill_source = repo_root / "skill"
-    skill_target = Path.home() / ".claude" / "skills" / "claude-kitchen"
-    if skill_target.is_symlink() and skill_target.resolve() == skill_source.resolve():
-        print("✅ Skill installed")
-    else:
-        skill_target.parent.mkdir(parents=True, exist_ok=True)
-        if skill_target.exists() or skill_target.is_symlink():
-            skill_target.unlink() if skill_target.is_symlink() else shutil.rmtree(skill_target)
-        skill_target.symlink_to(skill_source)
-        print("✅ Skill installed (created symlink)")
         print()
 
     # --- mcp SDK ---

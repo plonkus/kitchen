@@ -151,11 +151,10 @@ kitchen setup
 
 1. Claude `Stop` and `UserPromptSubmit` hook configuration.
 2. The Codex completion notify configuration.
-3. The `claude-kitchen` skill symlink, creating or updating it automatically.
-4. The `mcp` Python SDK.
-5. The superpowers plugin.
-6. Claude Code version 2.1.80 or newer.
-7. That no legacy kitchen uses the reserved name `projects`.
+3. The `mcp` Python SDK.
+4. The superpowers plugin.
+5. Claude Code version 2.1.80 or newer.
+6. That no legacy kitchen uses the reserved name `projects`.
 
 The statusline check is advisory. Hook installation is **not** automatic: when hook configuration is missing, setup prints the exact JSON or TOML to add. Re-run the command until the blocking checks are green.
 
@@ -213,7 +212,7 @@ The sous runs these commands under the hood. You can also use them directly from
 | `kitchen clock-out <cook>` | Hard-kill a cook and remove its managed state. |
 | `kitchen sweep` | Remove state files for cook windows that no longer exist. |
 | `kitchen close [kitchen]` | Shut down the kitchen and remove managed per-kitchen state. |
-| `kitchen setup` | Check hooks, dependencies, skill installation, and environment readiness. |
+| `kitchen setup` | Check hooks, dependencies, and environment readiness. |
 
 ### Hire options
 
