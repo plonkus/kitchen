@@ -5,6 +5,7 @@ description = "tmux-based multi-agent orchestration"
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.0.0,<2.0.0",
+    "websockets>=13.0",
 ]
 
 [project.scripts]
