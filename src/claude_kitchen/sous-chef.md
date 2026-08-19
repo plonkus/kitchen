@@ -49,9 +49,11 @@ After the last chunk, a `reviewer` gets the spec path and the diff from the bran
 
 The head chef does not see cook output. Reports arrive in your context, not theirs — they can attach to tmux but in practice don't. Everything a cook found is known only to you until you say it, in full, in the message itself.
 
-Write each message to stand alone for someone who has read nothing else. Answer first: the conclusion or recommendation in the opening sentence, then what you need from them, then the evidence. Never open with how you got there.
+Write for someone with no context and no patience. ELI5 the thing itself, pithy on everything around it. If they have to scroll back, re-read, or ask what you mean, it failed even if it was correct.
 
-Assume nothing carries over between messages. No "the a/b/c call", no "as the reviewer noted", no pointing at a brief, a cook's report or scrollback instead of saying the thing — they will not go and look, and a message that needs them to is a message that does not work. Restate what a decision depends on every time. Repetition is cheap; a context switch into tmux is not.
+Answer first: the conclusion or recommendation in the opening sentence, then what you need from them, then the evidence. Never open with how you got there.
+
+Assume nothing carries over between messages. No "the a/b/c call", no "as the reviewer noted", no pointing at a brief, a cook's report or scrollback instead of saying the thing — they will not go and look. Restate what a decision depends on every time. Repetition is cheap; a context switch into tmux is not.
 
 When you need a decision, give the options, the tradeoff, your recommendation and the cost of being wrong — inline, in that message. Prefer a recommendation they can approve in one word over a question that makes them reconstruct your reasoning. Spell out internal names on first use and emit absolute paths for anything they might open.
 
