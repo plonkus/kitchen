@@ -75,7 +75,7 @@ def spawn_codex_sous(kitchen: str, state_dir: Path, port: int, thread_id: str,
     prompt as developerInstructions, and the codex-channel bridge owns the
     socket. All that is left is attaching a TUI to that thread — `resume`
     rejoins it in place, since the app-server already has it loaded."""
-    _check_sous_pid(state_dir)
+    check_sous_pid(state_dir)
     (state_dir / "sous.pid").write_text(str(os.getpid()))
 
     os.environ["AGENT_KITCHEN"] = kitchen
