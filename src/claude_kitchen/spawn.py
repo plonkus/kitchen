@@ -88,10 +88,17 @@ def spawn_codex_sous(kitchen: str, state_dir: Path, port: int, thread_id: str,
 
     if project:
         os.chdir(project)
-    # No --dangerously-bypass-approvals-and-sandbox: approvals and sandbox are
-    # properties of the THREAD here, set once at thread/start. A codex cook
-    # passes the flag because it owns its own session.
+    # Same --dangerously-bypass-approvals-and-sandbox a codex cook gets in
+    # build_shell_cmd, and it is NOT redundant with the approvalPolicy/sandbox
+    # cmd_open sets at thread/start: `thread/resume` takes approvalPolicy and
+    # sandbox of its own, so the attaching TUI re-states them and its defaults
+    # win. Without the flag the sous comes up on-request and stops dead at
+    # "Would you like to run the following command?" — an interactive picker
+    # that fires no hook, so nobody learns the sous is stuck.
+    #
+    # Global flags precede the subcommand: `codex --remote … <flags> resume <id>`.
     os.execvp("codex", ["codex", "--remote", f"ws://127.0.0.1:{port}",
+                        "--dangerously-bypass-approvals-and-sandbox",
                         "resume", thread_id])
 
 

@@ -619,3 +619,39 @@ class TestModelSelection:
             status_dir="/tmp/state", model="opus",
         )
         assert "--model" not in cmd
+
+
+class TestCodexSousArgv:
+    """The sous is launched with a different argv shape from a cook — execvp into
+    `codex --remote … resume <thread>` rather than a TUI/exec launch — and the
+    approval flag has to survive that shape. It does not come for free from the
+    thread: `thread/resume` carries its own approvalPolicy and sandbox, so the
+    attaching TUI re-states them over whatever thread/start set."""
+
+    def _argv(self, tmp_path):
+        from claude_kitchen import spawn
+        captured = {}
+        with patch.object(spawn.os, "execvp", lambda f, a: captured.update(file=f, argv=a)), \
+             patch.object(spawn.os, "chdir", lambda p: None), \
+             patch.object(spawn, "check_sous_pid", lambda d: None):
+            spawn.spawn_codex_sous("k", tmp_path, 8123, "thread-abc",
+                                   project=tmp_path)
+        return captured["argv"]
+
+    def test_sous_bypasses_approvals_like_a_cook_does(self, tmp_path):
+        argv = self._argv(tmp_path)
+        assert "--dangerously-bypass-approvals-and-sandbox" in argv, (
+            "without it the sous comes up on-request and blocks on an approval "
+            "picker that fires no hook"
+        )
+
+    def test_the_flag_precedes_the_resume_subcommand(self, tmp_path):
+        """clap takes global flags before the subcommand; after `resume` the
+        thread id would eat it."""
+        argv = self._argv(tmp_path)
+        assert argv.index("--dangerously-bypass-approvals-and-sandbox") < argv.index("resume")
+
+    def test_still_resumes_the_right_thread_on_the_right_port(self, tmp_path):
+        argv = self._argv(tmp_path)
+        assert argv[:3] == ["codex", "--remote", "ws://127.0.0.1:8123"]
+        assert argv[-2:] == ["resume", "thread-abc"]
