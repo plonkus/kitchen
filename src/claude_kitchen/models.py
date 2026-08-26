@@ -22,9 +22,12 @@ from pathlib import Path
 from claude_kitchen.state import atomic_write_json
 
 # Last-resort floor — kitchen still works on a plane / behind a corp
-# firewall / before the first cache write. Three lines, intentionally
-# minimal — NOT the registry.
+# firewall / before the first cache write. A few lines, intentionally
+# minimal — NOT the registry. fable earns one despite that: it is the
+# sous's default tier, so it is the most common model in a brigade, and
+# ctx drives cook rotation.
 OFFLINE_FLOOR = {
+    "claude-fable-5": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-sonnet-4-6": 200_000,
     "claude-haiku-4-5": 200_000,

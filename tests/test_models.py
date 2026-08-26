@@ -75,6 +75,14 @@ def test_d_fetch_failure_stale_cache_misses_falls_to_offline_floor(isolated_cach
     assert result == 1_000_000  # from OFFLINE_FLOOR
 
 
+def test_d2_fable_has_an_offline_floor(isolated_cache):
+    """No cache, fetch fails → fable still resolves. It's the sous's own
+    default tier, so it's the most common model in a brigade, and a None
+    here degrades the ctx tag that cook rotation is driven off."""
+    with patch.object(models, "_fetch_from_litellm", return_value=None):
+        assert models.max_context_for("claude-fable-5") == 1_000_000
+
+
 def test_e_all_sources_miss_returns_none(isolated_cache):
     """Brand new model, no cache, fetch fails, not in offline floor."""
     with patch.object(models, "_fetch_from_litellm", return_value=None):
