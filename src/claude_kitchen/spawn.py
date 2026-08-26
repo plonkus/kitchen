@@ -26,9 +26,16 @@ def check_sous_pid(state_dir: Path):
             pass  # stale pid, fine to proceed
 
 
+# Every sous — root or child — runs Fable unless `kitchen open --model` says
+# otherwise. Like a cook's --model, the bare tier alias goes through to
+# `claude --model`, which resolves the latest model in that tier at launch.
+SOUS_DEFAULT_MODEL = "fable"
+
+
 def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
                project: Path = None, slug: str = None,
-               resume_session_id: str = None):
+               resume_session_id: str = None,
+               model: str = SOUS_DEFAULT_MODEL):
     """Replace current process with Claude as sous chef."""
     # Write our PID before exec — exec preserves the PID
     (state_dir / "sous.pid").write_text(str(os.getpid()))
@@ -44,18 +51,22 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
         os.environ["KITCHEN_NOTES"] = str(notes_dir(kitchen))
 
-    # --remote-control=<name> names the RC session exactly the kitchen name,
-    # so the sous is findable in the mobile session list. Claude cooks get a
-    # named `<kitchen>/<cook>` RC session in build_shell_cmd (the CLI remote-
-    # controls all sessions by default anyway — naming is the value-add).
+    # --remote-control=<name> names the RC session `[sous] <kitchen>`, so in
+    # the mobile session list the sous reads as a labelled entry rather than a
+    # bare kitchen name sitting alongside its own `<kitchen>/<cook>` cooks
+    # (build_shell_cmd names those; the CLI remote-controls all sessions by
+    # default anyway — naming is the value-add).
     # The `=` form is load-bearing: the flag's arg is optional, so a separate
-    # token starting with `-` would parse as the next flag, not the name.
+    # token would parse as the next flag, not the name — and this name both
+    # starts with `[` and carries a space. It's one execvp argv element, so no
+    # shell quoting is involved; the space never splits it.
     claude_args = [
         "claude",
         "--dangerously-skip-permissions",
         "--dangerously-load-development-channels", "server:kitchen",
         "--mcp-config", str(state_dir / MCP_CONFIG_NAME),
-        f"--remote-control={kitchen}",
+        f"--remote-control=[sous] {kitchen}",
+        "--model", model,
     ]
     if resume_session_id:
         claude_args.extend(["--resume", resume_session_id])
@@ -205,7 +216,8 @@ def spawn_window(kitchen: str, name: str, cwd: str, backend: str, status_dir: st
 
 
 def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
-                   slug: str = None, parent_base: Path = None) -> str:
+                   slug: str = None, parent_base: Path = None,
+                   model: str = SOUS_DEFAULT_MODEL) -> str:
     """Build the `bash -lc` command that launches a child sous in a tmux
     window — the windowed analogue of spawn_sous's in-place execvp argv.
 
@@ -237,13 +249,15 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
         "exec claude --dangerously-skip-permissions "
         "--dangerously-load-development-channels server:kitchen "
         f"--mcp-config {q(str(base / MCP_CONFIG_NAME))} "
+        f"--model {q(model)} "
         f"--append-system-prompt-file {q(str(sous_md_path))}"
     )
     return f'bash -lc {q(f"{env}; {claude}")}'
 
 
 def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
-                      slug: str = None, parent_base: Path = None) -> bool:
+                      slug: str = None, parent_base: Path = None,
+                      model: str = SOUS_DEFAULT_MODEL) -> bool:
     """Launch a child sous in window `sous` of the kitchen's own tmux session,
     then drop the `_placeholder` window cmd_open created. The whole child
     kitchen (its sous + its future cooks) lives in this one session.
@@ -252,7 +266,8 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     os.execvp, so the caller (a parent sous's Bash tool subprocess) keeps its
     own process. Returns True if the sous window spawned; False lets cmd_open
     tear the half-created kitchen down."""
-    cmd = build_sous_cmd(name, base, sous_md_path, slug=slug, parent_base=parent_base)
+    cmd = build_sous_cmd(name, base, sous_md_path, slug=slug,
+                         parent_base=parent_base, model=model)
     if tmux("new-window", "-t", target(), "-n", "sous", "-c", str(project),
             cmd, kitchen=name).returncode != 0:
         return False

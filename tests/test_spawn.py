@@ -350,18 +350,39 @@ class TestSpawnSous:
     def test_remote_control_named_with_kitchen(
         self, mock_exec, mock_chdir, tmp_path, monkeypatch,
     ):
-        """Sous launches with --remote-control=<kitchen> as ONE argv token —
-        the `=` form is what keeps a leading-dash kitchen name bound as the
-        value (a separate `-x` token would parse as the next flag)."""
+        """Sous launches with --remote-control=[sous] <kitchen> as ONE argv
+        token — the `[sous] ` label is what distinguishes it from its own
+        `<kitchen>/<cook>` cooks in the mobile session list. The `=` form is
+        what keeps a name that leads with `[` (and carries a space, and may
+        lead with a dash) bound as the value rather than parsed as a flag."""
         for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
             monkeypatch.setenv(k, "")
         spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y")
         argv = mock_exec.call_args.args[1]
-        assert "--remote-control=risotto" in argv
+        assert "--remote-control=[sous] risotto" in argv
+        # The space must not have split the name across two argv elements.
+        assert "[sous]" not in argv and "risotto" not in argv
         assert not any(a.startswith("--remote-control-session") for a in argv)
         (tmp_path / "sous.pid").unlink()  # re-spawn under the same state dir
         spawn_sous("-x", tmp_path, "prompt", slug="gh-x-y")
-        assert "--remote-control=-x" in mock_exec.call_args.args[1]
+        assert "--remote-control=[sous] -x" in mock_exec.call_args.args[1]
+
+    @patch("claude_kitchen.spawn.os.chdir")
+    @patch("claude_kitchen.spawn.os.execvp")
+    def test_model_defaults_to_fable_and_overrides(
+        self, mock_exec, mock_chdir, tmp_path, monkeypatch,
+    ):
+        """Every sous runs fable unless told otherwise; the bare tier alias
+        goes to `claude --model` so it resolves latest-in-tier at launch."""
+        for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y")
+        argv = mock_exec.call_args.args[1]
+        assert argv[argv.index("--model") + 1] == "fable"
+        (tmp_path / "sous.pid").unlink()
+        spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y", model="opus")
+        argv = mock_exec.call_args.args[1]
+        assert argv[argv.index("--model") + 1] == "opus"
 
     def test_cook_remote_control_naming(self):
         """Claude cooks get a named `<kitchen>/<cook>` RC session (ck- prefix
@@ -471,6 +492,15 @@ class TestBuildSousCmd:
         k = argv.index("--append-system-prompt-file")
         assert argv[k + 1] == str(sous_md)
         assert "--append-system-prompt" not in argv  # the bare (inlining) form
+
+    def test_model_defaults_to_fable_and_overrides(self, tmp_path):
+        """A child sous gets the same fable default as a root one, as ONE
+        shell token after quoting."""
+        argv = _sous_argv_from_cmd(build_sous_cmd("c", tmp_path, tmp_path / "s.md"))
+        assert argv[argv.index("--model") + 1] == "fable"
+        argv = _sous_argv_from_cmd(
+            build_sous_cmd("c", tmp_path, tmp_path / "s.md", model="sonnet"))
+        assert argv[argv.index("--model") + 1] == "sonnet"
 
     def test_no_remote_control(self, tmp_path):
         """POC decision: the child sous does NOT get --remote-control."""
