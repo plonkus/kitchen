@@ -20,7 +20,8 @@ from claude_kitchen.state import (
     MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
-from claude_kitchen.spawn import spawn_window, spawn_sous, spawn_sous_window, check_sous_pid
+from claude_kitchen.spawn import (spawn_window, spawn_sous, spawn_sous_window,
+                                  check_sous_pid, SOUS_DEFAULT_MODEL)
 
 _PKG_DIR = Path(__file__).parent
 
@@ -524,7 +525,8 @@ def cmd_open(args):
         failure = None
         try:
             if not spawn_sous_window(name, base, sous_md, project, slug=slug,
-                                     parent_base=Path(parent) if parent else None):
+                                     parent_base=Path(parent) if parent else None,
+                                     model=args.model):
                 failure = "tmux could not launch the sous window"
             # Mirror cmd_hire's readiness barrier so the parent's first
             # `kitchen ticket sous --kitchen <name>` doesn't hit a booting pane.
@@ -539,7 +541,7 @@ def cmd_open(args):
         return
 
     spawn_sous(name, base, sous_md.read_text(), project, slug=slug,
-               resume_session_id=sous_session_id)
+               resume_session_id=sous_session_id, model=args.model)
 
 
 def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
@@ -1358,6 +1360,8 @@ def main():
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
+    p_open.add_argument("--model", choices=["fable", "sonnet", "opus"], default=SOUS_DEFAULT_MODEL,
+                        help=f"Claude model tier for the sous: fable, sonnet, or opus (default: {SOUS_DEFAULT_MODEL}). Passed to `claude --model` verbatim, resolving the latest model in that tier.")
     p_open.add_argument("--sub-sous", action="store_true", help="Launch the sous inside the new kitchen's own tmux session (window 'sous'), not this terminal — for a parent sous spinning up a child kitchen. Fresh opens only.")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
