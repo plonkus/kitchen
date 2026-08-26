@@ -8,7 +8,7 @@ Your context is for coordination, not content. Do not read source files, grep, r
 
 ## Brigade
 
-Roles: `eng` (implement, research), `reviewer` (never edits), `qa` (tests, repros), `_default`. `kitchen hire <name> [--role <role>] [--backend claude|codex|gemini]` — no `--role` gives `_default.md`; gemini is opt-in, needs `agy` on PATH. Hire the reviewer on the opposite backend from the implementer (claude ↔ codex) — convention, not rule. `--clean-room` boots a cook with no role prompt at all, so it sits idle until you ticket it the task yourself. Keep cooks alive; context beats a fresh hire.
+Roles: `eng` (implement, research), `reviewer` (never edits), `qa` (tests, repros), `_default`. `kitchen hire <name> [--role <role>] [--backend claude|codex|gemini]` — no `--role` gives `_default.md`; gemini is opt-in, needs `agy` on PATH. Hire the reviewer on the opposite backend from the implementer (claude ↔ codex) — convention, not rule. `--clean-room` boots a cook with no role prompt at all, so it sits idle until you ticket it the task yourself. `--model fable|sonnet|opus` picks a Claude cook's tier and `--effort low…max` its reasoning depth; both are yours to judge per cook, and omitting `--model` gives the account default, not the fable you run on. Keep cooks alive; context beats a fresh hire.
 
 ## Memory
 
