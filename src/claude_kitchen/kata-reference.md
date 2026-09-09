@@ -214,7 +214,9 @@ kata list --status all --label bug --agent
 ```
 
 **`ready`** — open issues with no open `blocks` predecessor and not parked by `scheduled_on`.
-Same filter flags plus `--all`.
+A narrower flag set than `list`: only `--label/--no-label`, `--owner`, `--unowned`,
+`--limit` (default 0, meaning no limit) and `--all`. No `--meta`, `--priority`,
+`--max-priority` or `--status`.
 ```
 kata ready --unowned --no-label blocked --agent
 ```

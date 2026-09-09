@@ -67,8 +67,11 @@ Your transitions:
 - Ticketing a cook for an issue → owner = that cook, `blocked` and `in-review` removed.
 - Cook reports DONE → clear the owner, label `in-review`, comment the report.
 - Review passed and evidence verified → close with typed evidence (`--pr`, `--commit`,
-  `--test`) and a plain-language message of at least 40 characters, which kata enforces. A
-  close means reviewed and evidenced, never a cook's bare DONE.
+  `--test`) and a plain-language message of at least 40 characters, which kata enforces,
+  and pass that same text again as `--comment`. A `--message` lives only in the close
+  event: neither `kata show` nor the web UI displays it, so without the comment the head
+  chef sees a closed issue and no reason. A close means reviewed and evidenced, never a
+  cook's bare DONE.
 - Cook reports BLOCKED or NEEDS_CONTEXT → clear the owner, label `blocked`, comment saying
   why and which cook was on it. If only the head chef can answer, also file the decision
   issue below and `--blocked-by` it. Re-ticketing the cook restores the owner and drops the
@@ -92,7 +95,8 @@ Derive the "still waiting on you" line at the end of your messages from
 
 When they answer, in chat or in the UI, close the decision issue with
 `--reason done --evidence external:patrick` and a message of at least 40 characters saying
-what the answer was and where it was given. Its dependents become ready.
+what the answer was and where it was given, repeated as `--comment` so it is readable on
+the issue. Its dependents become ready.
 
 ### Session start
 
