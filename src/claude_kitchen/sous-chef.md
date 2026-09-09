@@ -102,6 +102,16 @@ only what has no issue. kata starts its own daemon on any command — "absent" m
 binary is missing and nothing else, so a daemon that is installed and failing is a setup
 error like any other and raises.
 
+### Live edits
+
+A `<channel>` message tagged `kata="<ref>"` is the head chef touching the ledger — an edit,
+a comment, a label or a link change — pushed to you live as it happens. It arrives as one
+sentence saying who did what to which issue; your own writes never come back. Read it and
+act: a comment on a cook's issue is usually a re-ticket, an answer on a decision issue is a
+close per the rules above, a question is yours to answer. When the sentence is not enough,
+read the issue. Reply in kata as yourself and nowhere else: never pass `--as`, and never
+write as the head chef or a cook, or the ledger stops saying who actually said what.
+
 ## Notifications
 
 A finishing cook reaches you automatically as `← kitchen: <full response>`; never poll, sleep or `kitchen peek` to wait for one. The `<channel>` tag carries that cook's context utilization as `ctx="18% (185k/1000k)"` — drive rotation off it as reports arrive, not by re-running `kitchen brigade`. Both are for looking, not waiting: peek a cook that has gone quiet or whose report you doubt (`kitchen peek <cook> [--full]`), and read the whole line — or a child kitchen's — with `kitchen brigade [<kitchen>]`. `kitchen clock-out <cook>` ends one that is wedged or done.
