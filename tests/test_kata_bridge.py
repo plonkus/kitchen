@@ -4,9 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from claude_kitchen.kata_bridge import _sentence
+from claude_kitchen.kata_bridge import _meta, _sentence
 
 WORKSPACE = Path("/nonexistent")  # no lookup happens in these cases
+
+# Verbatim from `kata events --json`: a project event carries no issue at all.
+PROJECT_EVENT = {
+    "type": "project.metadata_updated", "actor": "patrick",
+    "project_name": "claude-kitchen",
+    "payload": {"diff": {"role": {"from": None, "to": "inbox"}},
+                "revision_new": 2},
+}
 
 
 def sentence(event):
@@ -105,9 +113,16 @@ class TestEveryEventIsDelivered:
         assert sentence(event) == 'patrick changed "Ship the ledger"'
 
     def test_project_events_have_no_title_to_quote(self):
-        event = {"type": "project.metadata_updated", "actor": "patrick",
-                 "payload": {"diff": {}}}
-        assert sentence(event) == "patrick changed the project"
+        assert sentence(PROJECT_EVENT) == "patrick changed the project"
+
+    def test_project_events_carry_no_issue_ref(self):
+        """There is no issue behind them, and reading one for the channel tag
+        used to kill the tail — and, with the cursor left where it was, the
+        restart after it too."""
+        assert _meta(PROJECT_EVENT) == {}
+
+    def test_issue_events_carry_the_ref_the_sous_acts_on(self):
+        assert _meta(_created()) == {"kata": "abc4"}
 
 
 class TestTailFailureSurfaces:

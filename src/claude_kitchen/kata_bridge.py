@@ -96,6 +96,17 @@ async def _sentence(workspace: Path, event: dict) -> str | None:
     return template.format(actor=event["actor"], **fields)
 
 
+def _meta(event: dict) -> dict:
+    """Channel tag attributes. `source` is the channel server's own name and
+    Claude Code emits it itself; a meta key of that name would land as a second,
+    duplicate attribute. `kata` is what marks the tag as a ledger event and
+    carries the ref the sous acts on — a project event has no issue behind it,
+    so it carries nothing."""
+    if "issue_short_id" not in event:
+        return {}
+    return {"kata": event["issue_short_id"]}
+
+
 async def _tail(base: Path, push):
     workspace = Path(_workspace(base))
     cursor = base / CURSOR_NAME
@@ -115,11 +126,7 @@ async def _tail(base: Path, push):
             event = json.loads(line)
             sentence = await _sentence(workspace, event)
             if sentence:
-                # `source` is the channel server's own name and Claude Code
-                # emits it itself; a meta key of that name lands as a second,
-                # duplicate attribute. `kata` is what marks the tag as a ledger
-                # event, and carries the ref the sous needs to act on it.
-                await push(sentence, {"kata": event["issue_short_id"]})
+                await push(sentence, _meta(event))
             cursor.write_text(str(event["event_id"]))
     finally:
         proc.terminate()
