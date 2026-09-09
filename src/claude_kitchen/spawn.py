@@ -46,6 +46,11 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     os.environ["AGENT_KITCHEN"] = kitchen
     os.environ["AGENT_NAME"] = "sous"
     os.environ["STATUS_DIR"] = str(state_dir)
+    # Every kata write the sous makes carries actor `sous` without a flag. The
+    # kata event bridge drops events by that actor to break the echo loop, so
+    # this is load-bearing, not cosmetic.
+    os.environ["KATA_AUTHOR"] = "sous"
+    os.environ["KITCHEN_KATA_REFERENCE"] = str(Path(__file__).parent / "kata-reference.md")
     if slug:
         from claude_kitchen.state import wiki_dir, notes_dir
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
@@ -235,6 +240,8 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
     q = shlex.quote
     parts = [
         "AGENT_NAME=sous",
+        "KATA_AUTHOR=sous",
+        f"KITCHEN_KATA_REFERENCE={q(str(Path(__file__).parent / 'kata-reference.md'))}",
         f"AGENT_KITCHEN={q(name)}",
         f"STATUS_DIR={q(str(base))}",
     ]

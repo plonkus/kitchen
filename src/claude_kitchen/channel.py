@@ -11,6 +11,8 @@ from mcp.server.stdio import stdio_server
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage, JSONRPCNotification
 
+from claude_kitchen import kata_bridge
+
 SOCK_NAME = "kitchen.sock"
 
 # The capability that makes a sous hear anything. Claude reads it from a
@@ -174,24 +176,24 @@ async def run_server(kitchen: str):
     # after stdio_server connects.
     state = {"write_stream": None}
 
-    async def notify(data: dict):
+    async def push(content: str, meta: dict):
         ws = state["write_stream"]
         if ws is None:
             return
-        cook = data.get("cook", "unknown")
-        summary = data.get("summary", "")
-        ts = data.get("ts", "")
-        meta = {"cook": cook, "ts": ts}
+        notification = JSONRPCNotification(
+            jsonrpc="2.0",
+            method=f"notifications/{CHANNEL_CAPABILITY}",
+            params={"content": content, "meta": meta},
+        )
+        await ws.send(SessionMessage(message=JSONRPCMessage(notification)))
+
+    async def notify(data: dict):
+        meta = {"cook": data.get("cook", "unknown"), "ts": data.get("ts", "")}
         # ctx is omitted (not passed null/empty) when the cook has no
         # token info yet — the sous shouldn't see ctx="" or ctx="null".
         if data.get("ctx"):
             meta["ctx"] = data["ctx"]
-        notification = JSONRPCNotification(
-            jsonrpc="2.0",
-            method=f"notifications/{CHANNEL_CAPABILITY}",
-            params={"content": summary, "meta": meta},
-        )
-        await ws.send(SessionMessage(message=JSONRPCMessage(notification)))
+        await push(data.get("summary", ""), meta)
 
     async def on_connection(reader, writer):
         await handle_connection(reader, writer, notify)
@@ -204,7 +206,8 @@ async def run_server(kitchen: str):
     try:
         async with stdio_server() as (read_stream, write_stream):
             state["write_stream"] = write_stream
-            await server.run(read_stream, write_stream, init_options)
+            async with kata_bridge.tailing(base, push):
+                await server.run(read_stream, write_stream, init_options)
     finally:
         sock_server.close()
         await sock_server.wait_closed()
