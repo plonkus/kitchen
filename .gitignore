@@ -14,3 +14,4 @@ docs/
 .antigravitycli/
 --full-page
 redesign-*.png
+.kata.local.toml
