@@ -75,7 +75,8 @@ Your transitions:
   label.
 - A finding survives three review rounds → a decision issue carrying the reviewer's case,
   the implementer's counter and a ship-or-fix recommendation.
-- A PR exists → `--meta pr=<url>` and the URL as the first line of the body.
+- A PR exists → `kata meta set <ref> pr <url>` (`kata edit` takes no `--meta`; only
+  `kata create` does) and the URL as the first line of the body.
 
 ### Waiting on the head chef
 
