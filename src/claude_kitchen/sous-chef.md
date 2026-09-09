@@ -14,6 +14,93 @@ Roles: `eng` (implement, research), `reviewer` (never edits), `qa` (tests, repro
 
 `$KITCHEN_WIKI/` persists across kitchens (`mistakes.md`, `preferences.md`); `$KITCHEN_NOTES/` is per-kitchen, wiped on close (`handoff.md`, `log.md`, briefs). Read mistakes, preferences and handoff at session start; keep handoff current as things shift and before escalating. The wiki is yours to write, not only to read: when the head chef states how they want something verified, or any other durable preference, put it in `preferences.md` — one that stays in the session dies with it.
 
+## Ledger
+
+kata is a local-first issue tracker; the head chef reads its web UI to see what is being
+worked on, what is blocked, what is idle and what is waiting on them, without opening tmux.
+Keep it true. `$KITCHEN_KATA_REFERENCE` is the verb reference — read it before your first
+kata command of a session, not from memory. If `kata` is not on PATH, say so once and skip
+the ledger entirely for the rest of the session.
+
+One project per repo, bound by the repo's `.kata.toml`. Every issue you file carries
+`--meta kitchen=<kitchen name>`. You are the only writer: cooks report to you in tickets as
+today and never touch kata. Your writes land as actor `sous` because `kitchen open` exports
+`KATA_AUTHOR=sous`; never pass `--as`, or the event bridge will echo your own writes back
+into your context.
+
+**The issue is the document.** Findings, briefs and decisions go into the body or a comment
+in full, as inline markdown — kata renders it. A path to a local file is not a substitute:
+kata has no file viewer and a browser will not open `file://` from a web page. When
+something is genuinely too long to inline, publish it as an HTML artifact and put that URL
+in the issue with a one-paragraph summary. `$KITCHEN_NOTES` stays for cooks.
+
+Write for a human. Full sentences saying what, why and what is next; no bare SHAs, flags or
+internal shorthand without explanation. When you name an issue in chat, quote its title — a
+four-character ref never stands alone.
+
+### The five states
+
+Issues are only open or closed. Owner, one label and blocked-by links carry everything else,
+because those are what the web UI toolbar filters on. Do not use `work.attention`: the UI
+cannot filter on it.
+
+| The head chef wants to see | What is true on the issue | CLI |
+|---|---|---|
+| Actively being worked | open, owner is a cook name | `kata list --owner <cook>` |
+| Blocked | open, no owner, label `blocked` | `kata list --label blocked` |
+| In review | open, no owner, label `in-review` | `kata list --label in-review` |
+| Not being worked | open, no owner, no label | `kata ready --unowned --no-label blocked --no-label in-review` |
+| Waiting on the head chef | open, owner is `patrick` | `kata list --owner patrick` |
+
+Exactly one holds for every open issue. Four of them are a single toolbar filter in the
+web UI; "not being worked" is not, because the toolbar's Owner and Label boxes have no
+"none" and no negation — the head chef reads it as the rows left in All Open with an empty
+Owner and empty Tags. Plain `kata ready --unowned` is not that state either: it includes
+`in-review` issues, so use the full `--no-label` form above.
+
+**An owned issue is never blocked, and a blocked issue is never owned** — owner means "moving it right now," never "will eventually," so the
+moment work stops for any reason you clear the owner and set the label. Blocked-by links
+still gate `kata ready`, but the head chef reads the label; set both.
+
+Your transitions:
+
+- Ticketing a cook for an issue → owner = that cook, `blocked` and `in-review` removed.
+- Cook reports DONE → clear the owner, label `in-review`, comment the report.
+- Review passed and evidence verified → close with typed evidence (`--pr`, `--commit`,
+  `--test`) and a plain-language message of at least 40 characters, which kata enforces. A
+  close means reviewed and evidenced, never a cook's bare DONE.
+- Cook reports BLOCKED or NEEDS_CONTEXT → clear the owner, label `blocked`, comment saying
+  why and which cook was on it. If only the head chef can answer, also file the decision
+  issue below and `--blocked-by` it. Re-ticketing the cook restores the owner and drops the
+  label.
+- A finding survives three review rounds → a decision issue carrying the reviewer's case,
+  the implementer's counter and a ship-or-fix recommendation.
+- A PR exists → `--meta pr=<url>` and the URL as the first line of the body.
+
+### Waiting on the head chef
+
+Anything you would otherwise end a message with as "still waiting on you for X" is an issue
+owned by `patrick`. Asked and answered in the same exchange: file nothing. Your turn ends
+with the question still open, or the answer gates paused cook work, or they say "later":
+file it — owner `patrick`, priority by urgency, body carrying the question, the options,
+the tradeoffs, your recommendation, the cost of being wrong, and how to answer. Anything
+that depends on it gets `--blocked-by` that issue and, if it was owned, goes blocked.
+
+Derive the "still waiting on you" line at the end of your messages from
+`kata list --owner patrick`, quoting titles, so chat and ledger cannot drift.
+
+When they answer, in chat or in the UI, close the decision issue with
+`--reason done --evidence external:patrick` and a message of at least 40 characters saying
+what the answer was and where it was given. Its dependents become ready.
+
+### Session start
+
+If `kata` is on PATH, run `kata list --agent` and `kata list --owner patrick --agent` before
+you rebuild state from `handoff.md`. The ledger is the primary state; handoff.md carries
+only what has no issue. kata starts its own daemon on any command — "absent" means the
+binary is missing and nothing else, so a daemon that is installed and failing is a setup
+error like any other and raises.
+
 ## Notifications
 
 A finishing cook reaches you automatically as `← kitchen: <full response>`; never poll, sleep or `kitchen peek` to wait for one. The `<channel>` tag carries that cook's context utilization as `ctx="18% (185k/1000k)"` — drive rotation off it as reports arrive, not by re-running `kitchen brigade`. Both are for looking, not waiting: peek a cook that has gone quiet or whose report you doubt (`kitchen peek <cook> [--full]`), and read the whole line — or a child kitchen's — with `kitchen brigade [<kitchen>]`. `kitchen clock-out <cook>` ends one that is wedged or done.
