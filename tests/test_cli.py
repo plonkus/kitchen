@@ -2418,6 +2418,9 @@ class TestCmdOpenSubSous:
         assert ca.kwargs["parent_base"] == tmp_path / "parent"
         # Readiness barrier on the `sous` window before returning.
         mock_wait.assert_called_once_with("widget-child", "sous", "claude")
+        # The parent sous's brigade row finds this kitchen by its parent name.
+        kj = json.loads((tmp_path / "state" / "kitchen.json").read_text())
+        assert kj["parent"] == "parent"
 
     @patch("claude_kitchen.cli.namespaced", return_value="widget-child")
     @patch("claude_kitchen.cli.project_slug", return_value="widget")

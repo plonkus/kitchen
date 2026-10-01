@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock
-from claude_kitchen.spawn import build_shell_cmd, spawn_sous, build_sous_cmd, spawn_sous_window
+from claude_kitchen.spawn import build_shell_cmd, spawn_sous, build_sous_cmd, spawn_sous_window, SOUS_MOD_DIR
 
 
 def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
@@ -347,6 +347,18 @@ class TestSpawnSous:
 
     @patch("claude_kitchen.spawn.os.chdir")
     @patch("claude_kitchen.spawn.os.execvp")
+    def test_loads_the_sous_mod_fresh_and_resumed(self, mock_exec, mock_chdir, tmp_path, monkeypatch):
+        for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        assert (SOUS_MOD_DIR / ".claude-plugin" / "plugin.json").is_file()
+        for resume in (None, "sess-1"):
+            (tmp_path / "sous.pid").unlink(missing_ok=True)
+            spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y", resume_session_id=resume)
+            argv = mock_exec.call_args.args[1]
+            assert argv[argv.index("--plugin-dir") + 1] == str(SOUS_MOD_DIR)
+
+    @patch("claude_kitchen.spawn.os.chdir")
+    @patch("claude_kitchen.spawn.os.execvp")
     def test_remote_control_named_with_kitchen(
         self, mock_exec, mock_chdir, tmp_path, monkeypatch,
     ):
@@ -500,6 +512,10 @@ class TestBuildSousCmd:
         argv = _sous_argv_from_cmd(
             build_sous_cmd("c", tmp_path, tmp_path / "s.md", model="sonnet"))
         assert argv[argv.index("--model") + 1] == "sonnet"
+
+    def test_loads_the_sous_mod(self, tmp_path):
+        argv = _sous_argv_from_cmd(build_sous_cmd("c", tmp_path, tmp_path / "s.md"))
+        assert argv[argv.index("--plugin-dir") + 1] == str(SOUS_MOD_DIR)
 
     def test_no_remote_control(self, tmp_path):
         """POC decision: the child sous does NOT get --remote-control."""
