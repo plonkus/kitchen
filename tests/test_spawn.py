@@ -369,16 +369,15 @@ class TestSpawnSous:
 
     @patch("claude_kitchen.spawn.os.chdir")
     @patch("claude_kitchen.spawn.os.execvp")
-    def test_model_defaults_to_fable_and_overrides(
+    def test_model_omitted_by_default_and_overrides(
         self, mock_exec, mock_chdir, tmp_path, monkeypatch,
     ):
-        """Every sous runs fable unless told otherwise; the bare tier alias
-        goes to `claude --model` so it resolves latest-in-tier at launch."""
+        """No model → no --model at all, so the sous runs the account default;
+        an explicit tier goes to `claude --model` verbatim."""
         for k in ("AGENT_NAME", "AGENT_SESSION", "STATUS_DIR"):
             monkeypatch.setenv(k, "")
         spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y")
-        argv = mock_exec.call_args.args[1]
-        assert argv[argv.index("--model") + 1] == "fable"
+        assert "--model" not in mock_exec.call_args.args[1]
         (tmp_path / "sous.pid").unlink()
         spawn_sous("risotto", tmp_path, "prompt", slug="gh-x-y", model="opus")
         argv = mock_exec.call_args.args[1]
@@ -493,11 +492,11 @@ class TestBuildSousCmd:
         assert argv[k + 1] == str(sous_md)
         assert "--append-system-prompt" not in argv  # the bare (inlining) form
 
-    def test_model_defaults_to_fable_and_overrides(self, tmp_path):
-        """A child sous gets the same fable default as a root one, as ONE
-        shell token after quoting."""
+    def test_model_omitted_by_default_and_overrides(self, tmp_path):
+        """A child sous, like a root one, runs the account default unless
+        given a tier, which lands as ONE shell token after quoting."""
         argv = _sous_argv_from_cmd(build_sous_cmd("c", tmp_path, tmp_path / "s.md"))
-        assert argv[argv.index("--model") + 1] == "fable"
+        assert "--model" not in argv
         argv = _sous_argv_from_cmd(
             build_sous_cmd("c", tmp_path, tmp_path / "s.md", model="sonnet"))
         assert argv[argv.index("--model") + 1] == "sonnet"
@@ -622,11 +621,33 @@ class TestModelSelection:
             model=None,
         )
 
-    def test_model_is_claude_only_at_build_layer(self):
-        """The codex branch never emits --model even if a model is passed
-        (cli.py fails such a call loud before it reaches here)."""
-        cmd = build_shell_cmd(
+    def test_codex_astra_maps_to_full_id_and_omitted_is_default(self):
+        """--model astra reaches codex as `-m gpt-6-astra` (the id codex
+        accepts; bare `astra` is rejected server-side). No model → no -m, so
+        codex runs its own default."""
+        argv = _codex_argv_from_shell_cmd(build_shell_cmd(
             backend="codex", name="rev", kitchen="r",
-            status_dir="/tmp/state", model="opus",
-        )
-        assert "--model" not in cmd
+            status_dir="/tmp/state", model="astra",
+        ))
+        assert argv[argv.index("-m") + 1] == "gpt-6-astra"
+        argv = _codex_argv_from_shell_cmd(build_shell_cmd(
+            backend="codex", name="rev", kitchen="r", status_dir="/tmp/state",
+        ))
+        assert "-m" not in argv
+
+    def test_effort_survives_every_model_combination(self):
+        """--effort lands on both backends, with and without --model."""
+        for backend, model in (("claude", None), ("claude", "opus"),
+                               ("codex", None), ("codex", "astra")):
+            cmd = build_shell_cmd(
+                backend=backend, name="c", kitchen="r",
+                status_dir="/tmp/state", effort="ultra", model=model,
+            )
+            if backend == "claude":
+                toks = _claude_inner_tokens(cmd)
+                assert toks[toks.index("--effort") + 1] == "max", cmd
+                assert ("--model" in toks) == bool(model), cmd
+            else:
+                argv = _codex_argv_from_shell_cmd(cmd)
+                assert "model_reasoning_effort=ultra" in argv, cmd
+                assert ("-m" in argv) == bool(model), cmd

@@ -21,7 +21,7 @@ from claude_kitchen.state import (
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import (spawn_window, spawn_sous, spawn_sous_window,
-                                  check_sous_pid, SOUS_DEFAULT_MODEL)
+                                  check_sous_pid, CLAUDE_MODELS, CODEX_MODELS)
 
 _PKG_DIR = Path(__file__).parent
 
@@ -605,11 +605,13 @@ def cmd_hire(args):
             sys.exit(f"--with-skill is not yet supported for '{backend}' cooks (Claude only in v1).")
         plugin_dirs = [_validate_skill_path(p) for p in with_skill]
 
-    # --model: pick the Claude model tier for the cook. Claude-only (codex/gemini
-    # have their own model selection); fail loud rather than silently ignore.
+    # --model: each name belongs to exactly one backend (Claude tiers → claude,
+    # astra → codex); a mismatched pairing fails loud rather than silently ignore.
     model = getattr(args, "model", None)
-    if model and backend != "claude":
-        sys.exit(f"--model is only supported for Claude cooks, not '{backend}' (Claude only).")
+    if model:
+        model_backend = "codex" if model in CODEX_MODELS else "claude"
+        if backend != model_backend:
+            sys.exit(f"--model {model} is only supported for {model_backend} cooks, not '{backend}'.")
 
     # Clean-room cooks boot bare — NO role prompt. The sous sends the single
     # eval prompt via a ticket. Otherwise resolve the role file as usual.
@@ -1360,8 +1362,8 @@ def main():
     p_open.add_argument("project", nargs="?", default=".", help="Project path or name (default: cwd)")
     p_open.add_argument("--worktree-path", help="Custom path for the worktree (default: sibling directory)")
     p_open.add_argument("--resume", action="store_true", help="Resume the previous sous conversation (uses sous_session_id from kitchen.json)")
-    p_open.add_argument("--model", choices=["fable", "sonnet", "opus"], default=SOUS_DEFAULT_MODEL,
-                        help=f"Claude model tier for the sous: fable, sonnet, or opus (default: {SOUS_DEFAULT_MODEL}). Passed to `claude --model` verbatim, resolving the latest model in that tier.")
+    p_open.add_argument("--model", choices=CLAUDE_MODELS,
+                        help="Claude model tier for the sous: fable, sonnet, or opus. Passed to `claude --model` verbatim, resolving the latest model in that tier. Omit to use the account default.")
     p_open.add_argument("--sub-sous", action="store_true", help="Launch the sous inside the new kitchen's own tmux session (window 'sous'), not this terminal — for a parent sous spinning up a child kitchen. Fresh opens only.")
 
     p_hire = sub.add_parser("hire", help="Hire a cook")
@@ -1371,7 +1373,7 @@ def main():
     p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (low, medium, high, xhigh, max, ultra; support is backend/model-dependent, Claude maps ultra to max)")
-    p_hire.add_argument("--model", choices=["fable", "sonnet", "opus"], help="Claude model tier for the cook: fable, sonnet, or opus (Claude cooks only). Passed to `claude --model` verbatim, resolving the latest model in that tier. Omit to use the account default.")
+    p_hire.add_argument("--model", choices=[*CLAUDE_MODELS, *CODEX_MODELS], help="Model for the cook: fable, sonnet, or opus (Claude cooks; passed to `claude --model` verbatim, resolving the latest model in that tier), or astra (Codex cooks; passed to `codex -m` as gpt-6-astra). Omit to use the account default.")
     p_hire.add_argument("--clean-room", action="store_true", help="Isolated eval hire (Claude or Codex): no memory, no plugin/skill startup injection, no role prompt. Sous supplies the one eval prompt via a ticket. (gemini not yet supported)")
     p_hire.add_argument("--with-skill", action="append", default=[], metavar="PATH", help="Load a custom skill/plugin dir into a --clean-room cook (repeatable; Claude only). Path needs a SKILL.md or .claude-plugin/plugin.json. Additive opt-in to the blank slate.")
 

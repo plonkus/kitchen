@@ -646,12 +646,17 @@ class TestStatusPreservationAcrossNonStopWriters:
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
     @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
-    def test_cmd_hire_model_on_non_claude_fails_loud(
+    def test_cmd_hire_model_backend_mismatch_fails_loud(
         self, mock_rp, mock_rk, mock_state, tmp_path,
     ):
-        """--model is Claude-only: codex/gemini backends must fail loud
-        (mirrors the --with-skill claude-only guard)."""
-        for backend in ("codex", "gemini"):
+        """Each --model belongs to one backend: Claude tiers on codex/gemini
+        and astra on claude/gemini must all fail loud."""
+        for backend, model, want in (
+            ("codex", "opus", "only supported for claude cooks"),
+            ("gemini", "opus", "only supported for claude cooks"),
+            ("claude", "astra", "only supported for codex cooks"),
+            ("gemini", "astra", "only supported for codex cooks"),
+        ):
             mock_state.return_value = tmp_path
             args = MagicMock()
             args.kitchen = "risotto"
@@ -662,10 +667,38 @@ class TestStatusPreservationAcrossNonStopWriters:
             args.effort = None
             args.clean_room = False
             args.with_skill = []
-            args.model = "opus"
-            with pytest.raises(SystemExit, match="only supported for Claude"):
+            args.model = model
+            with pytest.raises(SystemExit, match=want):
                 cmd_hire(args)
 
+    @patch("claude_kitchen.cli.send_keys")
+    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
+    @patch("claude_kitchen.cli.spawn_window", return_value=True)
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    @patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp"))
+    def test_cmd_hire_model_matching_backend_reaches_spawn(
+        self, mock_rp, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, tmp_path,
+    ):
+        """The passing side of the gate: a matched pairing — with or without
+        --effort — reaches spawn_window with model and effort intact."""
+        for backend, model, effort in (("claude", "opus", "high"),
+                                       ("codex", "astra", "ultra"),
+                                       ("codex", "astra", None)):
+            mock_state.return_value = tmp_path
+            args = MagicMock()
+            args.kitchen = "risotto"
+            args.name = f"{backend}-{effort}"
+            args.backend = backend
+            args.project = None
+            args.role = None
+            args.effort = effort
+            args.clean_room = False
+            args.with_skill = []
+            args.model = model
+            cmd_hire(args)
+            assert mock_spawn.call_args.kwargs["model"] == model
+            assert mock_spawn.call_args.kwargs["effort"] == effort
 
 class TestBrigadeAlignedOutput:
     """Per spec §Chunk 4: cmd_brigade output is one row per cook,

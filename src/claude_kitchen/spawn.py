@@ -26,16 +26,17 @@ def check_sous_pid(state_dir: Path):
             pass  # stale pid, fine to proceed
 
 
-# Every sous — root or child — runs Fable unless `kitchen open --model` says
-# otherwise. Like a cook's --model, the bare tier alias goes through to
-# `claude --model`, which resolves the latest model in that tier at launch.
-SOUS_DEFAULT_MODEL = "fable"
+# `--model` names, by the backend that runs them. Claude tier aliases pass
+# through verbatim to `claude --model`, which resolves the latest model in that
+# tier at launch; codex names map to the full id `codex -m` accepts.
+CLAUDE_MODELS = ("fable", "sonnet", "opus")
+CODEX_MODELS = {"astra": "gpt-6-astra"}
 
 
 def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
                project: Path = None, slug: str = None,
                resume_session_id: str = None,
-               model: str = SOUS_DEFAULT_MODEL):
+               model: str = None):
     """Replace current process with Claude as sous chef."""
     # Write our PID before exec — exec preserves the PID
     (state_dir / "sous.pid").write_text(str(os.getpid()))
@@ -66,8 +67,9 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
         "--dangerously-load-development-channels", "server:kitchen",
         "--mcp-config", str(state_dir / MCP_CONFIG_NAME),
         f"--remote-control=[sous] {kitchen}",
-        "--model", model,
     ]
+    if model:
+        claude_args.extend(["--model", model])
     if resume_session_id:
         claude_args.extend(["--resume", resume_session_id])
     claude_args.extend(["--append-system-prompt", sous_prompt])
@@ -173,6 +175,7 @@ def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
         effort_flag = f' -c model_reasoning_effort={q(effort)}' if effort else ""
+        model_flag = f" -m {q(CODEX_MODELS[model])}" if model else ""
         # Per-launch notify override. Bypasses any global notify wrapper
         # (e.g. the Codex Computer Use plugin's SkyComputerUseClient, which
         # rewrites ~/.codex/config.toml's top-level notify to wrap kitchen
@@ -181,7 +184,7 @@ def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,
         # from config at process start; -c overrides per-process without
         # touching global state. Value is a TOML array literal.
         notify_flag = f' -c {q(_CODEX_NOTIFY_OVERRIDE)}'
-        return f'bash -lc {q(f"{env}; exec codex --dangerously-bypass-approvals-and-sandbox{effort_flag}{notify_flag}")}'
+        return f'bash -lc {q(f"{env}; exec codex --dangerously-bypass-approvals-and-sandbox{model_flag}{effort_flag}{notify_flag}")}'
     elif backend == "gemini":
         # agy (Antigravity CLI) drives Gemini. No --append-system-prompt-file
         # equivalent, so the role is INLINED as the first interactive turn via
@@ -217,7 +220,7 @@ def spawn_window(kitchen: str, name: str, cwd: str, backend: str, status_dir: st
 
 def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
                    slug: str = None, parent_base: Path = None,
-                   model: str = SOUS_DEFAULT_MODEL) -> str:
+                   model: str = None) -> str:
     """Build the `bash -lc` command that launches a child sous in a tmux
     window — the windowed analogue of spawn_sous's in-place execvp argv.
 
@@ -245,11 +248,12 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
     if parent_base is not None:
         parts.append(f"PARENT_STATUS_DIR={q(str(parent_base))}")
     env = "export " + " ".join(parts)
+    model_flag = f"--model {q(model)} " if model else ""
     claude = (
         "exec claude --dangerously-skip-permissions "
         "--dangerously-load-development-channels server:kitchen "
         f"--mcp-config {q(str(base / MCP_CONFIG_NAME))} "
-        f"--model {q(model)} "
+        f"{model_flag}"
         f"--append-system-prompt-file {q(str(sous_md_path))}"
     )
     return f'bash -lc {q(f"{env}; {claude}")}'
@@ -257,7 +261,7 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
 
 def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
                       slug: str = None, parent_base: Path = None,
-                      model: str = SOUS_DEFAULT_MODEL) -> bool:
+                      model: str = None) -> bool:
     """Launch a child sous in window `sous` of the kitchen's own tmux session,
     then drop the `_placeholder` window cmd_open created. The whole child
     kitchen (its sous + its future cooks) lives in this one session.

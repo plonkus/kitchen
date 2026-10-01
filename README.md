@@ -229,6 +229,9 @@ kitchen hire investigator --effort max
 # Claude model tier; the Claude CLI resolves the current model in that tier
 kitchen hire architect --model opus
 
+# Codex model; astra is passed to `codex -m` as gpt-6-astra (Codex cooks only)
+kitchen hire reviewer --backend codex --model astra
+
 # Near-fresh eval worker: no role, auto-memory, or superpowers startup injection
 kitchen hire eval1 --clean-room --project /absolute/eval-directory
 
