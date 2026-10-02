@@ -519,6 +519,10 @@ def cmd_open(args):
         # this Bash subprocess, it's how the child learns who to report UP to.
         # Absent (run by hand) → the child sous just runs standalone.
         parent = os.environ.get("STATUS_DIR")
+        # Recorded so the parent sous's brigade row can find this kitchen's cooks.
+        if parent:
+            kj["parent"] = Path(parent).name
+            kitchen_file.write_text(json.dumps(kj) + "\n")
         # Tolerate a brief tmux stall under launch load (TimeoutExpired); on any
         # genuine failure tear the half-created kitchen down so we never leave a
         # sous-less "open" kitchen with an orphan session/worktree/state.

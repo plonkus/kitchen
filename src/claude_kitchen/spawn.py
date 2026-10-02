@@ -32,6 +32,10 @@ def check_sous_pid(state_dir: Path):
 CLAUDE_MODELS = ("fable", "sonnet", "opus")
 CODEX_MODELS = {"astra": "gpt-6-astra"}
 
+# The sous's Claude Code mod: the brigade row, cook-report toasts and the
+# head-chef decision inbox. Loaded into every sous, never into cooks.
+SOUS_MOD_DIR = Path(__file__).parent / "mod"
+
 
 def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
                project: Path = None, slug: str = None,
@@ -66,6 +70,7 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
         "--dangerously-skip-permissions",
         "--dangerously-load-development-channels", "server:kitchen",
         "--mcp-config", str(state_dir / MCP_CONFIG_NAME),
+        "--plugin-dir", str(SOUS_MOD_DIR),
         f"--remote-control=[sous] {kitchen}",
     ]
     if model:
@@ -253,6 +258,7 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
         "exec claude --dangerously-skip-permissions "
         "--dangerously-load-development-channels server:kitchen "
         f"--mcp-config {q(str(base / MCP_CONFIG_NAME))} "
+        f"--plugin-dir {q(str(SOUS_MOD_DIR))} "
         f"{model_flag}"
         f"--append-system-prompt-file {q(str(sous_md_path))}"
     )
