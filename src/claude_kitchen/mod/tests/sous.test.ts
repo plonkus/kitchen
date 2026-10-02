@@ -50,7 +50,10 @@ const start = ($: Engine) =>
 
 test('the brigade row lists this kitchen and its child kitchens, on terminal and desktop', async ($, on) => {
   mockKitchen(on, kitchenFiles())
+  const logged: string[] = []
+  on('ui.log', ($, e) => (logged.push(e.text), { value: undefined }) as never)
   await start($)
+  expect(logged).toEqual(['mod loaded'])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'sous', surface, ...BAND })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)

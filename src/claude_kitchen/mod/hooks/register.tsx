@@ -60,6 +60,9 @@ const answer = async ($: Engine, d: Decision, choice: string) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // First, so a sous without this line visibly lacks the mod. Shown
+    // prefixed with the plugin name: "sous: mod loaded".
+    $.ui.log('mod loaded')
     const file = `${await stateDir($)}/decisions.json`
     const filed: Decision[] = (await $.fs.exists(file)) ? JSON.parse(await $.fs.read(file)) : []
     await update($, decisions, () => filed)
