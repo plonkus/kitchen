@@ -4,6 +4,6 @@ export type Decision = { id: string; question: string; options: string[]; recomm
 
 declare module 'claude-code' {
   interface PluginState {
-    sous: { cooks: Cook[]; decisions: Decision[] }
+    sous: { cooks: Cook[]; decisions: Decision[]; alerts: Record<string, string> }
   }
 }

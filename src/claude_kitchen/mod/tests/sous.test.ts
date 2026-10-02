@@ -19,7 +19,7 @@ const kitchenFiles = (): Map<string, string> => new Map([
 
 const mockKitchen = (on: On, files: Map<string, string>) => {
   mock.env(on, { STATUS_DIR: BASE })
-  mock.clock(on)
+  const clock = mock.clock(on)
   const children = (dir: string) => {
     const names = new Map<string, 'file' | 'directory'>()
     for (const path of files.keys()) {
@@ -31,10 +31,12 @@ const mockKitchen = (on: On, files: Map<string, string>) => {
   }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__sous__${e.name}` } }) as never)
+  on('command.register', ($, e) => ({ value: { command: e.name } }) as never)
   on('fs.list', ($, e) => ({ value: children(e.path!) }))
   on('fs.exists', ($, e) => ({ value: files.has(e.path) || children(e.path).length > 0 }))
   on('fs.read', ($, e) => ({ value: files.get(e.path)! }))
   on('fs.write', ($, e) => (files.set(e.path, e.text), { value: undefined }))
+  return clock
 }
 
 const BAND = {
@@ -84,7 +86,7 @@ test('a filed decision shows in the band, persists, and its answer reaches the s
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const band = await $.ui.mount({ plugin: 'sous', surface, ...BAND })
-    expect((await band.find({ key: 'inbox' }))?.text).toBe('⚑ 1 decision pending')
+    expect((await band.find({ key: 'inbox' }))?.text).toBe('⚑ 1 decision pending · /inbox')
     await band.unmount()
   }
 
@@ -92,7 +94,10 @@ test('a filed decision shows in the band, persists, and its answer reaches the s
     plugin: 'sous', surface: 'terminal', component: 'Pane', requestId: 'decisions',
     props: { title: 'Decisions', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 20, contentRows: 0 }, view: {} } as never,
   })
-  expect((await pane.find({ key: `${id}-0` }))?.text).toBe('Ship (recommended)')
+  const recommended = await pane.find({ key: `${id}-0` })
+  expect(recommended?.text).toBe('Ship (recommended)')
+  expect(recommended?.props.autoFocus).toBe(true)
+  expect((await pane.find({ key: `${id}-1` }))?.props.autoFocus).toBeUndefined()
   await pane.press({ key: `${id}-1` })
   expect(submitted).toEqual([`Head chef decided ${id} ("Ship the fix today?"): Wait`])
   expect(JSON.parse(files.get(`${BASE}/decisions.json`)!)).toEqual([])
@@ -104,22 +109,61 @@ test('a decision filed before a restart is pending after it, and the sous can re
   mockKitchen(on, files)
   await start($)
   const band = await $.ui.mount({ plugin: 'sous', surface: 'terminal', ...BAND })
-  expect((await band.find({ key: 'inbox' }))?.text).toBe('⚑ 1 decision pending')
+  expect((await band.find({ key: 'inbox' }))?.text).toBe('⚑ 1 decision pending · /inbox')
   await band.unmount()
 
   await $.tool.call({ tool: 'mcp__sous__resolve_decision', id: 'abc' } as never)
   expect(JSON.parse(files.get(`${BASE}/decisions.json`)!)).toEqual([])
 })
 
-test('a cook report toasts unless its status is DONE', async ($, on) => {
+test('/inbox opens the decision pane holding the keyboard', async ($, on) => {
   mockKitchen(on, kitchenFiles())
+  const opened: unknown[] = []
+  on('ui.open', ($, e) => (opened.push(e), { value: { isPlaced: true } }) as never)
+  await start($)
+  await $.command.run({ command: 'inbox', args: '' } as never)
+  expect(opened).toEqual([{ id: 'decisions', title: 'Decisions', focus: true, closeOnEscape: true }])
+})
+
+// A report reaches the conversation as a prompt row while the sous is idle,
+// and as a queued_command attachment when it lands mid-turn.
+const report = (cook: string, status: string, type: 'user' | 'attachment') => ({
+  door: type === 'user' ? 'prompt' : 'delivery',
+  origin: { kind: 'engine' },
+  uuid: crypto.randomUUID(),
+  message: {
+    type,
+    ...(type === 'attachment' ? { name: 'queued_command' } : { role: 'user' }),
+    content: [{ type: 'text', text: `<channel source="kitchen" cook="${cook}" ts="t">\nreport\n\nSTATUS: ${status}\n</channel>` }],
+  },
+}) as never
+
+test('a cook report toasts and marks the row red unless DONE, until the cook works again', async ($, on) => {
+  const files = kitchenFiles()
+  const clock = mockKitchen(on, files)
   const toasts: string[] = []
   on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }) as never)
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  // Nothing in a test stores a row: the mod acts on it before its next(e),
+  // which then rejects for want of an engine beneath.
+  const append = (row: never) =>
+    $.session.append(row).catch((err: Error) => expect(err.message).toContain('no implementation for session.append'))
+  const row = async () => {
+    const band = await $.ui.mount({ plugin: 'sous', surface: 'terminal', ...BAND })
+    const texts = (await band.findAll({ type: 'Text' })).map(t => t.text)
+    await band.unmount()
+    return texts
+  }
   await start($)
-  const channel = { kind: 'channel', server: 'kitchen' }
-  await $.prompt.submit({ text: 'did it\n\nSTATUS: DONE', origin: channel } as never)
-  await $.prompt.submit({ text: 'which table?\n\nSTATUS: NEEDS_CONTEXT', origin: channel } as never)
-  await $.prompt.submit({ text: 'STATUS: BLOCKED from a person', origin: { kind: 'composer' } } as never)
-  expect(toasts).toEqual(['Cook report: NEEDS_CONTEXT'])
+
+  await append(report('rev', 'DONE', 'user'))
+  await append(report('eng', 'NEEDS_CONTEXT', 'attachment'))
+  await append(report('rev', 'BLOCKED', 'user'))
+  await append({ ...report('qa', 'BLOCKED', 'user'), message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'STATUS: BLOCKED typed by a person' }] } } as never)
+  expect(toasts).toEqual(['eng: NEEDS_CONTEXT', 'rev: BLOCKED'])
+  expect(await row()).toEqual(['brigade', 'eng:NEEDS_CONTEXT 18%', 'rev:BLOCKED', 'widget-child/qa:idle'])
+
+  await append(report('rev', 'DONE', 'user'))
+  files.set(`${BASE}/cooks/eng.json`, JSON.stringify({ status: 'working', tokens: { input: 180000, max: 1000000 } }))
+  await clock.advance(2000)
+  expect(await row()).toEqual(['brigade', 'eng:working 18%', 'rev:idle', 'widget-child/qa:idle'])
 })

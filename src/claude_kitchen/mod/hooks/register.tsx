@@ -7,6 +7,8 @@ type Engine = Parameters<Hook<'session.start'>>[0]
 
 const cooks = atom({ plugin: 'sous', key: 'cooks' } as const, [])
 const decisions = atom({ plugin: 'sous', key: 'decisions' } as const, [])
+// The last non-DONE report status per cook, held until the cook works again.
+const alerts = atom({ plugin: 'sous', key: 'alerts' } as const, {})
 const PANE = 'decisions'
 
 // STATUS_DIR is the kitchen's state dir. Decisions live at its top level,
@@ -44,6 +46,11 @@ const pollCooks = async ($: Engine) => {
     }
   }
   await update($, cooks, () => list)
+  const working = list.filter(c => c.status === 'working').map(c => c.name)
+  const held = await read($, alerts)
+  if (working.some(name => name in held)) {
+    await update($, alerts, current => Object.fromEntries(Object.entries(current).filter(([name]) => !working.includes(name))))
+  }
 }
 
 const saveDecisions = async ($: Engine, change: (list: Decision[]) => Decision[]) => {
@@ -86,9 +93,15 @@ export const register: Register = on => {
       description: 'Remove a decision from the head chef inbox once they answered it in chat.',
       inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     })
+    await $.command.register({ name: 'inbox', description: 'Open the head-chef decision inbox' })
     await pollCooks($)
     $.clock.every(2000, () => pollCooks($))
     return next(e)
+  })
+
+  on('command.run', { command: 'inbox' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'Decisions', focus: true, closeOnEscape: true })
+    return { text: 'Decision inbox opened: Enter takes the highlighted option, Tab moves, Esc closes.' }
   })
 
   on('tool.call', { tool: 'mcp__sous__file_decision' }, async ($, e) => {
@@ -105,14 +118,25 @@ export const register: Register = on => {
     return { result: `Resolved decision ${id}.` }
   })
 
-  on('prompt.submit', { origin: { kind: 'channel', server: 'kitchen' } }, ($, e, next) => {
-    const status = [...e.text.matchAll(/STATUS:\W*([A-Z_]+)/g)].at(-1)?.[1]
-    if (status && status !== 'DONE') $.ui.toast(`Cook report: ${status}`, { timeoutMs: 8000 })
+  // A cook report reaches the conversation as a prompt row while the sous is
+  // idle and as a queued attachment mid-turn; both carry the channel tag.
+  on('session.append', async ($, e, next) => {
+    const text = JSON.stringify(e.message.content)
+    const cook = /<channel source=\\"kitchen\\" cook=\\"([^"\\]+)\\"/.exec(text)?.[1]
+    const status = [...text.matchAll(/STATUS:\W*([A-Z_]+)/g)].at(-1)?.[1]
+    if (cook && status) {
+      await update($, alerts, held => {
+        const { [cook]: _, ...rest } = held
+        return status === 'DONE' ? rest : { ...rest, [cook]: status }
+      })
+      if (status !== 'DONE') $.ui.toast(`${cook}: ${status}`, { timeoutMs: 15000 })
+    }
     return next(e)
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, cooks)
+    const held = await read($, alerts)
     const pending = (await read($, decisions)).length
     if (e.props.hasSurvey || (list.length === 0 && pending === 0)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -123,16 +147,20 @@ export const register: Register = on => {
             key="inbox"
             hotkey="d"
             variant="primary"
-            label={`⚑ ${pending} decision${pending === 1 ? '' : 's'} pending`}
+            label={`⚑ ${pending} decision${pending === 1 ? '' : 's'} pending · /inbox`}
             onPress={() => $.ui.open({ id: PANE, title: 'Decisions', focus: true, closeOnEscape: true })}
           />
         )}
         <Text bold>brigade</Text>
-        {list.map(c => (
-          <Text color={c.status === 'working' ? 'yellow' : undefined} dimColor={c.status === 'idle'}>
-            {c.name}:{c.status}{c.ctx}
-          </Text>
-        ))}
+        {list.map(c =>
+          held[c.name] ? (
+            <Text color="red" bold>{c.name}:{held[c.name]}{c.ctx}</Text>
+          ) : (
+            <Text color={c.status === 'working' ? 'yellow' : undefined} dimColor={c.status === 'idle'}>
+              {c.name}:{c.status}{c.ctx}
+            </Text>
+          ),
+        )}
       </Box>
     )
   })
@@ -152,6 +180,7 @@ export const register: Register = on => {
                   key={`${d.id}-${i}`}
                   label={option === d.recommendation ? `${option} (recommended)` : option}
                   variant={option === d.recommendation ? 'primary' : 'secondary'}
+                  autoFocus={option === d.recommendation ? true : undefined}
                   onPress={() => answer($, d, option)}
                 />
               ))}
