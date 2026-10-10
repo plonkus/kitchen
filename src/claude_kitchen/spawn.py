@@ -1,4 +1,5 @@
 """Spawn logic for claude-kitchen agents."""
+import json
 import os
 import shlex
 import subprocess
@@ -105,9 +106,11 @@ _GEMINI_ROLE_FOOTER = (
 # "You have superpowers" injection never fires. Passed via --settings, which
 # MERGES with ~/.claude/settings.json (empirically verified) — the kitchen's
 # own Stop hook there stays live, so cook→sous completion notifications still
-# work. Plugin key is the marketplace-qualified name confirmed against
-# ~/.claude/settings.json's enabledPlugins.
-_CLEAN_ROOM_SETTINGS = '{"enabledPlugins":{"superpowers@superpowers-marketplace":false}}'
+# work. Plugin keys are marketplace-qualified, and superpowers ships from
+# either marketplace below, so both are disabled.
+SUPERPOWERS_MARKETPLACES = ("superpowers-marketplace", "claude-plugins-official")
+_CLEAN_ROOM_SETTINGS = json.dumps(
+    {"enabledPlugins": {f"superpowers@{m}": False for m in SUPERPOWERS_MARKETPLACES}})
 
 
 def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,

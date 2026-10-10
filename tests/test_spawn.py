@@ -176,7 +176,10 @@ class TestCleanRoom:
         # superpowers plugin disabled via a --settings JSON arg (parsed, not substring)
         si = toks.index("--settings")
         settings = json.loads(toks[si + 1])
-        assert settings["enabledPlugins"]["superpowers@superpowers-marketplace"] is False
+        assert settings["enabledPlugins"] == {
+            "superpowers@superpowers-marketplace": False,
+            "superpowers@claude-plugins-official": False,
+        }
         # clean-room cooks boot bare — no role prompt
         assert "--append-system-prompt-file" not in toks
 
