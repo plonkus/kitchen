@@ -241,7 +241,7 @@ Claude cooks receive role Markdown as an appended system prompt. Codex receives 
 
 ## How completion notifications work
 
-Every launched agent gets `AGENT_NAME`, `AGENT_KITCHEN`, and `STATUS_DIR`. Global hooks are gated on those variables, so ordinary agent sessions outside a kitchen are untouched.
+Every launched agent gets `AGENT_NAME`, `AGENT_KITCHEN`, and `STATUS_DIR`. Global hooks are gated on those variables, so ordinary agent sessions outside a kitchen are untouched. Every launched agent also gets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so durable notes go to the kitchen wiki rather than Claude Code's auto-memory.
 
 When a cook completes a turn:
 

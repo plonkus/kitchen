@@ -161,7 +161,7 @@ def _claude_inner_tokens(cmd: str) -> list[str]:
 
 class TestCleanRoom:
     def test_clean_room_disables_memory_and_superpowers_no_role(self):
-        """--clean-room wires the auto-memory env knob (before exec) AND the
+        """--clean-room keeps the auto-memory env knob (before exec) AND adds the
         superpowers-disabling --settings (after exec), and passes NO role
         prompt — the three exclusions verified to give MEM=NO + SP=NO while
         subscription auth + the kitchen Stop hook stay intact."""
@@ -170,7 +170,7 @@ class TestCleanRoom:
             status_dir="/tmp/state", clean_room=True,
         )
         toks = _claude_inner_tokens(cmd)
-        # auto-memory env var is a temp assignment immediately before `exec`
+        # auto-memory env var is exported before `exec`
         ei = toks.index("exec")
         assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" in toks[:ei]
         # superpowers plugin disabled via a --settings JSON arg (parsed, not substring)
@@ -189,7 +189,6 @@ class TestCleanRoom:
             status_dir="/tmp/state",
         )
         toks = _claude_inner_tokens(cmd)
-        assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" not in toks
         assert "--settings" not in toks
 
     def test_codex_clean_room_exports_codex_home_keeps_notify(self):
@@ -443,6 +442,38 @@ def _sous_argv_from_cmd(cmd: str) -> list[str]:
     inner = shlex.split(outer[2])
     i = inner.index("exec")
     return inner[i + 1:]
+
+
+class TestAutoMemoryDisabled:
+    """Every agent kitchen launches runs with Claude Code auto-memory off, so
+    durable notes land in the kitchen wiki — root sous, child sous, and cooks."""
+
+    VAR = "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
+
+    def _exported(self, cmd: str) -> list[str]:
+        toks = _claude_inner_tokens(cmd)
+        return [t.rstrip(";") for t in toks[:toks.index("exec")]]
+
+    @pytest.mark.parametrize("backend", ["claude", "codex", "gemini"])
+    def test_cook(self, backend):
+        cmd = build_shell_cmd(backend=backend, name="eng", kitchen="r",
+                              status_dir="/tmp/state")
+        assert self.VAR in self._exported(cmd)
+
+    def test_child_sous(self, tmp_path):
+        cmd = build_sous_cmd("widget-child", tmp_path, tmp_path / "s.md")
+        assert self.VAR in self._exported(cmd)
+
+    def test_root_sous(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", raising=False)
+        for k in ("AGENT_NAME", "AGENT_KITCHEN", "STATUS_DIR"):
+            monkeypatch.setenv(k, "")
+        seen = {}
+        with patch("claude_kitchen.spawn.os.execvp",
+                   side_effect=lambda *a: seen.update(os.environ)):
+            spawn_sous("risotto", tmp_path, "prompt")
+        assert seen["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+        monkeypatch.setenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")  # teardown restores
 
 
 class TestKitchenIdentityIsNotTheSessionName:
