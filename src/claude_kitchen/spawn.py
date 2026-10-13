@@ -27,6 +27,11 @@ def check_sous_pid(state_dir: Path):
             pass  # stale pid, fine to proceed
 
 
+# Exported to every agent kitchen launches (sous and cooks, any backend).
+# Auto-memory is off so durable notes go to the kitchen wiki, not
+# ~/.claude/projects/*/memory/. Non-Claude backends ignore it.
+AGENT_ENV = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+
 # `--model` names, by the backend that runs them. Claude tier aliases pass
 # through verbatim to `claude --model`, which resolves the latest model in that
 # tier at launch; codex names map to the full id `codex -m` accepts.
@@ -48,6 +53,7 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     os.environ["AGENT_KITCHEN"] = kitchen
     os.environ["AGENT_NAME"] = "sous"
     os.environ["STATUS_DIR"] = str(state_dir)
+    os.environ.update(AGENT_ENV)
     if slug:
         from claude_kitchen.state import wiki_dir, notes_dir
         os.environ["KITCHEN_WIKI"] = str(wiki_dir(slug))
@@ -124,6 +130,7 @@ def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,
         f"STATUS_DIR={q(status_dir)}",
     ]
     parts.extend(f"{k}={q(v)}" for k, v in os.environ.items() if k.startswith("KITCHEN_"))
+    parts.extend(f"{k}={q(v)}" for k, v in AGENT_ENV.items())
     # Clean-room codex cooks run against a fresh, isolated CODEX_HOME (seeded in
     # cmd_hire) — no user config, memory, AGENTS.md, or plugin registry. notify
     # still rides the -c flag below, so cook→sous reporting is unaffected. Gated
@@ -148,12 +155,10 @@ def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,
         # branch's export, not the shared `parts` list, so it never spills onto
         # codex/gemini cooks.
         env = f"{env} CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
-        # Clean-room (eval) cooks: disable auto-memory via env var (no MEMORY.md
-        # <system-reminder> injection) and disable the superpowers plugin via
-        # --settings (no SessionStart injection). Both ride the launch without
-        # touching subscription auth or the kitchen Stop hook. The caller also
-        # passes no role_path, so clean-room cooks boot bare (no role prompt).
-        mem = "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 " if clean_room else ""
+        # Clean-room (eval) cooks: disable the superpowers plugin via --settings
+        # (no SessionStart injection) without touching subscription auth or the
+        # kitchen Stop hook. Auto-memory is already off for every cook (AGENT_ENV).
+        # The caller also passes no role_path, so clean-room cooks boot bare.
         settings_flag = f" --settings {q(_CLEAN_ROOM_SETTINGS)}" if clean_room else ""
         # Clean-room allowlist opt-in (--with-skill): each path is loaded as a
         # session-scoped plugin dir. Additive only — doesn't touch memory, the
@@ -173,7 +178,7 @@ def build_shell_cmd(backend: str, name: str, kitchen: str, status_dir: str,
         # head chef's phone to "kitchen/<cook>".
         rc_name = f"{kitchen}/{name}"
         rc_flag = f" --remote-control={q(rc_name)}"
-        return f'bash -lc {q(f"{env}; {mem}exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{rc_flag}{effort_flag}{model_flag}{settings_flag}{plugin_flags}{role_flag}")}'
+        return f'bash -lc {q(f"{env}; exec claude --dangerously-skip-permissions --disallowedTools AskUserQuestion{rc_flag}{effort_flag}{model_flag}{settings_flag}{plugin_flags}{role_flag}")}'
     elif backend == "codex":
         # Codex has no --append-system-prompt-file equivalent. Role delivery
         # happens via send_keys after wait_for_prompt (see cmd_hire).
@@ -243,6 +248,7 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
         "AGENT_NAME=sous",
         f"AGENT_KITCHEN={q(name)}",
         f"STATUS_DIR={q(str(base))}",
+        *(f"{k}={q(v)}" for k, v in AGENT_ENV.items()),
     ]
     if slug:
         from claude_kitchen.state import wiki_dir, notes_dir
