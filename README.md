@@ -90,13 +90,12 @@ You continue talking to the sous while both cook sessions remain visible in tmux
 - **claude.ai web authentication** — channels are available to claude.ai logins, not Console/API-key authentication.
   - Sign in: `claude /login`, then choose your claude.ai account.
 - **superpowers plugin** — the supplied sous workflow invokes its brainstorming and development skills.
-  - Install from Claude Code: `/plugin install superpowers from superpowers-marketplace`
+  - Install from Claude Code: `/plugin install superpowers@claude-plugins-official` (the `superpowers-marketplace` install also works)
 - **`mcp` Python SDK** — installed automatically as a transitive dependency of this project; no separate install step is needed.
 
 ### Optional backends and tools
 
-- **Codex CLI** — required only for `--backend codex` cooks. Kitchen forces its completion notify command per cook launch.
-- **Codex hook support** — `~/.codex/config.toml` should contain `notify = ["kitchen", "hook-codex"]` and `hooks = true` under `[features]`. `kitchen setup` currently checks for the notify stanza even if you do not plan to hire Codex cooks.
+- **Codex CLI** — required only for `--backend codex` cooks. Kitchen forces its completion notify command per cook launch, so `~/.codex/config.toml` needs no kitchen entries.
 - **Antigravity CLI (`agy`)** — required only for the opt-in `--backend gemini` cook. Kitchen does not use a `gemini` binary and `kitchen setup` does not install or check `agy`.
 - **`jq`** — needed only by the packaged richer statusline example, not by the kitchen core.
 
@@ -128,7 +127,7 @@ Kitchen's channel connection will not work with Console/API-key authentication.
 From inside Claude Code:
 
 ```text
-/plugin install superpowers from superpowers-marketplace
+/plugin install superpowers@claude-plugins-official
 ```
 
 ### 4. Clone and install kitchen
@@ -150,13 +149,12 @@ kitchen setup
 `kitchen setup` verifies:
 
 1. Claude `Stop` and `UserPromptSubmit` hook configuration.
-2. The Codex completion notify configuration.
-3. The `mcp` Python SDK.
-4. The superpowers plugin.
-5. Claude Code version 2.1.80 or newer.
-6. That no legacy kitchen uses the reserved name `projects`.
+2. The `mcp` Python SDK.
+3. The superpowers plugin.
+4. Claude Code version 2.1.80 or newer.
+5. That no legacy kitchen uses the reserved name `projects`.
 
-The statusline check is advisory. Hook installation is **not** automatic: when hook configuration is missing, setup prints the exact JSON or TOML to add. Re-run the command until the blocking checks are green.
+The statusline check is advisory. Hook installation is **not** automatic: when hook configuration is missing, setup prints the exact JSON to add. Re-run the command until the blocking checks are green.
 
 ## Quick start
 
@@ -287,8 +285,8 @@ With an editable install, reopen the kitchen or re-hire a cook after changing a 
 ## Troubleshooting
 
 - **`server:kitchen · no MCP server configured` at sous startup:** this is a known harmless startup race; the server connects shortly afterward.
-- **Setup says hooks are missing:** copy the exact Claude JSON or Codex TOML that `kitchen setup` prints, then rerun it.
-- **Superpowers is missing:** install it from Claude Code with `/plugin install superpowers from superpowers-marketplace`.
+- **Setup says hooks are missing:** copy the exact Claude JSON that `kitchen setup` prints, then rerun it.
+- **Superpowers is missing:** install it from Claude Code with `/plugin install superpowers@claude-plugins-official` (the `superpowers-marketplace` install also works).
 - **Channel authentication fails:** run `claude /login` and select a claude.ai account. Console/API-key authentication does not expose channels.
 - **Claude Code is too old:** upgrade to version 2.1.80 or newer.
 - **`agy not on PATH`:** Gemini cooks require Antigravity CLI; Claude and Codex kitchens do not.

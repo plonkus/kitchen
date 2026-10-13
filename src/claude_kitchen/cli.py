@@ -21,7 +21,8 @@ from claude_kitchen.state import (
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import (spawn_window, spawn_sous, spawn_sous_window,
-                                  check_sous_pid, CLAUDE_MODELS, CODEX_MODELS)
+                                  check_sous_pid, CLAUDE_MODELS, CODEX_MODELS,
+                                  SUPERPOWERS_MARKETPLACES)
 
 _PKG_DIR = Path(__file__).parent
 
@@ -1132,29 +1133,6 @@ def cmd_setup(args):
         print(f'   "UserPromptSubmit": [{prompt_entry}]')
         print()
 
-    # --- Codex hook ---
-    # Codex deprecated [features].codex_hooks in favor of [features].hooks.
-    # Accept either form so existing setups stay green; soft-warn on the old one.
-    codex_config = Path.home() / ".codex" / "config.toml"
-    codex_content = codex_config.read_text() if codex_config.exists() else ""
-    has_new = re.search(r"\bhooks\s*=\s*true", codex_content) is not None
-    has_old = re.search(r"\bcodex_hooks\s*=\s*true", codex_content) is not None
-    # Chained behind another notify wrapper, Codex re-encodes kitchen's hook as
-    # escaped, space-free JSON — detect its presence, not one exact spelling.
-    if re.search(r'\\?"kitchen\\?"\s*,\s*\\?"hook-codex\\?"', codex_content):
-        print("✅ Codex hook installed")
-        if has_old and not has_new:
-            print("⚠️  [features].codex_hooks is deprecated by Codex. Change to: hooks = true")
-    else:
-        all_good = False
-        print(f"❌ Codex hook not found in {codex_config}")
-        print(f'   Add at the top level:')
-        print(f'   notify = ["kitchen", "hook-codex"]')
-        if not has_new and not has_old:
-            print(f"   And under [features]:")
-            print(f"   hooks = true")
-        print()
-
     # --- mcp SDK ---
     try:
         import mcp  # noqa: F401
@@ -1168,14 +1146,16 @@ def cmd_setup(args):
     # --- superpowers plugin ---
     # Canonical install path for marketplace plugins (see Claude Code plugin docs):
     #   ~/.claude/plugins/cache/<marketplace-name>/<plugin-name>/
-    sp_path = Path.home() / ".claude" / "plugins" / "cache" / "superpowers-marketplace" / "superpowers"
-    if sp_path.exists():
+    cache = Path.home() / ".claude" / "plugins" / "cache"
+    sp_paths = [cache / m / "superpowers" for m in SUPERPOWERS_MARKETPLACES]
+    sp_path = next((p for p in sp_paths if p.exists()), None)
+    if sp_path:
         print(f"✅ superpowers plugin installed ({sp_path})")
     else:
         all_good = False
         print("❌ superpowers plugin not found")
-        print(f"   Expected at: {sp_path}")
-        print("   Install via Claude Code: /plugin install superpowers from superpowers-marketplace")
+        print(f"   Expected at: {' or '.join(map(str, sp_paths))}")
+        print("   Install via Claude Code: /plugin install superpowers@claude-plugins-official")
         print()
 
     # --- Claude Code version (channels need >= 2.1.80) ---
