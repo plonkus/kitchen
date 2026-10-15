@@ -1,0 +1,6 @@
+{
+  "name": "sous",
+  "version": "0.1.0",
+  "description": "Kitchen sous chef: live brigade row, cook-report toasts, head-chef decision inbox",
+  "types": "./types/index.d.ts"
+}
