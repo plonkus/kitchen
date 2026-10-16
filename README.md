@@ -239,6 +239,8 @@ kitchen hire eval2 --clean-room --with-skill /absolute/path/to/skill
 
 Claude cooks receive role Markdown as an appended system prompt. Codex receives it as the first message after the TUI is ready, and Gemini/agy receives it as its initial turn. Clean-room mode supports Claude and Codex; `--with-skill` currently supports Claude only. Clean-room mode does not hide files such as `CLAUDE.md` or `AGENTS.md` from the cook's working directory, so use an empty directory or pinned checkout when that isolation matters.
 
+Each Codex cook's thread is named `[<kitchen>/<cook>]` at hire and archived with `codex archive` on `kitchen clock-out` or `kitchen close`, so cooks stay out of the ChatGPT app's session list. Clean-room Codex cooks are skipped. If the ChatGPT app holds the thread, the archive fails with a one-line note and the clock-out continues.
+
 ## How completion notifications work
 
 Every launched agent gets `AGENT_NAME`, `AGENT_KITCHEN`, and `STATUS_DIR`. Global hooks are gated on those variables, so ordinary agent sessions outside a kitchen are untouched. Every launched agent also gets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so durable notes go to the kitchen wiki rather than Claude Code's auto-memory.
