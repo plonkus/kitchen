@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
+from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, cmd_clock_out, _codex_rollout, _sweep_cooks, cmd_sweep, _parent_push_base, main, _agy_summary
 from claude_kitchen.state import write_status
 from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION
 
@@ -180,6 +180,9 @@ class TestHook:
         cmd_hook(argparse.Namespace(command="hook"))
 
     def test_codex_notify_writes_status_and_sends_to_socket(self, monkeypatch, tmp_path):
+        _stage_codex_rollout(tmp_path, "00000000-0000-0000-0000-000000000000", info=None)
+        monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setenv("AGENT_NAME", "codex-eng")
         monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path))
@@ -399,25 +402,44 @@ class TestCodexTokenCapture:
         assert data["session_id"] == thread_id
         assert data["status"] == "idle"
 
-    def test_codex_notify_omits_tokens_when_rollout_missing(self, monkeypatch, tmp_path):
-        """No rollout file in the 7-day window → tokens key is omitted
-        (not present-and-null). Status update still proceeds normally."""
+    def test_codex_notify_ignores_side_thread_without_rollout(self, monkeypatch, tmp_path):
+        """Codex's title-generation side thread fires notify too, with its own
+        thread-id and no rollout. It must not overwrite the cook's session_id
+        or summary, nor reach the sous. Payload shapes captured live from
+        codex-cli 0.162.1."""
+        real = "01a1421f-77b9-78d2-aa82-2d92d0de0c16"
+        _stage_codex_rollout(tmp_path, real, info=None)
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
         monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
-        payload = _codex_notify_payload(**{
-            "thread-id": "11111111-1111-1111-1111-111111111111",
-            "last-assistant-message": "no rollout staged",
-        })
 
-        with patch("claude_kitchen.channel.send_to_socket"):
-            cmd_hook(argparse.Namespace(command="hook-codex", json_payload=payload))
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook-codex", json_payload=_codex_notify_payload(**{
+                "thread-id": real, "client": "codex-tui",
+                "last-assistant-message": "NOTIFY-PROBE-1",
+            })))
+            cmd_hook(argparse.Namespace(command="hook-codex", json_payload=_codex_notify_payload(**{
+                "thread-id": "01a1421f-8113-7cb3-ada5-1605a20a0849", "client": "codex-tui",
+                "last-assistant-message": '{"title":"Say NOTIFY-PROBE-1"}',
+            })))
 
         data = json.loads((tmp_path / "state" / "cooks" / "cx-eng.json").read_text())
-        assert "tokens" not in data
-        assert data["status"] == "idle"
-        assert data["summary"] == "no rollout staged"
+        assert data["session_id"] == real
+        assert data["summary"] == "NOTIFY-PROBE-1"
+        mock_send.assert_called_once()
+
+    def test_codex_rollout_found_under_codex_home(self, monkeypatch, tmp_path):
+        """A clean-room cook exports its own CODEX_HOME; its rollout lives there."""
+        home = tmp_path / "codex-home" / "eval1"
+        f = _stage_codex_rollout(tmp_path, "33333333-3333-3333-3333-333333333333", info=None)
+        target = home / "sessions" / f.relative_to(tmp_path / ".codex" / "sessions")
+        target.parent.mkdir(parents=True)
+        f.rename(target)
+        monkeypatch.setenv("CODEX_HOME", str(home))
+        assert _codex_rollout("33333333-3333-3333-3333-333333333333") == target
 
     def test_codex_notify_skips_info_null_lines(self, monkeypatch, tmp_path):
         """Only the rate-limit-only `info: null` line exists → no usable
@@ -514,8 +536,10 @@ class TestChannelCtxAttribute:
         # 67490 → floor(67490 * 100 / 258400) = 26.
         assert push["ctx"] == "26% (67k/258k)"
 
-    def test_codex_notify_omits_ctx_when_rollout_missing(self, monkeypatch, tmp_path):
+    def test_codex_notify_omits_ctx_when_tokens_missing(self, monkeypatch, tmp_path):
+        _stage_codex_rollout(tmp_path, "11111111-1111-1111-1111-111111111111", info=None)
         monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setenv("AGENT_NAME", "cx-eng")
         monkeypatch.setenv("AGENT_KITCHEN", "risotto")
         monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
@@ -1217,8 +1241,9 @@ class TestCmdHireRole:
         cmd_hire(args)
         # Codex doesn't get a --append-system-prompt-file flag
         assert mock_spawn.call_args.kwargs["role_path"] is None
-        # Role content delivered via send_keys after wait_for_prompt
-        mock_send.assert_called_once()
+        # Thread named first, then role content delivered via send_keys
+        assert [c.args[2] for c in mock_send.call_args_list][0] == "/rename [risotto/rev-codex]"
+        assert mock_send.call_count == 2
         args_call = mock_send.call_args.args
         assert args_call[0] == "risotto"
         assert args_call[1] == "rev-codex"
@@ -1249,7 +1274,7 @@ class TestCmdHireRole:
         args.with_skill = []
         args.model = None
         cmd_hire(args)
-        mock_send.assert_called_once()
+        assert mock_send.call_count == 2
         assert "_default — generic cook" in mock_send.call_args.args[2]
 
     @patch("claude_kitchen.cli.send_keys")
@@ -1733,6 +1758,66 @@ class TestCmdClose:
         cmd_clock_out(args)
         assert not codex_home.exists()
         assert not (tmp_path / "cooks" / "eval1.json").exists()
+
+
+class TestArchiveCodexThread:
+    """Departing codex cooks get `codex archive <thread>` so they drop out of
+    the ChatGPT app's list. A stand-in `codex` on PATH records its argv and
+    exits with the given code — real subprocess, real status files."""
+
+    def _fake_codex(self, tmp_path, monkeypatch, exit_code=0):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        log = tmp_path / "codex-argv.log"
+        (bin_dir / "codex").write_text(
+            f"#!/bin/sh\necho \"$@\" >> {log}\n"
+            f"[ {exit_code} -eq 0 ] || echo 'Error: failed to archive session' >&2\nexit {exit_code}\n")
+        (bin_dir / "codex").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        return log
+
+    def _cook(self, base, name, backend, session_id="01a141ca-d6db-7900-9282-ba3d37c09029"):
+        write_status(base, name, {"status": "idle", "agent": name,
+                                  "backend": backend, "session_id": session_id})
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_clock_out_archives_codex_thread(self, mock_rk, mock_tmux, tmp_path, monkeypatch):
+        log = self._fake_codex(tmp_path, monkeypatch)
+        monkeypatch.setattr("claude_kitchen.cli.state_dir", lambda k: tmp_path)
+        self._cook(tmp_path, "rev", "codex")
+        cmd_clock_out(argparse.Namespace(kitchen="risotto", cook="rev"))
+        assert log.read_text() == "archive 01a141ca-d6db-7900-9282-ba3d37c09029\n"
+        assert not (tmp_path / "cooks" / "rev.json").exists()
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_archive_failure_is_one_line_and_not_fatal(self, mock_rk, mock_tmux, tmp_path, monkeypatch, capsys):
+        self._fake_codex(tmp_path, monkeypatch, exit_code=1)
+        monkeypatch.setattr("claude_kitchen.cli.state_dir", lambda k: tmp_path)
+        self._cook(tmp_path, "rev", "codex")
+        cmd_clock_out(argparse.Namespace(kitchen="risotto", cook="rev"))
+        out = capsys.readouterr()
+        assert out.err.count("\n") == 1
+        assert "rev: Codex thread 01a141ca-d6db-7900-9282-ba3d37c09029 not archived" in out.err
+        assert "failed to archive session" in out.err
+        assert "rev has clocked out." in out.out
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_close_archives_only_shared_home_codex_cooks(self, mock_rk, mock_tmux, tmp_path, monkeypatch):
+        log = self._fake_codex(tmp_path, monkeypatch)
+        monkeypatch.setattr("claude_kitchen.cli.state_dir", lambda k: tmp_path)
+        self._cook(tmp_path, "rev", "codex", "aaaaaaaa-0000-0000-0000-000000000001")
+        self._cook(tmp_path, "rev2", "codex", "aaaaaaaa-0000-0000-0000-000000000002")
+        self._cook(tmp_path, "eng", "claude", "bbbbbbbb-0000-0000-0000-000000000000")
+        self._cook(tmp_path, "eval1", "codex", "cccccccc-0000-0000-0000-000000000000")
+        (tmp_path / "codex-home" / "eval1").mkdir(parents=True)  # clean-room
+        cmd_close(argparse.Namespace(kitchen="risotto", keep_worktree=False, force=False))
+        assert log.read_text().splitlines() == [
+            "archive aaaaaaaa-0000-0000-0000-000000000001",
+            "archive aaaaaaaa-0000-0000-0000-000000000002",
+        ]
 
 
 class TestCmdCloseWipesNotesNotWiki:

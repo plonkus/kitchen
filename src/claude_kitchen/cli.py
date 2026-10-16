@@ -674,6 +674,13 @@ def cmd_hire(args):
             shutil.rmtree(codex_home, ignore_errors=True)
         sys.exit(f"{name} didn't show prompt within timeout.")
 
+    # Name the codex thread `[<kitchen>/<cook>]` so it is identifiable in the
+    # ChatGPT app and `codex resume`. /rename before the first turn creates the
+    # thread under that name, and Codex's generated title then leaves it alone.
+    # Clean-room threads live in a throwaway CODEX_HOME, so they stay bare.
+    if backend == "codex" and not clean_room:
+        send_keys(kitchen, name, f"/rename [{kitchen}/{name}]", backend=backend)
+
     # Clean-room codex cooks have no role_path — they boot bare and the sous
     # tickets the eval prompt (same as clean-room claude).
     if backend == "codex" and role_path:
@@ -760,11 +767,30 @@ def cmd_brigade(kitchen: str = None):
             print(f"  {win:<{name_w}}  {s:<7}  {ctx}")
 
 
+def _archive_codex_thread(base: Path, cook: str):
+    """Archive a departing Codex cook's thread so it drops out of the ChatGPT
+    app's session list. Must run after the cook's window is gone — codex holds
+    its own thread lock while alive. Clean-room cooks are skipped: their thread
+    lives in a private CODEX_HOME that is deleted anyway. A failure (typically
+    the ChatGPT app holding the thread's lock) is reported, never fatal."""
+    status = read_status(base, cook) or {}
+    thread_id = status.get("session_id")
+    if status.get("backend") != "codex" or not thread_id or (base / "codex-home" / cook).is_dir():
+        return
+    result = subprocess.run(["codex", "archive", thread_id], capture_output=True, text=True)
+    if result.returncode != 0:
+        reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
+        print(f"{cook}: Codex thread {thread_id} not archived ({reason}) — "
+              f"the ChatGPT app may hold it; `codex archive {thread_id}` later.",
+              file=sys.stderr)
+
+
 def cmd_clock_out(args):
     kitchen = resolve_kitchen(args.kitchen)
     tmux("kill-window", "-t", target(args.cook), kitchen=kitchen)
-    # Clean up status file
     base = state_dir(kitchen)
+    _archive_codex_thread(base, args.cook)
+    # Clean up status file
     cook_file = base / "cooks" / f"{args.cook}.json"
     cook_file.unlink(missing_ok=True)
     # Tear down a clean-room codex cook's per-cook CODEX_HOME if it has one.
@@ -886,11 +912,16 @@ def cmd_hook(args):
     }
     if codex:
         thread_id = payload.get("thread-id", "")
+        # Codex runs ephemeral side threads (e.g. title generation) that fire
+        # notify too but never write a rollout. Only the cook's own thread has
+        # one, so a payload without a rollout is not this cook's turn.
+        rollout = _codex_rollout(thread_id)
+        if rollout is None:
+            return
         updates["session_id"] = thread_id
         # Codex doesn't carry usage in the notify payload — read it from
-        # the cook's rollout JSONL at ~/.codex/sessions/YYYY/MM/DD/
-        # rollout-<ts>-<thread_id>.jsonl. See spec §Source of truth (Codex).
-        tokens = _codex_tokens_from_rollout(thread_id)
+        # the cook's rollout JSONL.
+        tokens = _read_codex_token_count(rollout)
         if tokens is not None:
             updates["tokens"] = tokens
     else:
@@ -1014,17 +1045,16 @@ def _claude_tokens_from_transcript(transcript_path):
 _CODEX_SCAN_BACK_DAYS = 7
 
 
-def _codex_tokens_from_rollout(thread_id):
-    """Find the cook's Codex rollout JSONL (matched on `thread-id` from the
-    notify payload) and extract tokens from the most recent token_count
-    event with populated `info`. Returns {input, max} or None if the file
-    isn't found within the 7-day scan-back window or has no usable line.
+def _codex_rollout(thread_id):
+    """Find the cook's Codex rollout JSONL under $CODEX_HOME/sessions
+    (matched on `thread-id` from the notify payload). Returns its path, or
+    None if it isn't found within the 7-day scan-back window.
 
     Scan order: today, then walk back day-by-day. Codex writes to
     YYYY/MM/DD/ in UTC; sessions can span midnight, hence the walk."""
     if not thread_id:
         return None
-    base = Path.home() / ".codex" / "sessions"
+    base = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
     if not base.is_dir():
         return None
     suffix = f"-{thread_id}.jsonl"
@@ -1036,7 +1066,7 @@ def _codex_tokens_from_rollout(thread_id):
             continue
         for f in day_dir.iterdir():
             if f.name.startswith("rollout-") and f.name.endswith(suffix):
-                return _read_codex_token_count(f)
+                return f
     return None
 
 
@@ -1321,6 +1351,8 @@ def cmd_close(args):
         kitchen_file.unlink(missing_ok=True)
 
     tmux("kill-server", kitchen=kitchen)
+    for cook_file in sorted((base / "cooks").glob("*.json")):
+        _archive_codex_thread(base, cook_file.stem)
 
     # Clean up mcp config, socket, pid, and stale cook state
     for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
