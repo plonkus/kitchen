@@ -431,6 +431,30 @@ class TestCodexTokenCapture:
         assert data["summary"] == "NOTIFY-PROBE-1"
         mock_send.assert_called_once()
 
+    def test_codex_notify_accepts_pinned_thread_without_rollout(self, monkeypatch, tmp_path):
+        """Once pinned, the cook's own thread keeps reporting even when its
+        rollout has aged out of the lookup window — otherwise a long-lived
+        cook goes mute."""
+        real = "01a1421f-77b9-78d2-aa82-2d92d0de0c16"
+        monkeypatch.setattr("claude_kitchen.cli.Path.home", classmethod(lambda cls: tmp_path))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        monkeypatch.setenv("AGENT_NAME", "cx-eng")
+        monkeypatch.setenv("AGENT_KITCHEN", "risotto")
+        monkeypatch.setenv("STATUS_DIR", str(tmp_path / "state"))
+        write_status(tmp_path / "state", "cx-eng", {"status": "working", "backend": "codex",
+                                                    "session_id": real})
+
+        mock_send = MagicMock()
+        with patch("claude_kitchen.channel.send_to_socket", mock_send):
+            cmd_hook(argparse.Namespace(command="hook-codex", json_payload=_codex_notify_payload(**{
+                "thread-id": real, "last-assistant-message": "nine days in",
+            })))
+
+        data = json.loads((tmp_path / "state" / "cooks" / "cx-eng.json").read_text())
+        assert data["status"] == "idle"
+        assert data["summary"] == "nine days in"
+        mock_send.assert_called_once()
+
     def test_codex_rollout_found_under_codex_home(self, monkeypatch, tmp_path):
         """A clean-room cook exports its own CODEX_HOME; its rollout lives there."""
         home = tmp_path / "codex-home" / "eval1"
@@ -1801,6 +1825,19 @@ class TestArchiveCodexThread:
         assert out.err.count("\n") == 1
         assert "rev: Codex thread 01a141ca-d6db-7900-9282-ba3d37c09029 not archived" in out.err
         assert "failed to archive session" in out.err
+        assert "rev has clocked out." in out.out
+
+    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_missing_codex_binary_is_one_line_and_not_fatal(self, mock_rk, mock_tmux, tmp_path, monkeypatch, capsys):
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr("claude_kitchen.cli.state_dir", lambda k: tmp_path)
+        self._cook(tmp_path, "rev", "codex")
+        cmd_clock_out(argparse.Namespace(kitchen="risotto", cook="rev"))
+        out = capsys.readouterr()
+        assert out.err.count("\n") == 1
+        assert "rev: Codex thread 01a141ca-d6db-7900-9282-ba3d37c09029 not archived (" in out.err
         assert "rev has clocked out." in out.out
 
     @patch("claude_kitchen.cli.tmux")

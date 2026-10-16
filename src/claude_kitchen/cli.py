@@ -777,12 +777,14 @@ def _archive_codex_thread(base: Path, cook: str):
     thread_id = status.get("session_id")
     if status.get("backend") != "codex" or not thread_id or (base / "codex-home" / cook).is_dir():
         return
-    result = subprocess.run(["codex", "archive", thread_id], capture_output=True, text=True)
-    if result.returncode != 0:
-        reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
-        print(f"{cook}: Codex thread {thread_id} not archived ({reason}) — "
-              f"the ChatGPT app may hold it; `codex archive {thread_id}` later.",
-              file=sys.stderr)
+    try:
+        result = subprocess.run(["codex", "archive", thread_id], capture_output=True, text=True)
+        reason = (result.stderr.strip().splitlines() or ["no output"])[-1] if result.returncode else None
+    except OSError as e:
+        reason = str(e)
+    if reason:
+        print(f"{cook}: Codex thread {thread_id} not archived ({reason}); "
+              f"run `codex archive {thread_id}` later.", file=sys.stderr)
 
 
 def cmd_clock_out(args):
@@ -913,15 +915,17 @@ def cmd_hook(args):
     if codex:
         thread_id = payload.get("thread-id", "")
         # Codex runs ephemeral side threads (e.g. title generation) that fire
-        # notify too but never write a rollout. Only the cook's own thread has
-        # one, so a payload without a rollout is not this cook's turn.
+        # notify too. The cook's thread is pinned on its first turn — the one
+        # whose thread has a rollout (side threads never write one) — and
+        # after that only the pinned thread counts, however old it gets.
+        pinned = (read_status(base, name) or {}).get("session_id")
         rollout = _codex_rollout(thread_id)
-        if rollout is None:
+        if thread_id != pinned and (pinned or rollout is None):
             return
         updates["session_id"] = thread_id
         # Codex doesn't carry usage in the notify payload — read it from
         # the cook's rollout JSONL.
-        tokens = _read_codex_token_count(rollout)
+        tokens = _read_codex_token_count(rollout) if rollout else None
         if tokens is not None:
             updates["tokens"] = tokens
     else:
