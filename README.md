@@ -291,6 +291,10 @@ plow-agents mint ln_... --credential-file ~/.claude-kitchen/widget-boss/plow-cha
 
 Then restart the sous: `/exit`, then `kitchen open --resume boss` from the project root. Text the line to check it. A new group needs no setup: add the line's number to it.
 
+## Messaging the sous on Discord
+
+A kitchen whose state dir holds `discord/.env` (mode 600, `DISCORD_BOT_TOKEN=<token>`) also loads the official [Discord channel plugin](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/discord)'s server, run with [Bun](https://bun.sh) from the marketplace copy. Kitchen refuses to start it unless that copy is the reviewed 0.0.4. Only the Discord user IDs in `discord/access.json` at boot are heard (`{"dmPolicy": "allowlist", "allowFrom": ["<your ID>"]}`); pairing is off. Add no `groups`: a guild channel whose own `allowFrom` is empty admits every member who mentions the bot. The plugin reads a DM of `yes`/`no` plus one five-letter word (`yes today`) as a permission answer, reacts ✅/❌ and does not deliver it. Restart the sous as above, then DM the bot.
+
 ## Customize the workflow
 
 The orchestration behavior is intentionally not hard-coded:
