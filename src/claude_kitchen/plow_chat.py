@@ -26,9 +26,9 @@ CREDENTIALS = "plow-credentials"  # written mode 600 by `plow-agents mint LINE -
 RECONNECT_DELAY = 5
 PAGE = 50
 # One speaker's back-to-back texts are one tag: iMessage sends a text and the
-# link after it as two messages (0.83 s apart, measured). The window restarts
-# on each text; another speaker or chat ends it.
-BURST_SECONDS = 1.5
+# link after it as two messages, measured from 0.83 s up to 1.50 s apart. The
+# window restarts on each text; another speaker or chat ends it.
+BURST_SECONDS = 2.0
 
 
 def log(msg: str):
