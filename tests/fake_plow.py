@@ -38,7 +38,12 @@ class FakePlow:
         ])
 
     def _message(self, chat, body, handle=None, late=False):
-        sender = {"type": "member", "display_name": NAMES.get(handle, handle), "provider_key": handle} if handle else {"type": "agent"}
+        if isinstance(handle, dict):
+            sender = handle  # a peer agent's line or a Plow system note
+        elif handle:
+            sender = {"type": "member", "display_name": NAMES.get(handle, handle), "provider_key": handle}
+        else:
+            sender = {"type": "agent", "relationship": "self", "line": {"display_name": "Cedar", "uid": "ln_self"}}
         message = {"uid": f"msg_{next(self._uids)}", "chat_uid": chat, "body": body, "sender": sender}
         # A late text was sent before the newest one, so Plow sorts it below it.
         self.history[chat].insert(len(self.history[chat]) - late, message)
