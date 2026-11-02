@@ -146,11 +146,12 @@ class Bridge:
         self.due = asyncio.get_running_loop().time() + BURST_SECONDS
 
     async def flush(self):
-        """Hand a participant's burst to the sous as one text; our own sends
-        and Plow's system notes are only recorded."""
+        """Hand a participant's burst to the sous as one text; our own sends,
+        Plow's system notes and text-less messages (tapbacks, bare
+        attachments) are only recorded."""
         first = self.burst[0]
-        if name := sender_name(first["sender"]):
-            body = "\n\n".join(m["body"] for m in self.burst)
+        body = "\n\n".join(m["body"] for m in self.burst if m["body"].strip())
+        if body and (name := sender_name(first["sender"])):
             await self.deliver(body, {"from": name, "chat": first["chat_uid"]})
         uids = self.taken[first["chat_uid"]]
         uids += [m["uid"] for m in self.burst]  # after delivery, so a crash mid-send can't suppress it
