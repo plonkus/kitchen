@@ -1978,6 +1978,42 @@ class TestCmdSetupExit:
         assert exc.value.code == 1
 
 
+class TestCmdSetupHooks:
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_adds_missing_hooks_without_clobbering(self, mock_run, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        other = {"type": "command", "command": "$HOME/.claude/hooks/capture-prompt.sh"}
+        original = {
+            "model": "opus",
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "kitchen hook"}]}],
+                "UserPromptSubmit": [{"hooks": [other]}],
+            },
+        }
+        settings.write_text(json.dumps(original))
+        settings.chmod(0o640)
+        from claude_kitchen.cli import cmd_setup
+
+        for _ in range(2):
+            with pytest.raises(SystemExit):  # superpowers is absent from this HOME
+                cmd_setup(MagicMock())
+
+        data = json.loads(settings.read_text())
+        assert data["model"] == "opus"
+        assert data["hooks"]["Stop"] == original["hooks"]["Stop"]
+        assert data["hooks"]["UserPromptSubmit"] == [
+            {"hooks": [other]},
+            {"matcher": "", "hooks": [{"type": "command", "command": "kitchen hook"}]},
+        ]
+        assert settings.stat().st_mode & 0o777 == 0o640
+        backups = list(settings.parent.glob("settings.json.bak-kitchen-*"))
+        assert len(backups) == 1 and json.loads(backups[0].read_text()) == original
+        assert "Claude hooks added (UserPromptSubmit)" in capsys.readouterr().out
+
+
 class TestCmdSetupStatusline:
     """Three-way advisory: no statusLine, different statusLine (embed advice),
     kitchen segment present (green). None block setup."""
@@ -2192,8 +2228,7 @@ class TestCmdSetupSuperpowers:
         sp = tmp_path / ".claude" / "plugins" / "cache" / marketplace / "superpowers"
         sp.mkdir(parents=True)
         from claude_kitchen.cli import cmd_setup
-        with pytest.raises(SystemExit):  # hooks are missing; only superpowers matters here
-            cmd_setup(MagicMock())
+        cmd_setup(MagicMock())  # setup installs the hooks itself, so it passes
         assert f"✅ superpowers plugin installed ({sp})" in capsys.readouterr().out
 
     @patch("claude_kitchen.cli.subprocess.run")
