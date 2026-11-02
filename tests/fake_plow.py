@@ -7,11 +7,13 @@ from collections import defaultdict
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
 TOKEN = "agt_fake-token-xyz"
+SIGNATURE = "signed-write-capability"
+ACCEPTED_TYPES = {"image/png", "application/pdf"}  # the types the tests send
 NAMES = {"+15550000001": "Sam", "+15550000002": "Patrick"}  # as Plow names members it knows
 
 
@@ -19,12 +21,17 @@ class FakePlow:
     def __init__(self):
         self.history = defaultdict(list)  # chat -> messages, oldest first
         self.sent = []  # (chat, body) the agent posted
+        self.attachments = {}  # uid -> declared metadata, plus upload once the PUT lands
+        self.upload_status = 200  # what the provider's upload URL answers
+        self.hold = False  # answer sends as held, never delivered
         self.sockets = []
         self.flaky = set()  # chats whose next read answers 503
         self._uids = itertools.count(1)
         self.app = Starlette(routes=[
             Route("/v1/ws/ticket", self._ticket, methods=["POST"]),
             Route("/v1/chats/{chat}/messages", self._messages, methods=["GET", "POST"]),
+            Route("/v1/chats/{chat}/attachments", self._attachments, methods=["POST"]),
+            Route("/provider/{uid}", self._upload, methods=["PUT"]),
             WebSocketRoute("/v1/ws", self._ws),
         ])
 
@@ -70,13 +77,41 @@ class FakePlow:
             self.flaky.discard(chat)
             return JSONResponse({"error": "unavailable"}, status_code=503)
         if request.method == "POST":
-            body = (await request.json())["body"]
+            sent = await request.json()
+            if self.hold:
+                return JSONResponse({"uid": "msg_earlier", "held": True, "reason": "repeated_agent_message"})
+            body = sent.get("body", "")
             self.sent.append((chat, body))
+            for uid in sent.get("attachment_uids", []):
+                self.attachments[uid]["sent_with"] = body
             message = self._message(chat, body)
             await self._broadcast(message)  # Plow echoes the agent's own sends
             return JSONResponse(message, status_code=201)
         limit = int(request.query_params.get("limit", 20))
         return JSONResponse({"data": self.history[chat][::-1][:limit]})  # newest first, as Plow orders
+
+    async def _attachments(self, request):
+        if not self._authorized(request):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        declared = await request.json()
+        if declared["content_type"] not in ACCEPTED_TYPES:
+            return JSONResponse({"error": {"code": "unsupported_content_type"}}, status_code=415)
+        uid = f"att_{next(self._uids)}"
+        self.attachments[uid] = declared
+        return JSONResponse({
+            "uid": uid,
+            "upload_url": f"{request.base_url}provider/{uid}?sig={SIGNATURE}",
+            "upload_headers": {
+                "Content-Type": declared["content_type"],
+                "Content-Length": str(declared["size_bytes"]),
+                "x-provider-grant": uid,
+            },
+        }, status_code=201)
+
+    async def _upload(self, request):
+        """The provider's signed URL: not Plow, so it must never see Plow's token."""
+        self.attachments[request.path_params["uid"]]["upload"] = (await request.body(), request.headers)
+        return Response(status_code=self.upload_status)
 
     async def _ws(self, websocket):
         await websocket.accept()
