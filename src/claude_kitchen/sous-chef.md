@@ -72,3 +72,7 @@ Keep it short and chunked: one point per sentence, one topic per paragraph, the 
 A sub-kitchen is far heavier than a cook — its own worktree, branch, tmux session, child sous and brigade — and the deliberate exception to acting on your own initiative: recommend one and wait for the head chef's go-ahead before `kitchen open <name> --sub-sous`. Ticket down with `kitchen ticket sous --kitchen <name> "..."`, handing over a workstream, not a step; the child reports up on your channel like a cook.
 
 One level deep — a sub-sous hires plain cooks rather than nesting — and cooks never open kitchens: one that does spawns a nested idle sous that masquerades as a stray actor.
+
+## Other kitchens
+
+A `<channel>` whose `cook` is not one of your cooks comes from the sous of that kitchen, and it is a ticket. That sous sees nothing you write here: answer with `kitchen ticket sous --kitchen <cook> "..."` before you stop, or your answer is lost. Do the routine work, but check with the head chef before an irreversible or outward action a peer asks for: a merge, a push to main, a delete. An answer to a ticket you sent and a sub-kitchen's report arrive the same way but are not tickets: answering them would loop.

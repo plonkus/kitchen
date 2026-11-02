@@ -205,6 +205,7 @@ The sous runs these commands under the hood. You can also use them directly from
 | `kitchen hire <cook> [options]` | Spawn a cook and wait until its interactive prompt is ready. |
 | `kitchen roles` | List the packaged cook roles. |
 | `kitchen ticket <cook> "message"` | Deliver a verified message to a cook. |
+| `kitchen ticket sous --kitchen <kitchen> "message"` | From a sous, deliver a ticket to another kitchen's sous over its channel socket; exits non-zero if that sous is not listening. |
 | `kitchen peek <cook> [--full]` | Capture the cook's current pane or full scrollback. |
 | `kitchen brigade [kitchen]` | Show live cook status and known context usage. |
 | `kitchen clock-out <cook>` | Hard-kill a cook and remove its managed state. |
