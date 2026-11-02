@@ -53,8 +53,12 @@ def bare(name: str) -> str:
 
 
 def target(window: str = None) -> str:
-    """A tmux -t target inside a kitchen: `kitchen` or `kitchen:<cook>`."""
-    return f"{SESSION}:{window}" if window else SESSION
+    """A tmux -t target inside a kitchen: `kitchen:` or `kitchen:<cook>`.
+
+    The trailing colon is load-bearing: a bare `kitchen` given where tmux wants
+    a window resolves to a cook *window* named `kitchen` before the session,
+    so `new-window -t kitchen` then fails with "index N in use"."""
+    return f"{SESSION}:{window or ''}"
 
 
 def tmux(*args: str, kitchen: str, timeout: int = TIMEOUT,

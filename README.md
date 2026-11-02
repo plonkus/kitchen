@@ -266,6 +266,7 @@ The root sous's own Stop hook does not notify its own socket, preventing an echo
 │   ├── sous.pid              # duplicate-sous guard
 │   ├── cooks/<name>.json     # backend, status, response, session, context
 │   ├── codex-home/           # clean-room Codex homes, when used
+│   ├── plow-chat/            # optional: plow-credentials (600), last_seen.json
 │   └── notes/                # handoff, log, and long task briefs
 └── projects/<slug>/wiki/
     ├── mistakes.md           # durable lessons
@@ -273,6 +274,21 @@ The root sous's own Stop hook does not notify its own socket, preventing an echo
 ```
 
 `kitchen close` removes managed per-kitchen notes and cook state. The project wiki survives so later kitchens inherit the lessons and preferences.
+
+## Texting the sous (plow-chat)
+
+A kitchen whose state dir holds `plow-chat/plow-credentials` also loads the `plow-chat` channel when `kitchen open` starts its sous. Texts to that Plow line arrive as `<channel source="plow-chat" from="<name>" chat="<chat uid>">`, and the sous answers with its `reply` tool. There is no allowlist: Plow delivers only chats the line's account owns, meaning the owner's 1:1 and any iMessage group the owner was in when its first text arrived. Every member of those chats speaks with head-chef authority. Anyone who has both numbers can start such a group, so the owner should treat every group with the line as trusted.
+
+**Setup**, using [`plow-agents`](https://github.com/plow-pbc/plow-agents#quickstart) and the kitchen name `kitchen open` prints (a kitchen `boss` opened in a `widget` repo is `widget-boss`):
+
+```sh
+plow-agents login                 # text the printed phrase from your phone
+plow-agents lines                 # pick a free line
+mkdir -p -m 700 ~/.claude-kitchen/widget-boss/plow-chat
+plow-agents mint ln_... --credential-file ~/.claude-kitchen/widget-boss/plow-chat/plow-credentials
+```
+
+Then restart the sous: `/exit`, then `kitchen open --resume boss` from the project root. Text the line to check it. A new group needs no setup: add the line's number to it.
 
 ## Customize the workflow
 

@@ -40,6 +40,24 @@ def notes_dir(kitchen: str) -> Path:
     return state_dir(kitchen) / "notes"
 
 
+def plow_chat_dir(kitchen: str) -> Path:
+    return state_dir(kitchen) / "plow-chat"
+
+
+def channel_servers(kitchen: str) -> dict:
+    """The MCP servers a sous loads, each one a channel: the kitchen's own,
+    plus plow-chat once this kitchen holds a line's agent credential. Both run the
+    `kitchen` on PATH, the deployed install."""
+    servers = {"kitchen": {"command": "kitchen", "args": ["channel-server", kitchen]}}
+    if (plow_chat_dir(kitchen) / "plow-credentials").exists():
+        servers["plow-chat"] = {"command": "kitchen", "args": ["plow-chat-server", kitchen]}
+    return servers
+
+
+def channel_flags(kitchen: str) -> list[str]:
+    return [f"server:{name}" for name in channel_servers(kitchen)]
+
+
 def atomic_write_json(path: Path, data: dict):
     """Atomic JSON write via temp-then-os.replace. Concurrent writers
     never share a temp filename and never replace each other's in-flight

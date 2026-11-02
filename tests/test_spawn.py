@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock
-from claude_kitchen.spawn import build_shell_cmd, spawn_sous, build_sous_cmd, spawn_sous_window
+from claude_kitchen.spawn import build_shell_cmd, spawn_sous, build_sous_cmd, spawn_sous_window, spawn_window
 
 
 def _codex_argv_from_shell_cmd(cmd: str) -> list[str]:
@@ -500,7 +500,7 @@ class TestKitchenIdentityIsNotTheSessionName:
         from claude_kitchen.tmux import target, SESSION
         assert SESSION == "kitchen"
         assert target("eng") == "kitchen:eng"
-        assert target() == "kitchen"
+        assert target() == "kitchen:"
 
 
 class TestBuildSousCmd:
@@ -569,6 +569,32 @@ class TestBuildSousCmd:
         assert "KITCHEN_NOTES=" not in cmd
 
 
+class TestSpawnWindow:
+    def test_hires_beside_a_cook_named_after_the_session(self, tmp_path):
+        """A cook called `kitchen` shares the session's name; a bare
+        `new-window -t kitchen` resolved to that window and every later hire
+        failed with "index N in use". Real tmux, on a throwaway socket."""
+        from claude_kitchen.tmux import SESSION, tmux
+        kitchen = f"hire-target-{os.getpid()}"
+        tmux("new-session", "-d", "-s", SESSION, "-n", "kitchen", "sleep 30", kitchen=kitchen, check=True)
+        sock = Path(tmux("display", "-p", "#{socket_path}", kitchen=kitchen).stdout.strip())
+        try:
+            with patch("claude_kitchen.spawn.build_shell_cmd", return_value="sleep 30"):
+                assert spawn_window(kitchen, "rev1", str(tmp_path), "claude", str(tmp_path))
+            windows = tmux("list-windows", "-t", f"{SESSION}:", "-F", "#{window_name}", kitchen=kitchen).stdout.split()
+            assert windows == ["kitchen", "rev1"]
+        finally:
+            tmux("kill-server", kitchen=kitchen)
+            sock.unlink(missing_ok=True)  # tmux leaves the socket file behind
+
+    @patch("claude_kitchen.spawn.has_session", return_value=True)
+    @patch("claude_kitchen.spawn.tmux")
+    def test_failed_launch_prints_tmux_reason(self, mock_tmux, _has, tmp_path, capsys):
+        mock_tmux.return_value = MagicMock(returncode=1, stderr="create window failed: index 2 in use\n")
+        assert not spawn_window("k", "rev1", str(tmp_path), "claude", str(tmp_path))
+        assert "tmux: create window failed: index 2 in use" in capsys.readouterr().err
+
+
 class TestSpawnSousWindow:
     @patch("claude_kitchen.spawn.tmux")
     def test_spawns_window_kills_placeholder_writes_pid(self, mock_tmux, tmp_path):
@@ -579,7 +605,7 @@ class TestSpawnSousWindow:
         first = mock_tmux.call_args_list[0]
         assert first.args[0] == "new-window"
         assert first.kwargs["kitchen"] == "widget-child"  # socket
-        assert "kitchen" in first.args                    # static session target
+        assert "kitchen:" in first.args                   # static session target
         assert "sous" in first.args
         kinds = [c.args[0] for c in mock_tmux.call_args_list]
         # _placeholder removed; pane pid queried for sous.pid.

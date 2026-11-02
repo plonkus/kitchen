@@ -7,7 +7,7 @@ import pytest
 
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, namespaced, wiki_dir, notes_dir,
+    project_slug, namespaced, wiki_dir, notes_dir, plow_chat_dir, channel_servers, channel_flags,
 )
 
 
@@ -246,3 +246,18 @@ class TestWikiAndNotesDirs:
         monkeypatch.setenv("HOME", str(tmp_path))
         d = notes_dir("risotto")
         assert d == tmp_path / ".claude-kitchen" / "risotto" / "notes"
+
+
+@pytest.mark.parametrize("configured, flags", [
+    (False, ["server:kitchen"]),
+    (True, ["server:kitchen", "server:plow-chat"]),
+])
+def test_plow_chat_channel_loads_only_for_the_kitchen_holding_a_line_credential(tmp_path, monkeypatch, configured, flags):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if configured:
+        plow_chat_dir("boss").mkdir(parents=True)
+        (plow_chat_dir("boss") / "plow-credentials").write_text("PLOW_AGENT_TOKEN=t\n")
+    assert channel_flags("boss") == flags
+    assert channel_flags("other-kitchen") == ["server:kitchen"]
+    if configured:
+        assert channel_servers("boss")["plow-chat"] == {"command": "kitchen", "args": ["plow-chat-server", "boss"]}

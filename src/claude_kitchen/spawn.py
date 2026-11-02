@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from claude_kitchen.tmux import tmux, has_session, target, SESSION
-from claude_kitchen.state import MCP_CONFIG_NAME
+from claude_kitchen.state import MCP_CONFIG_NAME, channel_flags
 
 
 def check_sous_pid(state_dir: Path):
@@ -71,7 +71,7 @@ def spawn_sous(kitchen: str, state_dir: Path, sous_prompt: str,
     claude_args = [
         "claude",
         "--dangerously-skip-permissions",
-        "--dangerously-load-development-channels", "server:kitchen",
+        "--dangerously-load-development-channels", *channel_flags(kitchen),
         "--mcp-config", str(state_dir / MCP_CONFIG_NAME),
         f"--remote-control=[sous] {kitchen}",
     ]
@@ -217,12 +217,22 @@ def spawn_window(kitchen: str, name: str, cwd: str, backend: str, status_dir: st
                           plugin_dirs=plugin_dirs, model=model)
 
     if has_session(kitchen):
-        result = tmux("new-window", "-t", target(), "-n", name, "-c", cwd, cmd,
-                      kitchen=kitchen)
-    else:
-        result = tmux("new-session", "-d", "-s", SESSION, "-n", name, "-c", cwd, cmd,
-                      kitchen=kitchen)
+        return _new_window(kitchen, name, cwd, cmd)
+    result = tmux("new-session", "-d", "-s", SESSION, "-n", name, "-c", cwd, cmd,
+                  kitchen=kitchen)
+    return _launched(result)
 
+
+def _new_window(kitchen: str, name: str, cwd: str, cmd: str) -> bool:
+    return _launched(tmux("new-window", "-t", target(), "-n", name, "-c", cwd, cmd,
+                          kitchen=kitchen))
+
+
+def _launched(result) -> bool:
+    """True on success; otherwise print tmux's own reason, which the caller's
+    one-line failure message would otherwise hide."""
+    if result.returncode != 0:
+        print(f"tmux: {result.stderr.strip()}", file=sys.stderr)
     return result.returncode == 0
 
 
@@ -260,7 +270,7 @@ def build_sous_cmd(name: str, base: Path, sous_md_path: Path,
     model_flag = f"--model {q(model)} " if model else ""
     claude = (
         "exec claude --dangerously-skip-permissions "
-        "--dangerously-load-development-channels server:kitchen "
+        f"--dangerously-load-development-channels {' '.join(channel_flags(name))} "
         f"--mcp-config {q(str(base / MCP_CONFIG_NAME))} "
         f"{model_flag}"
         f"--append-system-prompt-file {q(str(sous_md_path))}"
@@ -281,8 +291,7 @@ def spawn_sous_window(name: str, base: Path, sous_md_path: Path, project: Path,
     tear the half-created kitchen down."""
     cmd = build_sous_cmd(name, base, sous_md_path, slug=slug,
                          parent_base=parent_base, model=model)
-    if tmux("new-window", "-t", target(), "-n", "sous", "-c", str(project),
-            cmd, kitchen=name).returncode != 0:
+    if not _new_window(name, "sous", str(project), cmd):
         return False
     # The placeholder kill is cosmetic (the window is `_`-hidden from brigade);
     # a transient stall under launch load must not fail an otherwise-good launch.

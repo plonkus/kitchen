@@ -70,6 +70,17 @@ def _refuse_if_deaf(capabilities):
         )
 
 
+async def push(write_stream, content: str, meta: dict):
+    """Send one channel notification; Claude renders it as a <channel> tag
+    with the server's name as `source` and each meta key as an attribute."""
+    notification = JSONRPCNotification(
+        jsonrpc="2.0",
+        method=f"notifications/{CHANNEL_CAPABILITY}",
+        params={"content": content, "meta": meta},
+    )
+    await write_stream.send(SessionMessage(message=JSONRPCMessage(notification)))
+
+
 async def handle_connection(reader: asyncio.StreamReader, writer, notify):
     """Handle one cook hook connection: read JSON line, call notify."""
     try:
@@ -99,8 +110,10 @@ def _claim_socket(sock_path: Path, _max_probes: int = 8):
     TOCTOU guard: two servers probing the same STALE socket both see
     ECONNREFUSED; if both blindly unlink+bind, the second unlinks the first's
     now-LIVE socket and orphans it (last-writer-wins reopens). So we capture the
-    file's inode identity BEFORE probing and only unlink if the path STILL refers
-    to that exact inode. If it changed under us (someone rebound), we re-probe;
+    file's identity BEFORE probing and only unlink if the path STILL refers
+    to that exact file. Identity includes ctime: ext4 hands a just-freed inode
+    number straight to the next file, so (ino, dev) alone can't see a rebind.
+    If it changed under us (someone rebound), we re-probe;
     the loop converges (the winner answers and we stand down).
     """
     for _ in range(_max_probes):
@@ -119,7 +132,7 @@ def _claim_socket(sock_path: Path, _max_probes: int = 8):
                 now = sock_path.stat()
             except FileNotFoundError:
                 return  # peer cleared it for us → bind
-            if (now.st_ino, now.st_dev) != (before.st_ino, before.st_dev):
+            if (now.st_ino, now.st_dev, now.st_ctime_ns) != (before.st_ino, before.st_dev, before.st_ctime_ns):
                 continue
             sock_path.unlink(missing_ok=True)
             return
@@ -186,12 +199,7 @@ async def run_server(kitchen: str):
         # token info yet — the sous shouldn't see ctx="" or ctx="null".
         if data.get("ctx"):
             meta["ctx"] = data["ctx"]
-        notification = JSONRPCNotification(
-            jsonrpc="2.0",
-            method=f"notifications/{CHANNEL_CAPABILITY}",
-            params={"content": summary, "meta": meta},
-        )
-        await ws.send(SessionMessage(message=JSONRPCMessage(notification)))
+        await push(ws, summary, meta)
 
     async def on_connection(reader, writer):
         await handle_connection(reader, writer, notify)

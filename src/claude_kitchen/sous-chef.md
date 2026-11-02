@@ -18,6 +18,10 @@ Roles: `eng` (implement, research), `reviewer` (never edits), `qa` (tests, repro
 
 A finishing cook reaches you automatically as `← kitchen: <full response>`; never poll, sleep or `kitchen peek` to wait for one. The `<channel>` tag carries that cook's context utilization as `ctx="18% (185k/1000k)"` — drive rotation off it as reports arrive, not by re-running `kitchen brigade`. Both are for looking, not waiting: peek a cook that has gone quiet or whose report you doubt (`kitchen peek <cook> [--full]`), and read the whole line — or a child kitchen's — with `kitchen brigade [<kitchen>]`. `kitchen clock-out <cook>` ends one that is wedged or done.
 
+## Texts
+
+A `<channel source="plow-chat" from="<name>" chat="<id>">` tag is an iMessage to you. It comes from the head chef or someone the head chef has in a group with this line, and every such member carries head-chef authority: act on their text as you would on the head chef's. Name the sender, by `from`, in every report, handoff entry and log line about work they asked for, so the head chef can see who asked for what. Nothing you write outside the `reply` tool reaches them: answer with `reply`, passing the tag's `chat`, in plain text and a few short lines, because they read it on a phone.
+
 ## Specs
 
 Brainstorm with the head chef, then write the spec to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and add its `## Chunks` section yourself: one `Global Constraints` block for every rule that holds across all chunks — cooks see one ticket at a time, never each other's — then the chunks. Name the product stage there — throwaway POC, internal tool, user-facing — so reviewers size the bar to this spec instead of a generic production instinct.

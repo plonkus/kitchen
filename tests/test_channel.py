@@ -184,7 +184,7 @@ class TestClaimSocket:
             stale = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
             stale.bind(str(sock_path))
             stale.close()
-            stale_ino = sock_path.stat().st_ino
+            stale_id = (sock_path.stat().st_ino, sock_path.stat().st_ctime_ns)
             live_holder = []
             real_socket = sock_mod.socket  # unpatched constructor for A
 
@@ -217,10 +217,11 @@ class TestClaimSocket:
             assert exc.value.code == 0, "B must stand down, not stomp A"
             assert racing.calls == 2, "B must re-probe after inode changed"
 
-            # A's live socket is intact (NOT orphaned): path inode is A's, not
-            # the stale one, and A still accepts a round-trip.
+            # A's live socket is intact (NOT orphaned): the path is A's file,
+            # not the stale one (ext4 may reuse the inode number, so identity
+            # includes ctime), and A still accepts a round-trip.
             assert sock_path.exists()
-            assert sock_path.stat().st_ino != stale_ino
+            assert (sock_path.stat().st_ino, sock_path.stat().st_ctime_ns) != stale_id
             a = live_holder[0]
             client = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
             client.connect(str(sock_path))
