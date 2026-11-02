@@ -1,7 +1,10 @@
 """Tests for the kitchen channel MCP server."""
 import asyncio
 import json
+import os
 import socket as sock_mod
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -10,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_kitchen.channel import _claim_socket, handle_connection, send_to_socket
+from claude_kitchen.channel import _claim_socket, deliver_to_socket, handle_connection, send_to_socket
 
 
 class TestHandleConnection:
@@ -61,6 +64,45 @@ class TestHandleConnection:
 
         notified = asyncio.run(run())
         assert notified == []
+
+
+class TestChannelServer:
+    """The real channel server, driven over its MCP stdio and its real socket."""
+
+    def test_message_past_asyncios_default_limit_reaches_the_sous(self):
+        summary = "x" * 70_000  # asyncio's default line limit is 64 KiB
+        with tempfile.TemporaryDirectory(dir="/tmp") as home:
+            sock_path = Path(home) / ".claude-kitchen" / "k" / "kitchen.sock"
+            server = subprocess.Popen(
+                [sys.executable, "-c", "from claude_kitchen.channel import main; main('k')"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                env={**os.environ, "HOME": home},
+            )
+
+            def send(message):
+                server.stdin.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+                server.stdin.flush()
+
+            try:
+                send({"id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                }})
+                assert json.loads(server.stdout.readline())["id"] == 1
+                send({"method": "notifications/initialized"})
+
+                deliver_to_socket(sock_path, {"cook": "eng", "summary": summary, "ts": "now"})
+                # Comes through even if the long message is dropped, so a
+                # regression fails the assert below instead of hanging the read.
+                deliver_to_socket(sock_path, {"cook": "eng", "summary": "after", "ts": "now"})
+
+                pushed = json.loads(server.stdout.readline())
+            finally:
+                server.kill()
+                server.wait()
+
+        assert pushed["method"] == "notifications/claude/channel"
+        assert len(pushed["params"]["content"]) == len(summary)
 
 
 class TestSendToSocket:

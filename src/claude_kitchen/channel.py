@@ -13,6 +13,11 @@ from mcp.types import JSONRPCMessage, JSONRPCNotification
 
 SOCK_NAME = "kitchen.sock"
 
+# One message is one line on the socket, and a line past the reader's limit
+# fails inside handle_connection after the sender has already succeeded, so the
+# message vanishes. asyncio's 64 KiB default is within reach of a long report.
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+
 # The capability that makes a sous hear anything. Claude reads it from a
 # DIFFERENT place depending on the protocol era it negotiates with us:
 # `experimental` on the handshake era (2025-11-25), `extensions` on the modern
@@ -206,7 +211,7 @@ async def run_server(kitchen: str):
 
     # Start socket server FIRST so it's ready before MCP handshake
     sock_server = await asyncio.start_unix_server(
-        on_connection, path=str(sock_path)
+        on_connection, path=str(sock_path), limit=MAX_MESSAGE_BYTES
     )
 
     try:
