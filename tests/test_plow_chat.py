@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from claude_kitchen import plow_chat
-from claude_kitchen.plow_chat import Bridge, read_credentials
-from tests.fake_plow import TOKEN, FakePlow
+from claude_kitchen.plow_chat import Bridge, call, content_type_of, read_credentials
+from tests.fake_plow import SIGNATURE, TOKEN, FakePlow
 
 SAM, PLUCAS, STRANGER = "+15550000001", "+15550000002", "+15550000099"
 HOME = "cht_home"
@@ -178,3 +178,116 @@ def test_reads_the_credential_file_plow_agents_mint_writes(tmp_path):
     (tmp_path / "plow-credentials").write_text(
         f"PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN={TOKEN}\n# plow-agent-uid: 73f5\n")
     assert read_credentials(tmp_path) == {"PLOW_API_BASE": "https://api.plow.co", "PLOW_AGENT_TOKEN": TOKEN}
+
+
+@pytest.fixture
+def shot(tmp_path):
+    file = tmp_path / "shot.png"
+    file.write_bytes(b"\x89PNG fake image")
+    return file
+
+
+def test_send_file_uploads_without_the_plow_token_and_sends_the_attachment(shot):
+    async def scenario(fake, bridge, delivered):
+        result = await call(bridge, "send_file", {"chat": HOME, "path": str(shot), "caption": "the bug"})
+
+        (uid, attachment), = fake.attachments.items()
+        assert (attachment["filename"], attachment["content_type"]) == ("shot.png", "image/png")
+        assert attachment["size_bytes"] == shot.stat().st_size
+        uploaded, headers = attachment["upload"]
+        assert uploaded == shot.read_bytes()
+        assert "authorization" not in headers
+        assert headers["x-provider-grant"] == uid  # every returned header goes back
+        assert attachment["sent_with"] == "the bug"
+        assert result.startswith("sent msg_")
+        await asyncio.sleep(0.1)
+        assert delivered == []  # the echo of our own send stays out of the sous
+    run_bridge(scenario)
+
+
+def test_send_file_needs_no_caption(shot):
+    async def scenario(fake, bridge, delivered):
+        await call(bridge, "send_file", {"chat": HOME, "path": str(shot)})
+        assert fake.sent == [(HOME, "")]
+    run_bridge(scenario)
+
+
+@pytest.mark.parametrize("status", [403, 302])
+def test_a_failed_upload_is_never_sent_and_keeps_the_signed_url_out_of_the_error(shot, status):
+    async def scenario(fake, bridge, delivered):
+        fake.upload_status = status
+        with pytest.raises(RuntimeError, match=f"HTTP {status}") as failure:
+            await bridge.send_file(HOME, str(shot))
+        assert SIGNATURE not in str(failure.value)
+        assert fake.sent == []
+    run_bridge(scenario)
+
+
+@pytest.mark.parametrize("send", [
+    lambda bridge, file: bridge.reply(HOME, "on it"),
+    lambda bridge, file: bridge.send_file(HOME, str(file)),
+], ids=["reply", "send_file"])
+def test_a_held_send_is_a_failure(shot, send):
+    async def scenario(fake, bridge, delivered):
+        fake.hold = True
+        with pytest.raises(RuntimeError, match="never deliver"):
+            await send(bridge, shot)
+    run_bridge(scenario)
+
+
+def test_a_type_plow_refuses_says_why(tmp_path):
+    file = tmp_path / "movie.txt"
+    file.write_text("words")
+
+    async def scenario(fake, bridge, delivered):
+        with pytest.raises(RuntimeError, match="movie.txt.*415.*unsupported_content_type"):
+            await bridge.send_file(HOME, str(file))
+        assert fake.sent == []
+    run_bridge(scenario)
+
+
+@pytest.mark.parametrize("name, size, why", [
+    ("huge.png", plow_chat.MAX_ATTACHMENT_BYTES + 1, "100 MiB"),
+    ("empty.png", 0, "100 MiB"),
+    ("mystery.xyzzy", 5, "file type"),
+])
+def test_a_file_plow_cannot_take_fails_before_reaching_plow(tmp_path, name, size, why):
+    file = tmp_path / name
+    with file.open("wb") as f:
+        f.truncate(size)  # sparse, so the oversized case costs no disk
+
+    async def scenario(fake, bridge, delivered):
+        with pytest.raises(ValueError, match=why):
+            await bridge.send_file(HOME, str(file))
+        assert fake.attachments == {}
+    run_bridge(scenario)
+
+
+def test_a_missing_file_fails_clearly(tmp_path):
+    async def scenario(fake, bridge, delivered):
+        with pytest.raises(ValueError, match="not a file"):
+            await bridge.send_file(HOME, str(tmp_path / "gone.png"))
+    run_bridge(scenario)
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("a.PNG", "image/png"),
+    ("a.jpg", "image/jpeg"),
+    ("a.heic", "image/heic"),
+    ("a.webp", "image/webp"),
+    ("a.ico", "image/x-icon"),
+    ("a.pdf", "application/pdf"),
+    ("a.vcf", "text/vcard"),
+    ("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ("a.tar.gz", "application/x-gzip"),
+])
+def test_declares_the_type_plow_names(name, expected):
+    assert content_type_of(Path(name)) == expected
+
+
+def test_only_named_tools_reach_the_bridge():
+    async def scenario(fake, bridge, delivered):
+        with pytest.raises(ValueError, match="unknown tool run"):
+            await call(bridge, "run", {})
+        assert (await call(bridge, "reply", {"chat": HOME, "text": "hi"})).startswith("sent ")
+    run_bridge(scenario)
