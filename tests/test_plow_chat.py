@@ -91,11 +91,13 @@ def test_a_reconnect_inside_a_new_chats_first_burst_never_replays_its_history(mo
     run_bridge(scenario, fake)
 
 
-def test_reply_echo_and_system_notes_never_reach_the_sous():
+def test_reply_echo_system_notes_and_blank_texts_never_reach_the_sous():
     async def scenario(fake, bridge, delivered):
         await bridge.reply(HOME, "on it")
         assert fake.sent == [(HOME, "on it")]
         await fake.inbound(HOME, PLOW, "Spruce joined the chat")
+        await fake.inbound(HOME, SPRUCE, "")  # a tapback or bare attachment
+        await asyncio.sleep(0.2)
         await fake.inbound(HOME, SAM, "marker")
         await eventually(lambda: delivered)
         assert [c for c, _ in delivered] == ["marker"]
