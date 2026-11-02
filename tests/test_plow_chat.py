@@ -11,6 +11,9 @@ from claude_kitchen.plow_chat import Bridge, read_credentials
 from tests.fake_plow import TOKEN, FakePlow
 
 SAM, PLUCAS, STRANGER = "+15550000001", "+15550000002", "+15550000099"
+SPRUCE = {"type": "agent", "relationship": "peer", "line": {"display_name": "Spruce", "uid": "ln_peer"}}
+PLOW = {"type": "system", "name": "Plow"}
+NAMELESS = {"type": "agent", "relationship": "peer", "line": {"display_name": None, "uid": "ln_bare", "provider_key": "+15550000077"}}
 HOME = "cht_home"
 
 
@@ -52,8 +55,10 @@ def run_bridge(scenario, fake=None, cursor=None):
     asyncio.run(main())
 
 
-@pytest.mark.parametrize("handle, name", [(PLUCAS, "Patrick"), (STRANGER, STRANGER)], ids=["named", "unnamed"])
-def test_any_member_is_delivered_by_name_without_the_chats_history(handle, name):
+@pytest.mark.parametrize("handle, name", [(PLUCAS, "Patrick"), (STRANGER, STRANGER), (SPRUCE, "Spruce"),
+                                          (NAMELESS, "+15550000077")],
+                         ids=["named", "unnamed", "peer-agent", "unnamed-peer-agent"])
+def test_any_participant_is_delivered_by_name_without_the_chats_history(handle, name):
     async def scenario(fake, bridge, delivered):
         await fake.inbound(HOME, handle, "can you look at the mba?")
         await eventually(lambda: delivered)
@@ -86,10 +91,11 @@ def test_a_reconnect_inside_a_new_chats_first_burst_never_replays_its_history(mo
     run_bridge(scenario, fake)
 
 
-def test_reply_sends_and_its_echo_never_reaches_the_sous():
+def test_reply_echo_and_system_notes_never_reach_the_sous():
     async def scenario(fake, bridge, delivered):
         await bridge.reply(HOME, "on it")
         assert fake.sent == [(HOME, "on it")]
+        await fake.inbound(HOME, PLOW, "Spruce joined the chat")
         await fake.inbound(HOME, SAM, "marker")
         await eventually(lambda: delivered)
         assert [c for c, _ in delivered] == ["marker"]

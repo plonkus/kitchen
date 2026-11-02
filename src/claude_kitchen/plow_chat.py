@@ -3,7 +3,8 @@
 Holds the Plow chat API socket for the line's agent credential, pushes each
 member's text into the sous as a `<channel source="plow-chat">` tag, and gives
 the sous a `reply` tool. No allowlist: Plow shows the credential only the chats
-the line's account owns, so every chat and every member it delivers is served.
+the line's account owns, so every participant it delivers — a person or a peer
+agent's line — is served.
 """
 import asyncio
 import json
@@ -41,7 +42,17 @@ def read_credentials(directory: Path) -> dict:
 
 
 def speaker(message: dict) -> tuple:
-    return message["chat_uid"], message["sender"]["type"], message["sender"].get("provider_key")
+    return message["chat_uid"], json.dumps(message["sender"], sort_keys=True)
+
+
+def sender_name(sender: dict) -> str | None:
+    """A participant's name: a person's, or a peer agent's line; None for this
+    line's own sends and Plow's system notes."""
+    if sender["type"] == "member":
+        return sender["display_name"]
+    if sender["type"] == "agent" and sender["relationship"] == "peer":
+        return sender["line"].get("display_name") or sender["line"]["provider_key"]
+    return None
 
 
 @dataclass
@@ -72,12 +83,12 @@ class Bridge:
         self.due = asyncio.get_running_loop().time() + BURST_SECONDS
 
     async def flush(self):
-        """Hand a member's burst to the sous as one text; our own sends and
-        Plow's system notes are only recorded."""
+        """Hand a participant's burst to the sous as one text; our own sends
+        and Plow's system notes are only recorded."""
         first = self.burst[0]
-        if first["sender"]["type"] == "member":
+        if name := sender_name(first["sender"]):
             body = "\n\n".join(m["body"] for m in self.burst)
-            await self.deliver(body, {"from": first["sender"]["display_name"], "chat": first["chat_uid"]})
+            await self.deliver(body, {"from": name, "chat": first["chat_uid"]})
         uids = self.taken[first["chat_uid"]]
         uids += [m["uid"] for m in self.burst]  # after delivery, so a crash mid-send can't suppress it
         del uids[:-2 * PAGE]
