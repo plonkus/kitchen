@@ -278,6 +278,9 @@ def test_a_missing_file_fails_clearly(tmp_path):
     ("a.ico", "image/x-icon"),
     ("a.pdf", "application/pdf"),
     ("a.vcf", "text/vcard"),
+    ("a.wav", "audio/x-wav"),  # Python 3.14 guesses audio/vnd.wave
+    ("a.avi", "video/x-msvideo"),  # Python 3.14 guesses video/vnd.avi
+    ("a.midi", "audio/midi"),
     ("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
     ("a.tar.gz", "application/x-gzip"),
 ])

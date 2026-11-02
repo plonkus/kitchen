@@ -37,6 +37,7 @@ STANDARD_TYPES = mimetypes.MimeTypes(filenames=())
 CONTENT_TYPES = {
     ".3gp": "video/3gpp",
     ".amr": "audio/amr",
+    ".avi": "video/x-msvideo",
     ".caf": "audio/x-caf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".epub": "application/epub+zip",
@@ -47,12 +48,14 @@ CONTENT_TYPES = {
     ".m4a": "audio/x-m4a",
     ".m4v": "video/x-m4v",
     ".mid": "audio/midi",
+    ".midi": "audio/midi",
     ".numbers": "application/x-iwork-numbers-sffnumbers",
     ".pages": "application/x-iwork-pages-sffpages",
     ".pkpass": "application/vnd.apple.pkpass",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".rtf": "text/rtf",
     ".vcf": "text/vcard",
+    ".wav": "audio/x-wav",
     ".webp": "image/webp",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
