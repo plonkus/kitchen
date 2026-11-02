@@ -683,7 +683,7 @@ class TestStatusPreservationAcrossNonStopWriters:
         args.role = None
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         with pytest.raises(SystemExit):
             cmd_hire(args)
@@ -714,7 +714,7 @@ class TestStatusPreservationAcrossNonStopWriters:
             args.role = None
             args.effort = None
             args.clean_room = False
-            args.with_skill = []; args.slot = None
+            args.with_skill = []
             args.model = model
             with pytest.raises(SystemExit, match=want):
                 cmd_hire(args)
@@ -742,89 +742,11 @@ class TestStatusPreservationAcrossNonStopWriters:
             args.role = None
             args.effort = effort
             args.clean_room = False
-            args.with_skill = []; args.slot = None
+            args.with_skill = []
             args.model = model
             cmd_hire(args)
             assert mock_spawn.call_args.kwargs["model"] == model
             assert mock_spawn.call_args.kwargs["effort"] == effort
-
-    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
-    @patch("claude_kitchen.cli.spawn_window", return_value=True)
-    @patch("claude_kitchen.cli.state_dir")
-    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    def test_cmd_hire_slot_puts_the_cook_in_the_slot_tc_claims(
-        self, mock_rk, mock_state, mock_spawn, mock_wait, tmp_path, monkeypatch,
-    ):
-        """--slot hands the cook the dir `tc claim` printed, branched for this
-        cook and already trusted by Claude; a claim that finds no slot stops the
-        hire before anything boots."""
-        mock_state.return_value = tmp_path
-        (tmp_path / ".claude.json").write_text(json.dumps({"numStartups": 3, "projects": {"/other": {"x": 1}}}))
-        args = self._fake_tc(tmp_path, monkeypatch, "claude")
-        cmd_hire(args)
-        assert mock_spawn.call_args.kwargs["cwd"] == "/home/u/Hacking/plow3"
-        assert (tmp_path / "argv").read_text() == "claim plow risotto/eng\n"
-        assert json.loads((tmp_path / ".claude.json").read_text()) == {
-            "numStartups": 3,
-            "projects": {"/other": {"x": 1}, "/home/u/Hacking/plow3": {"hasTrustDialogAccepted": True}},
-        }
-
-        mock_spawn.reset_mock()
-        args.slot = "none"
-        with pytest.raises(SystemExit, match="tc claim none failed for eng"):
-            cmd_hire(args)
-        mock_spawn.assert_not_called()
-
-    @staticmethod
-    def _fake_tc(tmp_path, monkeypatch, backend):
-        """HOME at tmp_path and a `tc` that records its args and claims plow3
-        (or fails for slot `none`); returns `--slot plow` hire args."""
-        monkeypatch.setenv("HOME", str(tmp_path))
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        tc = bin_dir / "tc"
-        tc.write_text(f'#!/bin/sh\necho "$@" > {tmp_path}/argv\n[ "$2" = none ] && exit 1\necho /home/u/Hacking/plow3\n')
-        tc.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-        return argparse.Namespace(kitchen="risotto", name="eng", backend=backend, project=None,
-                                  slot="plow", role=None, effort=None, clean_room=False,
-                                  with_skill=[], model=None)
-
-    @patch("claude_kitchen.cli.send_keys")
-    @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
-    @patch("claude_kitchen.cli.spawn_window", return_value=True)
-    @patch("claude_kitchen.cli.state_dir")
-    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    def test_cmd_hire_slot_trusts_a_codex_cooks_slot_in_codex_config(
-        self, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, tmp_path, monkeypatch,
-    ):
-        """Codex keeps its own trust: a codex --slot cook's dir is appended to
-        ~/.codex/config.toml once, and a dir that already has an entry is left
-        alone (a second table for it would break the whole file)."""
-        mock_state.return_value = tmp_path
-        args = self._fake_tc(tmp_path, monkeypatch, "codex")
-        (tmp_path / ".codex").mkdir()
-        config = tmp_path / ".codex" / "config.toml"
-        config.write_text('model = "x"\n\n[projects."/home/u/Hacking/plow33"]\ntrust_level = "trusted"\n')
-        cmd_hire(args)
-        cmd_hire(args)
-        assert tomllib.loads(config.read_text())["projects"] == {
-            "/home/u/Hacking/plow33": {"trust_level": "trusted"}, "/home/u/Hacking/plow3": {"trust_level": "trusted"}}
-
-        config.write_text('[projects."/home/u/Hacking/plow3"]\ntrust_level = "untrusted"\n')
-        cmd_hire(args)
-        assert tomllib.loads(config.read_text())["projects"] == {"/home/u/Hacking/plow3": {"trust_level": "untrusted"}}
-
-    def test_concurrent_slot_hires_each_keep_their_trust_grant(self, tmp_path):
-        """Kitchens hiring at once must not drop each other's trust grant: a lost
-        one stops that cook at Claude's folder-trust dialog."""
-        (tmp_path / ".claude.json").write_text(json.dumps({"projects": {f"/old{i}": {} for i in range(20000)}}))
-        env = {**os.environ, "HOME": str(tmp_path)}
-        hires = [subprocess.Popen([sys.executable, "-c", f"from claude_kitchen.cli import _trust_dir; _trust_dir('/slot{i}', 'claude')"], env=env)
-                 for i in range(8)]
-        assert [p.wait() for p in hires] == [0] * 8
-        projects = json.loads((tmp_path / ".claude.json").read_text())["projects"]
-        assert all(projects[f"/slot{i}"] == {"hasTrustDialogAccepted": True} for i in range(8))
 
 class TestBrigadeAlignedOutput:
     """Per spec §Chunk 4: cmd_brigade output is one row per cook,
@@ -1263,7 +1185,7 @@ class TestCmdHireFailures:
         args.role = None
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
             with pytest.raises(SystemExit, match="didn't show prompt"):
@@ -1290,7 +1212,7 @@ class TestCmdHireRole:
         args.role = "ghost"
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         with pytest.raises(SystemExit, match="Unknown role.*ghost"):
             cmd_hire(args)
@@ -1312,7 +1234,7 @@ class TestCmdHireRole:
         args.role = "reviewer"
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
@@ -1338,7 +1260,7 @@ class TestCmdHireRole:
         args.role = "reviewer"
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         cmd_hire(args)
         # Codex doesn't get a --append-system-prompt-file flag
@@ -1373,7 +1295,7 @@ class TestCmdHireRole:
         args.role = None
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         cmd_hire(args)
         assert mock_send.call_count == 2
@@ -1398,7 +1320,7 @@ class TestCmdHireRole:
         args.role = "eng"
         args.effort = None
         args.clean_room = False
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         cmd_hire(args)
         mock_send.assert_not_called()
@@ -1424,7 +1346,7 @@ class TestCmdHireCleanRoom:
         args.role = None
         args.effort = None
         args.clean_room = True
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         cmd_hire(args)
         kwargs = mock_spawn.call_args.kwargs
@@ -1455,7 +1377,7 @@ class TestCmdHireCleanRoom:
         args.role = None
         args.effort = None
         args.clean_room = True
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         cmd_hire(args)
         home = tmp_path / "codex-home" / "eval1"
@@ -1497,7 +1419,7 @@ class TestCmdHireCleanRoom:
         mock_state.return_value = tmp_path
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
-        args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []; args.slot = None
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []
         args.model = None  # else the non-Claude --model guard exits before the codex-home path
         with pytest.raises(SystemExit):
             cmd_hire(args)
@@ -1520,7 +1442,7 @@ class TestCmdHireCleanRoom:
         mock_state.return_value = tmp_path
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "codex"
-        args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []; args.slot = None
+        args.project = None; args.role = None; args.effort = None; args.clean_room = True; args.with_skill = []
         args.model = None  # else the non-Claude --model guard exits before the prompt-wait path
         with pytest.raises(SystemExit):
             cmd_hire(args)
@@ -1546,7 +1468,7 @@ class TestCmdHireCleanRoom:
         args.role = None
         args.effort = None
         args.clean_room = True
-        args.with_skill = []; args.slot = None
+        args.with_skill = []
         args.model = None
         with pytest.raises(SystemExit, match="only supported for Claude and Codex"):
             cmd_hire(args)
@@ -1575,7 +1497,7 @@ class TestCmdHireCleanRoom:
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "eval1"; args.backend = "claude"
         args.project = None; args.role = None; args.effort = None; args.clean_room = True
-        args.with_skill = [str(skill)]; args.slot = None
+        args.with_skill = [str(skill)]
         args.model = None  # a Claude hire passes the guard; assert model isn't accidentally forwarded
         cmd_hire(args)
         assert mock_spawn.call_args.kwargs["plugin_dirs"] == [str(skill.resolve())]
@@ -1593,7 +1515,7 @@ class TestCmdHireCleanRoom:
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "x"; args.backend = "claude"
         args.project = None; args.role = None; args.effort = None; args.clean_room = False
-        args.with_skill = [str(skill)]; args.slot = None
+        args.with_skill = [str(skill)]
         with pytest.raises(SystemExit, match="requires --clean-room"):
             cmd_hire(args)
         mock_spawn.assert_not_called()
@@ -1610,7 +1532,7 @@ class TestCmdHireCleanRoom:
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "x"; args.backend = "codex"
         args.project = None; args.role = None; args.effort = None; args.clean_room = True
-        args.with_skill = [str(skill)]; args.slot = None
+        args.with_skill = [str(skill)]
         with pytest.raises(SystemExit, match="not yet supported"):
             cmd_hire(args)
         mock_spawn.assert_not_called()
@@ -1626,7 +1548,7 @@ class TestCmdHireCleanRoom:
         args = MagicMock()
         args.kitchen = "risotto"; args.name = "x"; args.backend = "claude"
         args.project = None; args.role = None; args.effort = None; args.clean_room = True
-        args.with_skill = [str(tmp_path / "does-not-exist")]; args.slot = None
+        args.with_skill = [str(tmp_path / "does-not-exist")]
         with pytest.raises(SystemExit, match="not a directory"):
             cmd_hire(args)
         mock_spawn.assert_not_called()

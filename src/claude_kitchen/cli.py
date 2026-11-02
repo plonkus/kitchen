@@ -1,13 +1,11 @@
 """CLI entry point for claude-kitchen."""
 import argparse
-import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,7 +17,6 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, channel_servers,
-    atomic_write_json, state_root,
     MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
@@ -555,7 +552,11 @@ def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
         shutil.rmtree(home)  # re-hire under the same name must start fresh
     home.mkdir(parents=True)
     shutil.copyfile(Path.home() / ".codex" / "auth.json", home / "auth.json")
-    (home / "config.toml").write_text(_codex_trust(cwd))
+    # Escape cwd for a TOML basic string (backslash + double-quote) so a path
+    # with those chars stays valid TOML — otherwise codex can't parse the trust
+    # grant and falls back to the (blocking) trust prompt.
+    key = cwd.replace("\\", "\\\\").replace('"', '\\"')
+    (home / "config.toml").write_text(f'[projects."{key}"]\ntrust_level = "trusted"\n')
     return home
 
 
@@ -572,38 +573,14 @@ def _validate_skill_path(raw: str) -> str:
     return str(p.resolve())
 
 
-def _codex_trust(cwd: str) -> str:
-    """A config.toml entry trusting `cwd`, escaped for a TOML basic string
-    (backslash + double-quote) so codex can parse it — otherwise it falls back
-    to the (blocking) trust prompt."""
-    key = cwd.replace("\\", "\\\\").replace('"', '\\"')
-    return f'[projects."{key}"]\ntrust_level = "trusted"\n'
-
-
-def _trust_dir(path: str, backend: str):
-    """Pre-accept the folder-trust dialog that stops a cook booting in a dir its
-    CLI has never opened: Claude's in ~/.claude.json, Codex's in its config.toml.
-    Kitchens hiring at once serialize on a lock so neither drops the other's grant."""
-    state_root().mkdir(exist_ok=True)
-    with open(state_root() / "trust.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if backend == "codex":
-            config = Path.home() / ".codex" / "config.toml"
-            text = config.read_text()
-            if path not in tomllib.loads(text).get("projects", {}):  # a second table for it is invalid TOML
-                config.write_text(f"{text.rstrip()}\n\n{_codex_trust(path)}")
-        else:
-            config = Path.home() / ".claude.json"
-            settings = json.loads(config.read_text())
-            settings.setdefault("projects", {}).setdefault(path, {})["hasTrustDialogAccepted"] = True
-            atomic_write_json(config, settings)
-
-
 def cmd_hire(args):
     kitchen = resolve_kitchen(args.kitchen)
     base = state_dir(kitchen)
     name = args.name
     backend = args.backend
+    cwd = args.project or os.getcwd()
+    cwd = str(resolve_project(cwd))
+
     clean_room = getattr(args, "clean_room", False)
     # Clean-room isolation supports claude + codex. Gemini isolation is a
     # documented follow-up — fail clearly rather than silently no-op.
@@ -659,21 +636,6 @@ def cmd_hire(args):
 
     # Clean-room codex cooks get a fresh, isolated CODEX_HOME (no memory,
     # AGENTS.md, plugin registry, or user config). Claude/gemini: None.
-    # --slot: the cook works in a free ~/Hacking/<repo><N> that `tc claim` locks
-    # and branches as <kitchen>/<cook>, so kitchen and tc hand out slots under one
-    # lock; the branch keeps the slot taken until it is back on main.
-    if args.slot:
-        if shutil.which("tc") is None:
-            sys.exit("tc not on PATH — --slot needs code-config's tc.")
-        claim = subprocess.run(["tc", "claim", args.slot, f"{kitchen}/{name}"],
-                               stdout=subprocess.PIPE, text=True)
-        if claim.returncode:
-            sys.exit(f"tc claim {args.slot} failed for {name}; see its error above.")
-        cwd = claim.stdout.strip()
-        _trust_dir(cwd, backend)
-    else:
-        cwd = str(resolve_project(args.project or os.getcwd()))
-
     codex_home = str(_seed_codex_home(base, name, cwd)) if clean_room and backend == "codex" else None
 
     write_status(base, name, {"status": "booting", "agent": name, "backend": backend})
@@ -1425,9 +1387,7 @@ def main():
     p_hire.add_argument("name", help="Cook name")
     p_hire.add_argument("--backend", default="claude", choices=["claude", "codex", "gemini"])
     p_hire.add_argument("--kitchen", help="Target kitchen")
-    where = p_hire.add_mutually_exclusive_group()
-    where.add_argument("--project", help="Project path (defaults to cwd)")
-    where.add_argument("--slot", metavar="REPO", help="Work in a free ~/Hacking/<REPO><N> slot claimed with `tc claim`")
+    p_hire.add_argument("--project", help="Project path (defaults to cwd)")
     p_hire.add_argument("--role", help="Role from src/claude_kitchen/roles/ (all backends)")
     p_hire.add_argument("--effort", help="Reasoning effort (low, medium, high, xhigh, max, ultra; support is backend/model-dependent, Claude maps ultra to max)")
     p_hire.add_argument("--model", choices=[*CLAUDE_MODELS, *CODEX_MODELS], help="Model for the cook: fable, sonnet, or opus (Claude cooks; passed to `claude --model` verbatim, resolving the latest model in that tier), or astra (Codex cooks; passed to `codex -m` as gpt-6-astra). Omit to use the account default.")

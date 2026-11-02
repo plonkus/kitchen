@@ -230,9 +230,6 @@ kitchen hire architect --model opus
 # Codex model; astra is passed to `codex -m` as gpt-6-astra (Codex cooks only)
 kitchen hire reviewer --backend codex --model astra
 
-# Work in a free ~/Hacking/plow<N> slot claimed with code-config's `tc claim`
-kitchen hire eng --role eng --slot plow
-
 # Near-fresh eval worker: no role, auto-memory, or superpowers startup injection
 kitchen hire eval1 --clean-room --project /absolute/eval-directory
 
