@@ -14,7 +14,8 @@ replacing the caller's terminal. A parent sous spins one up from a Bash tool
 call; the two talk both ways:
 
 - **down** (parent → child): `kitchen ticket sous --kitchen <child> '<msg>'`
-  reaches the child sous window (reuses `resolve_kitchen` + `send_keys`).
+  reaches the child sous through its own `kitchen.sock`, the same path as any
+  sous → sous ticket. It must run with `AGENT_KITCHEN` set: that is the sender.
 - **up** (child → parent): the child sous's Stop hook pushes a `<channel>`
   notification to the **parent** kitchen's socket, via the `PARENT_STATUS_DIR`
   env var the parent injects (the `cmd_hook` sous carveout, guarded so a sous
@@ -52,7 +53,7 @@ PY
 STATUS_DIR="$PARENT" kitchen open --sub-sous
 
 # down: ticket the child sous cross-kitchen, then watch the reply
-kitchen ticket sous --kitchen <name> 'Liveness check from the head chef. No cooks, no tools — reply with exactly the word PONG, then stop.'
+AGENT_KITCHEN=smoke-parent kitchen ticket sous --kitchen <name> 'Liveness check from the head chef. No cooks, no tools — reply with exactly the word PONG, then stop.'
 kitchen peek sous --kitchen <name>
 
 # up: the child's Stop pushes to the parent socket
@@ -78,13 +79,13 @@ Window shape — `sous` present, `_placeholder` gone
 2:sous
 ```
 
-**Down** — `kitchen ticket sous --kitchen <name> '…PONG…'` lands in the child
-sous pane and it replies (`kitchen peek sous --kitchen <name>`):
+**Down** — `kitchen ticket sous --kitchen <name> '…'` arrives on the child's
+channel, labelled with the sender's kitchen, and the child answers the same way
+(`kitchen peek sous --kitchen <name>`):
 
 ```
-❯ Liveness check from the head chef — do NOT hire cooks, do NOT run tools or bash. Just reply with exactly the single word PONG, then stop.
-⏺ PONG
-✻ Crunched for 2s
+⏺ Bash(kitchen ticket sous --kitchen alpha "8 + 9 = 17")
+  ⎿  Ticket fired to the sous of alpha. Heard!
 ```
 
 **Up** — the child sous's Stop pushed to the throwaway parent socket
@@ -95,6 +96,22 @@ RECV {"cook": "private-tmp-subsous-smoke-subsous-smoke", "summary": "PONG", "ts"
 ```
 
 `cook` is the child kitchen's name; `summary` is the child sous's last message.
+
+## Sous ↔ sous tickets
+
+A ticket goes through the target's `kitchen.sock`, so it reaches a root sous in a
+terminal as well as a child. Captured with two root sous opened in panes of a
+private tmux server, with a throwaway `HOME` and `TMUX_TMPDIR`:
+
+```
+← kitchen: What is 17 + 25? Answer in one line.
+⏺ Bash(kitchen ticket sous --kitchen alpha "17 + 25 = 42")
+  ⎿  Ticket fired to the sous of alpha. Heard!
+```
+
+A ticket that lands mid-turn shows at once and is handled when the running tool
+call returns; it does not interrupt the tool. A target with no listener exits 1
+and writes no status.
 
 ## Fail-clean & concurrency (hardening)
 

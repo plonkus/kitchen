@@ -523,7 +523,7 @@ def cmd_open(args):
                                      model=args.model):
                 failure = "tmux could not launch the sous window"
             # Mirror cmd_hire's readiness barrier so the parent's first
-            # `kitchen ticket sous --kitchen <name>` doesn't hit a booting pane.
+            # `kitchen ticket sous --kitchen <name>` doesn't find a booting sous.
             elif not wait_for_prompt(name, "sous", "claude"):
                 failure = "the child sous never reached its prompt"
         except subprocess.TimeoutExpired:
@@ -683,11 +683,37 @@ def cmd_hire(args):
     print(f"{name} is on the station. Yes, chef!")
 
 
+def _ticket_sous(kitchen: str, message: str):
+    """Hand another sous a ticket over its kitchen's channel socket.
+
+    The socket, not tmux: a root sous runs in the head chef's terminal, so it
+    has no window to paste into. `cook` carries the sender's kitchen, which is
+    where the receiver sends its answer. No status write: a sous has no cook
+    record."""
+    from claude_kitchen.channel import deliver_to_socket, SOCK_NAME
+    sender = os.environ.get("AGENT_KITCHEN")
+    if not sender:
+        sys.exit("`kitchen ticket sous` must run from a sous: AGENT_KITCHEN is "
+                 "unset, so the receiver would have no kitchen to answer.")
+    sock = state_dir(kitchen) / SOCK_NAME
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        deliver_to_socket(sock, {"cook": sender, "summary": message, "ts": ts})
+    except OSError as e:
+        sys.exit(f"Ticket NOT delivered: the sous of kitchen \"{kitchen}\" is not "
+                 f"listening on {sock} ({e.strerror or e}).")
+    print(f"Ticket fired to the sous of {kitchen}. Heard!")
+
+
 def cmd_ticket(args):
     kitchen = resolve_kitchen(args.kitchen)
     base = state_dir(kitchen)
     name = args.cook
     message = args.message
+
+    if name == "sous":
+        _ticket_sous(kitchen, message)
+        return
 
     backend = (read_status(base, name) or {}).get("backend")
     send_keys(kitchen, name, message, backend=backend)

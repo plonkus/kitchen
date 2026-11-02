@@ -2,8 +2,11 @@
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2748,3 +2751,72 @@ class TestAgySummary:
         ])
         assert _agy_summary(payload) == "the answer"
 
+
+class TestTicketSous:
+    """`kitchen ticket sous` through the real CLI parser and a real unix socket."""
+
+    @pytest.fixture
+    def kitchens(self, monkeypatch):
+        # Under /tmp: a pytest tmp_path can overrun the AF_UNIX path limit.
+        with tempfile.TemporaryDirectory(dir="/tmp") as home:
+            monkeypatch.setenv("HOME", home)
+            monkeypatch.setenv("AGENT_KITCHEN", "sender-main")
+            monkeypatch.setattr("claude_kitchen.cli.has_session", lambda *a, **k: True)
+            base = Path(home) / ".claude-kitchen" / "target-main"
+            base.mkdir(parents=True)
+            yield base
+
+    def ticket(self, monkeypatch, *flags):
+        monkeypatch.setattr(sys, "argv", ["kitchen", "ticket", "sous", "check the deploy", *flags])
+        main()
+
+    def test_delivers_on_the_target_socket_labelled_with_the_senders_kitchen(self, kitchens, monkeypatch):
+        received = []
+        with socket.socket(socket.AF_UNIX) as srv:
+            srv.bind(str(kitchens / "kitchen.sock"))
+            srv.listen(1)
+
+            def accept():
+                conn, _ = srv.accept()
+                with conn, conn.makefile() as lines:
+                    received.append(json.loads(lines.readline()))
+
+            listener = threading.Thread(target=accept)
+            listener.start()
+            with patch("claude_kitchen.cli.send_keys") as paste:
+                self.ticket(monkeypatch, "--kitchen", "target-main")
+            listener.join(timeout=2)
+
+        assert received[0]["cook"] == "sender-main"
+        assert received[0]["summary"] == "check the deploy"
+        paste.assert_not_called()  # one path, even for a child with a tmux window
+        assert not (kitchens / "cooks").exists()
+
+    @pytest.mark.parametrize("stale", [False, True], ids=["no-socket", "stale-socket"])
+    def test_dead_target_exits_non_zero_and_writes_no_status(self, kitchens, monkeypatch, capsys, stale):
+        if stale:
+            with socket.socket(socket.AF_UNIX) as dead:
+                dead.bind(str(kitchens / "kitchen.sock"))
+
+        with pytest.raises(SystemExit) as exit_:
+            self.ticket(monkeypatch, "--kitchen", "target-main")
+
+        assert isinstance(exit_.value.code, str)  # a message exits 1
+        assert "target-main" in exit_.value.code
+        assert "Heard" not in capsys.readouterr().out
+        assert not (kitchens / "cooks").exists()
+
+    def test_unknown_kitchen_exits_non_zero_without_creating_it(self, kitchens, monkeypatch):
+        with pytest.raises(SystemExit) as exit_:
+            self.ticket(monkeypatch, "--kitchen", "nowhere")
+
+        assert "nowhere" in exit_.value.code
+        assert not (kitchens.parent / "nowhere").exists()
+
+    def test_outside_a_sous_refuses_rather_than_send_an_unanswerable_ticket(self, kitchens, monkeypatch):
+        monkeypatch.delenv("AGENT_KITCHEN")
+
+        with pytest.raises(SystemExit) as exit_:
+            self.ticket(monkeypatch, "--kitchen", "target-main")
+
+        assert "AGENT_KITCHEN" in exit_.value.code
