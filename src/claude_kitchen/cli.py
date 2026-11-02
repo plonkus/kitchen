@@ -17,7 +17,7 @@ from claude_kitchen.tmux import (
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
     project_slug, namespaced, wiki_dir, notes_dir, channel_servers,
-    MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
+    MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, atomic_write_json,
 )
 from claude_kitchen.models import max_context_for
 from claude_kitchen.spawn import (spawn_window, spawn_sous, spawn_sous_window,
