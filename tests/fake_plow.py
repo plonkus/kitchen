@@ -23,6 +23,8 @@ class FakePlow:
         self.sent = []  # (chat, body) the agent posted
         self.attachments = {}  # uid -> declared metadata, plus upload once the PUT lands
         self.upload_status = 200  # what the provider's upload URL answers
+        self.refused_upload = None  # a filename the provider's upload URL answers 403
+        self.sent_uids = []  # attachment_uids of each send
         self.hold = False  # answer sends as held, never delivered
         self.sockets = []
         self.flaky = set()  # chats whose next read answers 503
@@ -82,6 +84,7 @@ class FakePlow:
                 return JSONResponse({"uid": "msg_earlier", "held": True, "reason": "repeated_agent_message"})
             body = sent.get("body", "")
             self.sent.append((chat, body))
+            self.sent_uids.append(sent.get("attachment_uids", []))
             for uid in sent.get("attachment_uids", []):
                 self.attachments[uid]["sent_with"] = body
             message = self._message(chat, body)
@@ -110,8 +113,9 @@ class FakePlow:
 
     async def _upload(self, request):
         """The provider's signed URL: not Plow, so it must never see Plow's token."""
-        self.attachments[request.path_params["uid"]]["upload"] = (await request.body(), request.headers)
-        return Response(status_code=self.upload_status)
+        attachment = self.attachments[request.path_params["uid"]]
+        attachment["upload"] = (await request.body(), request.headers)
+        return Response(status_code=403 if attachment["filename"] == self.refused_upload else self.upload_status)
 
     async def _ws(self, websocket):
         await websocket.accept()
