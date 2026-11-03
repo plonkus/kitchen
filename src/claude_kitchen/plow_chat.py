@@ -30,6 +30,7 @@ PAGE = 50
 # window restarts on each text; another speaker or chat ends it.
 BURST_SECONDS = 2.0
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
+MAX_ATTACHMENTS = 4  # per message
 UPLOAD_TIMEOUT = httpx.Timeout(30, read=120)
 # No system files, so a guess doesn't change from one machine to another.
 STANDARD_TYPES = mimetypes.MimeTypes(filenames=())
@@ -77,6 +78,18 @@ def content_type_of(file: Path) -> str:
     if content_type is None:
         raise ValueError(f"can't tell the file type of {file.name} from its extension; not sent")
     return content_type
+
+
+def attachable(path: str) -> Path:
+    """The file at `path`, once it passes every check that needs no Plow."""
+    file = Path(path).expanduser()
+    if not file.is_file():
+        raise ValueError(f"{file} is not a file; not sent")
+    size = file.stat().st_size
+    if not 0 < size <= MAX_ATTACHMENT_BYTES:
+        raise ValueError(f"{file.name} is {size} bytes; Plow takes 1 byte up to 100 MiB; not sent")
+    content_type_of(file)
+    return file
 
 
 def sent(r: httpx.Response, what: str) -> str:
@@ -155,21 +168,14 @@ class Bridge:
             raise ValueError("reply text is empty; not sent")
         return sent(await self.client.post(f"/v1/chats/{chat}/messages", json={"body": text}), "reply")
 
-    async def send_file(self, chat: str, path: str, caption: str = "") -> str:
-        """Declare a local file on `chat`, upload its bytes, and send it."""
-        file = Path(path).expanduser()
-        if not file.is_file():
-            raise ValueError(f"{file} is not a file; not sent")
-        size = file.stat().st_size
-        if not 0 < size <= MAX_ATTACHMENT_BYTES:
-            raise ValueError(f"{file.name} is {size} bytes; Plow takes 1 byte up to 100 MiB; not sent")
-        content_type = content_type_of(file)
+    async def upload(self, chat: str, file: Path) -> str:
+        """Declare `file` on `chat` and upload its bytes; returns its attachment uid."""
         data = await asyncio.to_thread(file.read_bytes)
         r = await self.client.post(f"/v1/chats/{chat}/attachments", json={
-            "filename": file.name, "content_type": content_type, "size_bytes": len(data),
+            "filename": file.name, "content_type": content_type_of(file), "size_bytes": len(data),
         })
         if r.is_error:
-            raise RuntimeError(f"Plow refused {file.name} with HTTP {r.status_code}: {r.text}")
+            raise RuntimeError(f"Plow refused {file.name} with HTTP {r.status_code}: {r.text}; nothing sent")
         attachment = r.json()
         # Its own client: the signed URL is the provider's, and the shared client
         # would hand it the Plow token.
@@ -178,9 +184,17 @@ class Bridge:
         # By status alone: an httpx error would print the signed URL, and Plow
         # sends without checking the upload landed.
         if not r.is_success:
-            raise RuntimeError(f"uploading {file.name} failed with HTTP {r.status_code}; not sent")
+            raise RuntimeError(f"uploading {file.name} failed with HTTP {r.status_code}; nothing sent")
+        return attachment["uid"]
+
+    async def send_file(self, chat: str, paths: list[str], caption: str = "") -> str:
+        """Send local files on `chat` as one message, or nothing if any fails."""
+        if not 1 <= len(paths) <= MAX_ATTACHMENTS:
+            raise ValueError(f"{len(paths)} files given; a message takes 1 to {MAX_ATTACHMENTS}; nothing sent")
+        files = [attachable(path) for path in paths]  # all of them before Plow hears of any
+        uids = [await self.upload(chat, file) for file in files]
         return sent(await self.client.post(f"/v1/chats/{chat}/messages", json={
-            "attachment_uids": [attachment["uid"]], "body": caption,
+            "attachment_uids": uids, "body": caption,
         }), "file")
 
     async def run(self):
@@ -230,18 +244,19 @@ TOOLS = {tool.name: tool for tool in (
     types.Tool(
         name="send_file",
         description=(
-            "Send a local file (image, PDF, video, audio or document, up to 100 MiB) to a "
-            "Plow chat (iMessage), with an optional caption; pass the `chat` attribute of "
-            "the <channel source=\"plow-chat\"> tag you are answering."
+            "Send 1 to 4 local files (images, PDFs, video, audio or documents, up to 100 MiB "
+            "each) to a Plow chat (iMessage) as one message, with an optional caption; pass "
+            "the `chat` attribute of the <channel source=\"plow-chat\"> tag you are answering. "
+            "If any file fails, nothing is sent."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "chat": {"type": "string"},
-                "path": {"type": "string"},
+                "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_ATTACHMENTS},
                 "caption": {"type": "string"},
             },
-            "required": ["chat", "path"],
+            "required": ["chat", "paths"],
         },
     ),
 )}

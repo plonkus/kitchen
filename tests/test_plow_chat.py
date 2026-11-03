@@ -189,7 +189,7 @@ def shot(tmp_path):
 
 def test_send_file_uploads_without_the_plow_token_and_sends_the_attachment(shot):
     async def scenario(fake, bridge, delivered):
-        result = await call(bridge, "send_file", {"chat": HOME, "path": str(shot), "caption": "the bug"})
+        result = await call(bridge, "send_file", {"chat": HOME, "paths": [str(shot)], "caption": "the bug"})
 
         (uid, attachment), = fake.attachments.items()
         assert (attachment["filename"], attachment["content_type"]) == ("shot.png", "image/png")
@@ -207,8 +207,55 @@ def test_send_file_uploads_without_the_plow_token_and_sends_the_attachment(shot)
 
 def test_send_file_needs_no_caption(shot):
     async def scenario(fake, bridge, delivered):
-        await call(bridge, "send_file", {"chat": HOME, "path": str(shot)})
+        await call(bridge, "send_file", {"chat": HOME, "paths": [str(shot)]})
         assert fake.sent == [(HOME, "")]
+    run_bridge(scenario)
+
+
+@pytest.fixture
+def shots(tmp_path):
+    def make(count):
+        files = [tmp_path / f"shot{n}.png" for n in range(count)]
+        for n, file in enumerate(files):
+            file.write_bytes(b"image %d" % n)
+        return [str(file) for file in files]
+    return make
+
+
+def test_four_files_go_as_one_message_in_order(shots):
+    async def scenario(fake, bridge, delivered):
+        await call(bridge, "send_file", {"chat": HOME, "paths": shots(4), "caption": "all four"})
+
+        assert fake.sent == [(HOME, "all four")]
+        assert [fake.attachments[uid]["filename"] for uid in fake.sent_uids[0]] == [f"shot{n}.png" for n in range(4)]
+        assert [fake.attachments[uid]["upload"][0] for uid in fake.sent_uids[0]] == [b"image %d" % n for n in range(4)]
+    run_bridge(scenario)
+
+
+def test_one_failed_upload_sends_nothing(shots):
+    async def scenario(fake, bridge, delivered):
+        fake.refused_upload = "shot1.png"
+        with pytest.raises(RuntimeError, match="shot1.png.*nothing sent"):
+            await bridge.send_file(HOME, shots(3))
+        assert fake.sent == []
+        assert len(fake.attachments) == 2  # the third was never declared
+    run_bridge(scenario)
+
+
+def test_one_bad_file_fails_before_any_reaches_plow(shots, tmp_path):
+    async def scenario(fake, bridge, delivered):
+        with pytest.raises(ValueError, match="gone.png"):
+            await bridge.send_file(HOME, [*shots(2), str(tmp_path / "gone.png")])
+        assert fake.attachments == {}
+    run_bridge(scenario)
+
+
+@pytest.mark.parametrize("count", [0, 5])
+def test_a_message_takes_one_to_four_files(shots, count):
+    async def scenario(fake, bridge, delivered):
+        with pytest.raises(ValueError, match=f"{count} files"):
+            await bridge.send_file(HOME, shots(count))
+        assert fake.attachments == {}
     run_bridge(scenario)
 
 
@@ -217,7 +264,7 @@ def test_a_failed_upload_is_never_sent_and_keeps_the_signed_url_out_of_the_error
     async def scenario(fake, bridge, delivered):
         fake.upload_status = status
         with pytest.raises(RuntimeError, match=f"HTTP {status}") as failure:
-            await bridge.send_file(HOME, str(shot))
+            await bridge.send_file(HOME, [str(shot)])
         assert SIGNATURE not in str(failure.value)
         assert fake.sent == []
     run_bridge(scenario)
@@ -225,7 +272,7 @@ def test_a_failed_upload_is_never_sent_and_keeps_the_signed_url_out_of_the_error
 
 @pytest.mark.parametrize("send", [
     lambda bridge, file: bridge.reply(HOME, "on it"),
-    lambda bridge, file: bridge.send_file(HOME, str(file)),
+    lambda bridge, file: bridge.send_file(HOME, [str(file)]),
 ], ids=["reply", "send_file"])
 def test_a_held_send_is_a_failure(shot, send):
     async def scenario(fake, bridge, delivered):
@@ -241,7 +288,7 @@ def test_a_type_plow_refuses_says_why(tmp_path):
 
     async def scenario(fake, bridge, delivered):
         with pytest.raises(RuntimeError, match="movie.txt.*415.*unsupported_content_type"):
-            await bridge.send_file(HOME, str(file))
+            await bridge.send_file(HOME, [str(file)])
         assert fake.sent == []
     run_bridge(scenario)
 
@@ -258,7 +305,7 @@ def test_a_file_plow_cannot_take_fails_before_reaching_plow(tmp_path, name, size
 
     async def scenario(fake, bridge, delivered):
         with pytest.raises(ValueError, match=why):
-            await bridge.send_file(HOME, str(file))
+            await bridge.send_file(HOME, [str(file)])
         assert fake.attachments == {}
     run_bridge(scenario)
 
@@ -266,7 +313,7 @@ def test_a_file_plow_cannot_take_fails_before_reaching_plow(tmp_path, name, size
 def test_a_missing_file_fails_clearly(tmp_path):
     async def scenario(fake, bridge, delivered):
         with pytest.raises(ValueError, match="not a file"):
-            await bridge.send_file(HOME, str(tmp_path / "gone.png"))
+            await bridge.send_file(HOME, [str(tmp_path / "gone.png")])
     run_bridge(scenario)
 
 
