@@ -573,7 +573,9 @@ class TestSpawnWindow:
     def test_hires_beside_a_cook_named_after_the_session(self, tmp_path):
         """A cook called `kitchen` shares the session's name; a bare
         `new-window -t kitchen` resolved to that window and every later hire
-        failed with "index N in use". Real tmux, on a throwaway socket."""
+        failed with "index N in use". The hire must also leave the current
+        window alone, or attached clients get pulled onto the new cook. Real
+        tmux, on a throwaway socket."""
         from claude_kitchen.tmux import SESSION, tmux
         kitchen = f"hire-target-{os.getpid()}"
         tmux("new-session", "-d", "-s", SESSION, "-n", "kitchen", "sleep 30", kitchen=kitchen, check=True)
@@ -581,8 +583,8 @@ class TestSpawnWindow:
         try:
             with patch("claude_kitchen.spawn.build_shell_cmd", return_value="sleep 30"):
                 assert spawn_window(kitchen, "rev1", str(tmp_path), "claude", str(tmp_path))
-            windows = tmux("list-windows", "-t", f"{SESSION}:", "-F", "#{window_name}", kitchen=kitchen).stdout.split()
-            assert windows == ["kitchen", "rev1"]
+            windows = tmux("list-windows", "-t", f"{SESSION}:", "-F", "#{window_name}:#{window_active}", kitchen=kitchen).stdout.split()
+            assert windows == ["kitchen:1", "rev1:0"]
         finally:
             tmux("kill-server", kitchen=kitchen)
             sock.unlink(missing_ok=True)  # tmux leaves the socket file behind
