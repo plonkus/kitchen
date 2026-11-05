@@ -27,10 +27,10 @@ RECONNECT_DELAY = 5
 PAGE = 50
 # One speaker's back-to-back texts are one tag. iMessage sends a link as its
 # own message only after the sender's phone fetches the preview, so the link
-# lands well after the text before it: under 6 s for 95% of links in 90 days
-# of Plow inbound, and only 35% under the old 1.5 s. The window restarts
-# on each text; another speaker or chat ends it.
-BURST_SECONDS = 6.0
+# lands well after the text before it. In 90 days of Plow inbound, 3 s caught
+# 72% of links (6 s: 95%; 1.5 s: 35%), traded for less delay per text. The
+# window restarts on each text; another speaker or chat ends it.
+BURST_SECONDS = 3.0
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
 MAX_ATTACHMENTS = 4  # per message
 UPLOAD_TIMEOUT = httpx.Timeout(30, read=120)
