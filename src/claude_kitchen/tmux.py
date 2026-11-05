@@ -236,10 +236,15 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
     """
     marker = _PROMPT_MARKERS[backend]
     hard_deadline = time.time() + timeout
-    # Codex shows an "Update available!" picker before its welcome banner when a
-    # new version is published. Dismiss it once with `3` (= "Skip until next
-    # version") + Enter so the welcome marker can appear.
-    update_dismissed = False
+    # Codex can show two screens before its welcome banner: an "Update
+    # available!" picker when a new version is published, and the directory
+    # trust dialog. `3` + Enter answers both — "Skip until next version" on the
+    # picker; on the two-option trust dialog the `3` is ignored and Enter takes
+    # the pre-selected "Yes, continue". Match each screen by its own text: the
+    # sign-in screen also says "Press enter to continue", and there `3` selects
+    # "Provide your own API key", whose field then takes the next ticket as the
+    # key. Signed out, the cook gets no keys and hire fails at the stall.
+    codex_answered = set()
     last = None
     last_change = time.time()
     while time.time() < hard_deadline:
@@ -251,12 +256,14 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
             if content:
                 if marker in content:
                     return True
-                if (backend == "codex" and not update_dismissed
-                        and ("Update available!" in content
-                             or "Press enter to continue" in content)):
+                screen = next((s for s in ("Update available!",
+                                           "Do you trust the contents")
+                               if s in content and s not in codex_answered),
+                              None)
+                if backend == "codex" and screen:
                     tmux("send-keys", "-t", target(window), "3", "Enter",
                          kitchen=kitchen, check=True)
-                    update_dismissed = True
+                    codex_answered.add(screen)
                 if content != last:
                     last, last_change = content, time.time()
                 elif time.time() - last_change > stall_timeout:
@@ -265,6 +272,12 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
             pass
         time.sleep(1)
     return False
+
+
+# The codex chat composer row, idle or mid-turn. A numbered `› 1.` row is a
+# picker's selection cursor, not the composer; the sign-in and API-key screens
+# have no `›` row at all.
+_CODEX_COMPOSER = re.compile(r"›(?!\s*\d+\.)")
 
 
 # Verified-submit loop tuning. One Enter usually submits; the extra attempts
@@ -377,6 +390,12 @@ def send_keys(kitchen: str, window: str, text: str, backend: Optional[str] = Non
 
     buf = f"kitchen-{os.getpid()}-{next(_buffer_counter)}"
     baseline = capture_pane(kitchen, window) or ""
+    if backend == "codex" and not any(
+            _CODEX_COMPOSER.match(ln)
+            for ln in [ln for ln in baseline.splitlines() if ln.strip()][-6:]):
+        raise RuntimeError(
+            f"send_keys: {tgt} is not at the codex chat prompt (signed out, or "
+            f"a picker is open); refusing to type into it")
     tmux("load-buffer", "-b", buf, "-", kitchen=kitchen, input=text, check=True)
     tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", tgt,
          kitchen=kitchen, check=True)
