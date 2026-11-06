@@ -620,13 +620,11 @@ def cmd_ticket(args):
     backend = (read_status(base, name) or {}).get("backend")
     send_keys(kitchen, name, message, backend=backend)
 
-    # Mark cook as working. Codex has no UserPromptSubmit-equivalent hook
-    # event (Codex `notify` only fires on completion), so for Codex cooks
-    # this is the only "cook started working" signal. For Claude cooks the
-    # hook also writes status="working" — both writes are idempotent and
-    # whichever lands first closes the race. update_status preserves
-    # durable fields like `tokens` and `backend`.
-    update_status(base, name, status="working")
+    # Claude's UserPromptSubmit hook owns its start state; a write here could
+    # land after a fast turn's Stop and leave it "working". Codex and Gemini
+    # only report completion, so this is their start signal.
+    if backend != "claude":
+        update_status(base, name, status="working")
     print(f"Ticket fired to {name}. Heard!")
 
 
@@ -765,11 +763,10 @@ def cmd_hook(args):
         return
 
     if not codex:
-        # Claude branch dispatches by event type. UserPromptSubmit is the
-        # canonical "cook started working" trigger — closes the cmd_ticket
-        # race where status="working" was only written after send_keys
-        # returned. Must NOT read last_assistant_message (not present on
-        # this event) and must NOT call send_to_socket (not a completion).
+        # Claude branch dispatches by event type. UserPromptSubmit is the one
+        # "cook started working" write for Claude. Must NOT read
+        # last_assistant_message (not present on this event) and must NOT
+        # call send_to_socket (not a completion).
         # update_status (not write_status) preserves durable fields like
         # `tokens` and `backend` across this non-completion transition.
         if event == "UserPromptSubmit":

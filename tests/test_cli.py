@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock, call
 import pytest
 
 from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, cmd_clock_out, _codex_rollout, _sweep_cooks, cmd_sweep, main, _agy_summary
-from claude_kitchen.state import write_status
+from claude_kitchen.state import update_status, write_status
 from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION
 
 
@@ -615,12 +615,12 @@ class TestStatusPreservationAcrossNonStopWriters:
     def test_cmd_ticket_preserves_tokens_and_backend(
         self, mock_rk, mock_state, mock_send, tmp_path,
     ):
-        """cmd_ticket flips status→working but must not silently clobber
-        durable fields. This is the realistic "ticket fired between turns"
-        case for a cook with prior usage."""
+        """cmd_ticket flips a Codex cook to working but must not silently
+        clobber durable fields. This is the realistic "ticket fired between
+        turns" case for a cook with prior usage."""
         mock_state.return_value = tmp_path
         write_status(tmp_path, "eng", {
-            "status": "idle", "agent": "eng", "backend": "claude",
+            "status": "idle", "agent": "eng", "backend": "codex",
             "tokens": {"input": 174027, "max": 1_000_000},
             "summary": "earlier",
         })
@@ -634,8 +634,24 @@ class TestStatusPreservationAcrossNonStopWriters:
 
         data = json.loads((tmp_path / "cooks" / "eng.json").read_text())
         assert data["status"] == "working"
-        assert data["backend"] == "claude"
+        assert data["backend"] == "codex"
         assert data["tokens"] == {"input": 174027, "max": 1_000_000}
+
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_a_claude_turn_that_finishes_during_the_send_stays_idle(self, mock_rk, mock_state, tmp_path):
+        # Its hooks write working then idle while send_keys is still returning.
+        mock_state.return_value = tmp_path
+        write_status(tmp_path, "eng", {"status": "idle", "agent": "eng", "backend": "claude"})
+
+        def turn_runs(*_a, **_k):
+            update_status(tmp_path, "eng", status="working")
+            update_status(tmp_path, "eng", status="idle", summary="done")
+
+        from claude_kitchen.cli import cmd_ticket
+        with patch("claude_kitchen.cli.send_keys", side_effect=turn_runs):
+            cmd_ticket(MagicMock(kitchen="risotto", cook="eng", message="quick task"))
+        assert json.loads((tmp_path / "cooks" / "eng.json").read_text())["status"] == "idle"
 
     def test_stop_with_failed_transcript_read_preserves_prior_tokens(self, monkeypatch, tmp_path):
         """Realistic 'turn N succeeded, turn N+1's transcript read fails'
