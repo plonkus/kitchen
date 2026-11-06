@@ -309,7 +309,7 @@ With an editable install, reopen the kitchen or re-hire a cook after changing a 
 - **Channel authentication fails:** run `claude /login` and select a claude.ai account. Console/API-key authentication does not expose channels.
 - **Claude Code is too old:** upgrade to version 2.1.80 or newer.
 - **`agy not on PATH`:** Gemini cooks require Antigravity CLI; Claude and Codex kitchens do not.
-- **Kitchen refuses to open outside a git repository:** move into a git repository first. Kitchen needs it for project namespacing and optional worktrees.
+- **Named kitchen refuses to open outside a git repository:** a plain directory works for an unnamed `kitchen open` (a home kitchen), but `kitchen open <name>` makes a git worktree, so it needs a repository.
 - **Legacy kitchen named `projects`:** that name is reserved for the persistent project wiki root; follow the rename instruction printed by setup.
 
 ## Acknowledgements
