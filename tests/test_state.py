@@ -1,5 +1,6 @@
 """Tests for state read/write."""
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -186,13 +187,11 @@ class TestProjectSlug:
         assert a != b, "Unrelated repos sharing a basename must not collide"
         assert a == "work-alpha-repo" and b == "work-beta-repo"
 
-    @patch("claude_kitchen.state.subprocess.run")
-    def test_not_a_git_repo_fails_loudly(self, mock_run, tmp_path):
-        no_remote = MagicMock(returncode=1, stdout="", stderr="")
-        not_a_repo = MagicMock(returncode=128, stdout="", stderr="fatal: not a git repository")
-        mock_run.side_effect = [no_remote, not_a_repo]
-        with pytest.raises(SystemExit, match="not a git repository"):
-            project_slug(tmp_path)
+    def test_plain_directory_slugs_its_own_path(self, tmp_path):
+        home = tmp_path / "Home"
+        home.mkdir()
+        expected = re.sub(r"[^a-z0-9-]+", "-", str(home.resolve()).lower()).strip("-")
+        assert project_slug(home) == expected
 
 
 class TestNamespaced:

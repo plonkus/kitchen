@@ -114,17 +114,17 @@ def project_slug(project_path: Path) -> str:
     sans `.git`. `git@github.com:owner/my-project.git` -> `my-project`.
     Two unrelated repos that share a repo name collide; that's the user's
     problem to disambiguate with an explicit `--kitchen` / kitchen name.
-    When no remote is configured but the path is a git repo, falls back to
-    a slugification of the absolute repo toplevel path (collision-proof
-    across unrelated repos on one machine; loses cross-machine identity).
-    Fails loudly if the path is not a git repo.
+    With no remote, falls back to a slugification of the absolute repo
+    toplevel path — or of the path itself outside git, so a plain directory
+    (a home kitchen) works too. Collision-proof across unrelated directories
+    on one machine; loses cross-machine identity.
     """
     result = subprocess.run(
         ["git", "-C", str(project_path), "config", "--get", "remote.origin.url"],
         capture_output=True, text=True,
     )
     if result.returncode != 0 or not result.stdout.strip():
-        return _slug_from_toplevel(project_path)
+        return _slug_from_path(project_path)
     url = result.stdout.strip()
     if url.endswith(".git"):
         url = url[:-4]
@@ -164,18 +164,13 @@ def namespaced(project: Path, requested: str) -> str:
     return f"{slug}-{requested}"
 
 
-def _slug_from_toplevel(project_path: Path) -> str:
+def _slug_from_path(project_path: Path) -> str:
     result = subprocess.run(
         ["git", "-C", str(project_path), "rev-parse", "--show-toplevel"],
         capture_output=True, text=True,
     )
-    if result.returncode != 0 or not result.stdout.strip():
-        sys.exit(
-            f"{project_path} is not a git repository. "
-            "Kitchen requires a git repo to derive a project slug."
-        )
-    toplevel = result.stdout.strip()
-    slug = re.sub(r"[^a-z0-9-]+", "-", toplevel.lower()).strip("-")
+    path = result.stdout.strip() or str(project_path.resolve())
+    slug = re.sub(r"[^a-z0-9-]+", "-", path.lower()).strip("-")
     if not slug:
-        sys.exit(f"Could not derive a slug from toplevel {toplevel!r}.")
+        sys.exit(f"Could not derive a slug from {path!r}.")
     return slug
