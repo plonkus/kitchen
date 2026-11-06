@@ -10,8 +10,8 @@ from claude_kitchen.state import state_root
 
 # Per-call tmux timeout. Generous enough that fast queries (has-session,
 # new-session, list-windows) don't spuriously time out when the tmux server is
-# briefly serialized behind another kitchen launching at the same time — the
-# `kitchen open --sub-sous` x2 race that used to crash both opens at 5s.
+# briefly serialized behind another kitchen launching at the same time, which
+# at 5s used to crash both launches.
 TIMEOUT = 15
 
 # Probe budget for "is this kitchen's server alive?". Enumerating kitchens costs
@@ -228,7 +228,7 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
 
     Progress-based, not a flat cap: under heavy machine load the whole boot
     (window → dialog → confirm → render the banner) can take far longer than any
-    fixed deadline — diagnosed live on a load-50 box, where a healthy child sous
+    fixed deadline — diagnosed live on a load-50 box, where a healthy agent
     simply booted slowly. So keep waiting as long as the pane keeps CHANGING
     (making progress) and give up only after `stall_timeout` seconds of NO change
     (truly stuck / crashed) or the `timeout` hard ceiling. Returns False on
@@ -240,12 +240,6 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
     # new version is published. Dismiss it once with `3` (= "Skip until next
     # version") + Enter so the welcome marker can appear.
     update_dismissed = False
-    # A claude agent launched with --dangerously-load-development-channels (the
-    # sous) shows a one-time "Loading development channels" confirmation before
-    # its welcome banner. Option 1 ("I am using this for local development") is
-    # pre-selected, so a bare Enter confirms it. Only the sous loads dev
-    # channels, so this never fires for cooks.
-    channels_confirmed = False
     last = None
     last_change = time.time()
     while time.time() < hard_deadline:
@@ -263,11 +257,6 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
                     tmux("send-keys", "-t", target(window), "3", "Enter",
                          kitchen=kitchen, check=True)
                     update_dismissed = True
-                if (backend == "claude" and not channels_confirmed
-                        and "Loading development channels" in content):
-                    tmux("send-keys", "-t", target(window), "Enter",
-                         kitchen=kitchen, check=True)
-                    channels_confirmed = True
                 if content != last:
                     last, last_change = content, time.time()
                 elif time.time() - last_change > stall_timeout:

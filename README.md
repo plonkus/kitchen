@@ -17,7 +17,7 @@ It runs the stock agent CLIs you already use—authenticated through your existi
 | **Parallel work without a black box** | Each cook is an isolated tmux window. Run independent workstreams concurrently, attach to watch them live, inspect a pane with `kitchen peek`, or take over the keyboard yourself. |
 | **Memory that survives the shift** | Per-project `mistakes.md` and `preferences.md` files persist across kitchens, while per-kitchen notes support handoffs and task briefs. The team can carry forward lessons without keeping every old conversation alive. |
 
-Kitchen also integrates the superpowers skills workflow for brainstorming, specs, chunked implementation, review, and verification. For heavier use cases it can launch a child kitchen for an independent workstream or a clean-room Claude/Codex cook for a more reproducible evaluation—but the core stays deliberately small: tmux down, hooks and a Unix socket back up.
+Kitchen also integrates the superpowers skills workflow for brainstorming, specs, chunked implementation, review, and verification. For heavier use cases it can hand an independent workstream to another kitchen's sous with a ticket, or launch a clean-room Claude/Codex cook for a more reproducible evaluation—but the core stays deliberately small: tmux down, hooks and a Unix socket back up.
 
 ## The mental model
 
@@ -201,7 +201,6 @@ The sous runs these commands under the hood. You can also use them directly from
 | Command | What it does |
 |---|---|
 | `kitchen open [name] [project]` | Open a kitchen; an explicit name creates a worktree. |
-| `kitchen open <name> --sub-sous` | Launch a fresh child kitchen whose sous runs in its own tmux session. |
 | `kitchen hire <cook> [options]` | Spawn a cook and wait until its interactive prompt is ready. |
 | `kitchen roles` | List the packaged cook roles. |
 | `kitchen ticket <cook> "message"` | Deliver a verified message to a cook. |
@@ -254,7 +253,7 @@ When a cook completes a turn:
 4. The per-kitchen MCP server emits a Claude channel notification.
 5. The response appears automatically in the sous's context, and the sous decides whether to follow up, review, iterate, or report back.
 
-The root sous's own Stop hook does not notify its own socket, preventing an echo loop. Child sous sessions are the deliberate exception: they can report completion to their parent kitchen.
+The sous's own Stop hook does not notify its own socket, preventing an echo loop.
 
 ## Where state lives
 
