@@ -1685,19 +1685,12 @@ class TestOpenDoesNotSweepCooksItCannotSee:
     the case where the cooks may still be running (or where the records are the
     memory `suspend` promised to keep)."""
 
-    @patch("claude_kitchen.cli._sweep_cooks")
-    @patch("claude_kitchen.cli.has_session", return_value=False)
-    def test_no_sweep_when_the_session_had_to_be_created(self, mock_has, mock_sweep):
-        assert mock_sweep is not None
-        import inspect
-        src = inspect.getsource(cmd_open)
-        # The sweep must sit on the has_session TRUE branch.
-        assert "_sweep_cooks(base, name)" in src
-
+    @pytest.mark.parametrize("session_up", [False, True])
     def test_resume_keeps_cook_records_for_an_unreachable_session(
-            self, tmp_path, monkeypatch):
-        """End to end through cmd_open --resume: session absent on this socket,
-        so a fresh one is created — and cooks/*.json survives untouched."""
+            self, tmp_path, monkeypatch, session_up):
+        """End to end through cmd_open --resume: cooks/*.json survives untouched,
+        whether the session had to be created or a first reopen of a suspended
+        kitchen already made it (its window list still has none of the cooks)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         project = tmp_path / "proj"
         project.mkdir()
@@ -1709,7 +1702,8 @@ class TestOpenDoesNotSweepCooksItCannotSee:
         args = MagicMock(name_=None, project=str(project), resume=True,
                          worktree_path=None)
         args.name = "widget"
-        with patch("claude_kitchen.cli.has_session", return_value=False), \
+        with patch("claude_kitchen.cli.has_session", return_value=session_up), \
+             patch("claude_kitchen.cli.list_windows", return_value=["_placeholder"]), \
              patch("claude_kitchen.cli.tmux") as mock_tmux, \
              patch("claude_kitchen.cli.project_slug", return_value="widget"), \
              patch("claude_kitchen.cli.namespaced", return_value="widget"), \
@@ -1725,12 +1719,7 @@ class TestSecondOpenIsANoOp:
     NOTHING. The guard lives in spawn_sous, which is the last statement of
     cmd_open, so a duplicate open used to rewrite kitchen.json and
     kitchen-mcp.json and stand up a whole tmux server before aborting with
-    "Sous chef already running".
-
-    The hazard is the has_session TRUE branch: there the same pre-guard path
-    runs _sweep_cooks, so a duplicate open could delete the records of cooks
-    that are alive on a different tmux server — the trap that had to be
-    hand-repaired on two kitchens. An aborted command must not mutate."""
+    "Sous chef already running". An aborted command must not mutate."""
 
     @patch("claude_kitchen.spawn.os.execvp")
     def _run_second_open(self, has_session_value, mock_exec, tmp_path):

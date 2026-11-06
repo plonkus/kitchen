@@ -353,8 +353,7 @@ def cmd_open(args):
         )
 
     # Before ANY mutation. Everything below this line writes: kitchen.json, the
-    # MCP config, the tmux session — and on the has_session branch _sweep_cooks,
-    # which deletes cook records. A duplicate open must be a no-op, not a
+    # MCP config, the tmux session. A duplicate open must be a no-op, not a
     # half-applied one that aborts at the end.
     check_sous_pid(base)
 
@@ -406,19 +405,9 @@ def cmd_open(args):
     _seed(wiki_dir(slug), _WIKI_TEMPLATES)
     _seed(notes_dir(name), _NOTES_TEMPLATES)
 
-    if has_session(name):
-        # Sweep ONLY when the session was already up on this kitchen's own
-        # socket — there the window list is authoritative about which cooks are
-        # still alive. When we have to CREATE the session, every cook record
-        # looks orphaned by construction, and that is exactly the case where the
-        # cooks may still be running: on a suspended kitchen the records are the
-        # memory `suspend` exists to keep, and after the socket move a kitchen's
-        # cooks can be alive on a different server this tmux can't even see.
-        # Deleting their state there destroys the sous's only record of what
-        # they were doing. Orphan files are inert (brigade and the statusline
-        # count live windows, not files); `kitchen sweep` clears them on demand.
-        _sweep_cooks(base, name)
-    else:
+    # No automatic sweep: cook records outlive their windows on a suspended
+    # kitchen, and only the head chef knows they're done (`kitchen sweep`).
+    if not has_session(name):
         tmux("new-session", "-d", "-s", SESSION, "-n", "_placeholder", kitchen=name)
     mcp_config = {"mcpServers": channel_servers(name)}
     (base / MCP_CONFIG_NAME).write_text(json.dumps(mcp_config, indent=2) + "\n")
