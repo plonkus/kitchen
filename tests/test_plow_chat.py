@@ -231,7 +231,7 @@ def test_an_attachment_missing_a_field_never_holds_up_delivery(field, content, s
     run_bridge(scenario)
 
 
-def test_reads_the_credential_file_plow_agents_mint_writes(tmp_path):
+def test_reads_the_credential_file_latch_agents_new_writes(tmp_path):
     (tmp_path / "plow-credentials").write_text(
         f"PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN={TOKEN}\n# plow-agent-uid: 73f5\n")
     assert read_credentials(tmp_path) == {"PLOW_API_BASE": "https://api.plow.co", "PLOW_AGENT_TOKEN": TOKEN}
