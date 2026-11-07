@@ -429,25 +429,17 @@ def cmd_open(args):
                resume_session_id=sous_session_id, model=args.model)
 
 
-def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
-    """Fresh, isolated CODEX_HOME for a clean-room codex cook. Seeded with ONLY
+def _seed_codex_home(base: Path, name: str) -> Path:
+    """Fresh, isolated CODEX_HOME for a clean-room codex cook, seeded with ONLY
     auth.json (auth survives — mirrors the Claude "keep auth, drop everything
-    else" stance) plus a minimal config.toml granting trust to cwd. The trust
-    grant is load-bearing: codex's workspace-trust prompt is suppressed by
-    NEITHER --dangerously-bypass-approvals-and-sandbox NOR a -c override, only
-    by the persisted projects.<cwd>.trust_level (verified empirically) — without
-    it the cook hangs on the trust dialog and wait_for_prompt times out. notify
-    rides the command line, so cook→sous reporting is unaffected."""
+    else" stance). Its folder-trust dialog is answered by wait_for_prompt, as
+    for any codex cook. notify rides the command line, so cook→sous reporting
+    is unaffected."""
     home = base / "codex-home" / name
     if home.exists():
         shutil.rmtree(home)  # re-hire under the same name must start fresh
     home.mkdir(parents=True)
     shutil.copyfile(Path.home() / ".codex" / "auth.json", home / "auth.json")
-    # Escape cwd for a TOML basic string (backslash + double-quote) so a path
-    # with those chars stays valid TOML — otherwise codex can't parse the trust
-    # grant and falls back to the (blocking) trust prompt.
-    key = cwd.replace("\\", "\\\\").replace('"', '\\"')
-    (home / "config.toml").write_text(f'[projects."{key}"]\ntrust_level = "trusted"\n')
     return home
 
 
@@ -527,7 +519,7 @@ def cmd_hire(args):
 
     # Clean-room codex cooks get a fresh, isolated CODEX_HOME (no memory,
     # AGENTS.md, plugin registry, or user config). Claude/gemini: None.
-    codex_home = str(_seed_codex_home(base, name, cwd)) if clean_room and backend == "codex" else None
+    codex_home = str(_seed_codex_home(base, name)) if clean_room and backend == "codex" else None
 
     write_status(base, name, {"status": "booting", "agent": name, "backend": backend})
 

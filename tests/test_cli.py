@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -1428,8 +1427,8 @@ class TestCmdHireCleanRoom:
         self, mock_rp, mock_rk, mock_state, mock_wait, mock_spawn, mock_send, tmp_path, monkeypatch,
     ):
         """Clean-room codex: a fresh per-cook CODEX_HOME is seeded with ONLY
-        auth.json + a cwd trust grant, forwarded to spawn_window, and the role
-        send is skipped (cook boots bare)."""
+        auth.json, forwarded to spawn_window, and the role send is skipped
+        (cook boots bare)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / ".codex").mkdir()
         (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
@@ -1446,27 +1445,10 @@ class TestCmdHireCleanRoom:
         args.model = None
         cmd_hire(args)
         home = tmp_path / "codex-home" / "eval1"
+        assert [f.name for f in home.iterdir()] == ["auth.json"]
         assert (home / "auth.json").read_text() == '{"OPENAI_API_KEY": "x"}'
-        cfg = (home / "config.toml").read_text()
-        assert 'trust_level = "trusted"' in cfg
-        assert '/eval/dir' in cfg  # trust granted to the cook's cwd
         assert mock_spawn.call_args.kwargs["codex_home"] == str(home)
         mock_send.assert_not_called()  # clean-room codex boots bare, no role
-
-    def test_seed_codex_home_escapes_tricky_path(self, tmp_path, monkeypatch):
-        """A cwd containing a double-quote, backslash, and space must yield
-        VALID TOML whose projects key round-trips to the exact cwd — otherwise
-        codex can't parse the trust grant and hits the blocking prompt."""
-        from claude_kitchen.cli import _seed_codex_home
-        monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / ".codex").mkdir()
-        (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
-        base = tmp_path / "base"; base.mkdir()
-        tricky = '/tmp/we"ird\\path dir'
-        home = _seed_codex_home(base, "eval1", tricky)
-        parsed = tomllib.loads((home / "config.toml").read_text())  # raises if invalid TOML
-        assert list(parsed["projects"].keys()) == [tricky]
-        assert parsed["projects"][tricky]["trust_level"] == "trusted"
 
     @patch("claude_kitchen.cli.send_keys")
     @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
