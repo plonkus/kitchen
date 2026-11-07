@@ -963,7 +963,6 @@ class TestCmdOpenPlainFolder:
         args.project = str(folder)
         args.worktree_path = None
         args.resume = False
-        args.sub_sous = False
         return args
 
     def _open(self, folder, name, state):
