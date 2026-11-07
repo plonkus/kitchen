@@ -2,6 +2,7 @@
 import itertools
 import os
 import re
+import shlex
 import subprocess
 import time
 from typing import Optional
@@ -140,6 +141,27 @@ _PROMPT_MARKERS = {
     "gemini": "? for shortcuts",  # agy TUI footer, present when input is editable
 }
 
+# Claude Code's one-time modals, keyed by an option only the live dialog shows.
+# Both default to the refusing option, and accepting one is a trust decision
+# kitchen must not make for the head chef, so wait_for_prompt stops on them.
+_CLAUDE_ONE_TIME = {
+    "Yes, I trust this folder": "folder-trust",
+    "Yes, I accept": "Bypass Permissions",
+}
+
+
+class PromptBlocked(Exception):
+    """A Claude agent is parked on a one-time modal only a human may accept.
+    `cwd` is where to accept it."""
+
+    def __init__(self, prompt: str, cwd: str):
+        self.prompt, self.cwd = prompt, cwd
+
+    def __str__(self):
+        return (f"Claude Code is waiting on its one-time {self.prompt} prompt. "
+                f"Accept it once by hand — `cd {shlex.quote(self.cwd)} && claude "
+                f"--dangerously-skip-permissions`, answer yes, then /exit — and retry")
+
 # Busy markers: a regex present in the pane tail while the agent is mid-turn,
 # gone when it's idle at the prompt. Backend-specific and confirmed empirically
 # against real cooks (matched case-insensitively against each non-blank tail
@@ -254,6 +276,12 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
         try:
             content = capture_pane(kitchen, window)
             if content:
+                blocker = backend == "claude" and next(
+                    (v for k, v in _CLAUDE_ONE_TIME.items() if k in content), None)
+                if blocker:
+                    cwd = tmux("display-message", "-p", "-t", target(window),
+                               "#{pane_current_path}", kitchen=kitchen).stdout.strip()
+                    raise PromptBlocked(blocker, cwd)
                 if marker in content:
                     return True
                 screen = next((s for s in ("Update available!",

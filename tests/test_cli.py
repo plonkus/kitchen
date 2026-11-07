@@ -16,7 +16,7 @@ import pytest
 
 from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, cmd_clock_out, _codex_rollout, _sweep_cooks, cmd_sweep, main, _agy_summary
 from claude_kitchen.state import update_status, write_status
-from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION
+from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION, PromptBlocked
 
 
 class TestResolveKitchen:
@@ -1227,13 +1227,21 @@ class TestResolveKitchenProbe:
 
 
 class TestCmdHireFailures:
+    @pytest.mark.parametrize("outcome, error", [
+        (False, "didn't show prompt"),
+        (PromptBlocked("folder-trust", "/work/x"), "one-time folder-trust prompt.*cd /work/x && claude"),
+    ], ids=["timeout", "one-time-prompt"])
     @patch("claude_kitchen.cli.send_keys")
-    @patch("claude_kitchen.cli.wait_for_prompt", return_value=False)
+    @patch("claude_kitchen.cli.wait_for_prompt")
     @patch("claude_kitchen.cli.spawn_window", return_value=True)
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    def test_exits_on_hire_timeout(self, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, tmp_path):
+    def test_exits_on_a_cook_that_never_reaches_its_prompt(self, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, outcome, error, tmp_path):
         mock_state.return_value = tmp_path
+        if isinstance(outcome, Exception):
+            mock_wait.side_effect = outcome
+        else:
+            mock_wait.return_value = outcome
         args = MagicMock()
         args.kitchen = "risotto"
         args.name = "eng"
@@ -1245,7 +1253,7 @@ class TestCmdHireFailures:
         args.with_skill = []
         args.model = None
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
-            with pytest.raises(SystemExit, match="didn't show prompt"):
+            with pytest.raises(SystemExit, match=error):
                 cmd_hire(args)
         status = json.loads((tmp_path / "cooks" / "eng.json").read_text())
         assert status["status"] == "failed"

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from claude_kitchen.tmux import (
     list_kitchens, list_windows, has_session, target,
-    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy, attach_cmd,
+    capture_pane, send_keys, tmux, wait_for_prompt, PromptBlocked, pane_busy, attach_cmd,
     PROBE_TIMEOUT, SESSION,
 )
 from claude_kitchen.state import (
@@ -552,11 +552,15 @@ def cmd_hire(args):
     # Keep this barrier: the sous will call `kitchen ticket <cook>` immediately
     # after hire returns. Without it, the first ticket lands in a booting pane
     # and is lost. Also required for the codex send_keys role delivery below.
-    if not wait_for_prompt(kitchen, name, backend):
+    try:
+        failure = None if wait_for_prompt(kitchen, name, backend) else "didn't show prompt within timeout"
+    except PromptBlocked as e:
+        failure = str(e)
+    if failure:
         update_status(base, name, status="failed")
         if codex_home:
             shutil.rmtree(codex_home, ignore_errors=True)
-        sys.exit(f"{name} didn't show prompt within timeout.")
+        sys.exit(f"{name}: {failure}.")
 
     # Name the codex thread `[<kitchen>/<cook>]` so it is identifiable in the
     # ChatGPT app and `codex resume`. /rename before the first turn creates the
