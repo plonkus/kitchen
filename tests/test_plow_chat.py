@@ -200,6 +200,20 @@ def test_a_members_attachments_reach_the_sous_as_local_files(texts, files, conte
     run_bridge(scenario)
 
 
+@pytest.mark.parametrize("files_host, auth", [
+    (None, f"Bearer {TOKEN}"),  # a path on Plow's own API
+    ("localhost", None),  # the same bytes from any other origin
+], ids=["plow-api", "other-host"])
+def test_an_attachment_download_carries_the_plow_token_only_to_plow(files_host, auth):
+    async def scenario(fake, bridge, delivered):
+        fake.files_host = files_host
+        message = await fake.inbound(HOME, SAM, "see this", files=[("shot.jpeg", PHOTO)])
+        await eventually(lambda: delivered)
+        assert "file" in delivered[0][1]
+        assert fake.files_auth[message["attachments"][0]["uid"]] == auth
+    run_bridge(scenario)
+
+
 def test_reads_the_credential_file_plow_agents_mint_writes(tmp_path):
     (tmp_path / "plow-credentials").write_text(
         f"PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN={TOKEN}\n# plow-agent-uid: 73f5\n")

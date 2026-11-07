@@ -137,8 +137,16 @@ class Bridge:
         self.due = asyncio.get_running_loop().time() + BURST_SECONDS
 
     async def fetch(self, attachment: dict) -> Path:
-        """Save an inbound attachment under files/, named by its uid."""
-        r = await self.client.get(attachment["url"])
+        """Save an inbound attachment under files/, named by its uid. The Plow
+        token goes only to Plow's own API origin: a URL anywhere else gets a
+        client of its own, with no credentials."""
+        base = self.client.base_url
+        url = base.join(attachment["url"])
+        if (url.scheme, url.host, url.port) == (base.scheme, base.host, base.port):
+            r = await self.client.get(url)
+        else:
+            async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as other:
+                r = await other.get(url)
         r.raise_for_status()
         file = self.cursor.parent / "files" / (attachment["uid"] + Path(attachment["filename"]).suffix)
         file.parent.mkdir(mode=0o700, exist_ok=True)
