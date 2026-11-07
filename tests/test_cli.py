@@ -1639,13 +1639,12 @@ class TestCmdSuspend:
     disk — it is `close` minus the destruction."""
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
-    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.kill_server")
     @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    def test_kills_only_that_kitchens_server(self, mock_rk, mock_tmux, mock_has, capsys):
+    def test_kills_only_that_kitchens_server(self, mock_rk, mock_kill, mock_has, capsys):
         from claude_kitchen.cli import cmd_suspend
         cmd_suspend(MagicMock(kitchen="risotto"))
-        assert mock_tmux.call_args.args == ("kill-server",)
-        assert mock_tmux.call_args.kwargs["kitchen"] == "risotto"
+        mock_kill.assert_called_once_with("risotto")
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.tmux")

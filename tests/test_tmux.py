@@ -1,4 +1,5 @@
 """Tests for tmux helpers. Uses mocked subprocess calls."""
+import os
 import subprocess
 from unittest.mock import patch, MagicMock
 import pytest
@@ -916,3 +917,15 @@ class TestSendKeysVerifiedSubmit:
         with pytest.raises(RuntimeError, match="did not land in the composer"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         assert fake.state["enter"] == 0
+
+
+def test_kill_server_removes_the_socket():
+    """tmux leaves its socket file behind when the server dies; a kitchen's
+    teardown must not."""
+    from pathlib import Path
+    from claude_kitchen.tmux import kill_server, tmux
+    tmux("new-session", "-d", "-s", SESSION, kitchen="probe", check=True)
+    sock = Path(os.environ["TMUX_TMPDIR"]) / f"tmux-{os.getuid()}" / "ck-probe"
+    assert sock.exists()
+    kill_server("probe")
+    assert not sock.exists()

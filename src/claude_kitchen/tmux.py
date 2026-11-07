@@ -6,6 +6,7 @@ import re
 import shlex
 import subprocess
 import time
+from pathlib import Path
 from typing import Optional
 
 from claude_kitchen.state import state_root
@@ -118,6 +119,14 @@ def list_windows(kitchen: str, timeout: int = TIMEOUT) -> list[str]:
         w.strip() for w in result.stdout.strip().split("\n")
         if w.strip() and not w.strip().startswith("_")
     ]
+
+
+def kill_server(kitchen: str):
+    """Kill a kitchen's tmux server and remove its socket, which tmux leaves
+    behind on exit."""
+    tmux("kill-server", kitchen=kitchen)
+    Path(os.environ.get("TMUX_TMPDIR", "/tmp"), f"tmux-{os.getuid()}",
+         socket(kitchen)).unlink(missing_ok=True)
 
 
 def has_session(kitchen: str, timeout: int = TIMEOUT) -> bool:

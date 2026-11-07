@@ -11,7 +11,7 @@ from pathlib import Path
 
 from claude_kitchen.tmux import (
     list_kitchens, list_windows, has_session, target,
-    capture_pane, send_keys, tmux, wait_for_prompt, PromptBlocked, pane_busy, attach_cmd,
+    capture_pane, send_keys, tmux, wait_for_prompt, PromptBlocked, kill_server, pane_busy, attach_cmd,
     PROBE_TIMEOUT, SESSION,
 )
 from claude_kitchen.state import (
@@ -1218,7 +1218,7 @@ def cmd_suspend(args):
     kitchen = resolve_kitchen(args.kitchen)
     if not has_session(kitchen):
         sys.exit(f"Kitchen \"{kitchen}\" has no running tmux server — already suspended.")
-    tmux("kill-server", kitchen=kitchen)
+    kill_server(kitchen)
     print(f"Kitchen \"{kitchen}\" suspended. Cooks are gone; notes and cook records are untouched.")
     print(f"   kitchen open --resume {kitchen}    # bring the sous back")
     print(f"   {attach_cmd(kitchen)}    # once it is back up")
@@ -1245,7 +1245,7 @@ def cmd_close(args):
             print(f"Warning: bad kitchen.json: {e}", file=sys.stderr)
         kitchen_file.unlink(missing_ok=True)
 
-    tmux("kill-server", kitchen=kitchen)
+    kill_server(kitchen)
     for cook_file in sorted((base / "cooks").glob("*.json")):
         _archive_codex_thread(base, cook_file.stem)
 
