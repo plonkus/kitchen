@@ -279,13 +279,14 @@ The sous's own Stop hook does not notify its own socket, preventing an echo loop
 
 A kitchen whose state dir holds `plow-chat/plow-credentials` also loads the `plow-chat` channel when `kitchen open` starts its sous. Texts to that Plow line arrive as `<channel source="plow-chat" from="<name>" chat="<chat uid>">`; photos and files sent with them are saved under `plow-chat/files/` and their space-separated paths added as a `file` attribute. The sous answers with its `reply` tool, or sends up to four local files as one message with `send_file`. There is no allowlist: Plow delivers only chats the line's account owns, meaning the owner's 1:1 and any iMessage group the owner was in when its first text arrived. Every member of those chats speaks with head-chef authority. Anyone who has both numbers can start such a group, so the owner should treat every group with the line as trusted.
 
-**Setup**, using [`plow-agents`](https://github.com/plow-pbc/plow-agents#quickstart) and the kitchen name `kitchen open` prints (a kitchen `boss` opened in a `widget` repo is `widget-boss`):
+**Setup**, using [`latch`](https://github.com/plow-pbc/latch-cli#install) and the kitchen name `kitchen open` prints (a kitchen `boss` opened in a `widget` repo is `widget-boss`):
 
 ```sh
-plow-agents login                 # text the printed phrase from your phone
-plow-agents lines                 # pick a free line
+latch login                       # text the printed code from your phone
+latch agents lines                # pick a free line
 mkdir -p -m 700 ~/.claude-kitchen/widget-boss/plow-chat
-plow-agents mint ln_... --credential-file ~/.claude-kitchen/widget-boss/plow-chat/plow-credentials
+latch agents new --own --name widget-boss --line ln_... \
+  --credential-file ~/.claude-kitchen/widget-boss/plow-chat/plow-credentials
 ```
 
 Then restart the sous: `/exit`, then `kitchen open --resume boss` from the project root. Text the line to check it. A new group needs no setup: add the line's number to it.
