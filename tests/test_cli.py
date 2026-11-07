@@ -957,6 +957,53 @@ class TestCmdOpenNoOriginRepo:
         assert (state / "cooks" / "ghost.json").exists()
 
 
+class TestCmdOpenPlainFolder:
+    """A folder that is not a git repository (real git, no mocks for it)."""
+
+    def _args(self, folder, name):
+        args = MagicMock()
+        args.name = name
+        args.project = str(folder)
+        args.worktree_path = None
+        args.resume = False
+        args.sub_sous = False
+        return args
+
+    def _open(self, folder, name, state):
+        with patch("claude_kitchen.cli.state_dir", return_value=state), \
+             patch("claude_kitchen.cli.spawn_sous") as spawn, \
+             patch("claude_kitchen.cli.has_session", return_value=False), \
+             patch("claude_kitchen.cli.tmux", return_value=MagicMock(returncode=0)) as tmux:
+            cmd_open(self._args(folder, name))
+        return spawn, tmux
+
+    def test_unnamed_open_launches_the_sous_keyed_by_the_folder_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        folder = tmp_path / "marketing"
+        folder.mkdir()
+        state = tmp_path / "state"
+
+        spawn, _ = self._open(folder, None, state)
+
+        kj = json.loads((state / "kitchen.json").read_text())
+        assert kj["source"] == str(folder.resolve())
+        assert kj["slug"].endswith("-marketing") and "worktree" not in kj
+        spawn.assert_called_once()
+        assert spawn.call_args[0][3] == folder.resolve()
+
+    def test_named_open_fails_clearly_and_leaves_nothing(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        folder = tmp_path / "marketing"
+        folder.mkdir()
+        state = tmp_path / "state"
+
+        with pytest.raises(SystemExit, match="Not a git repo"):
+            spawn, tmux = self._open(folder, "hero", state)
+
+        assert not state.exists()
+        assert not (tmp_path / "hero").exists()
+
+
 class TestCmdOpenFailures:
     @patch("claude_kitchen.cli.namespaced", return_value="widget-risotto")
     @patch("claude_kitchen.cli.project_slug", return_value="widget")

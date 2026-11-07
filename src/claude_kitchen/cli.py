@@ -457,7 +457,6 @@ def cmd_open(args):
         kitchen_file.write_text(json.dumps(kj) + "\n")
         slug = derived
     else:
-        base.mkdir(parents=True, exist_ok=True)
         source = project
         slug = project_slug(source)
 
@@ -467,6 +466,9 @@ def cmd_open(args):
             project = create_worktree(project, requested, wt_path)
             kj["worktree"] = str(project)
 
+        # After create_worktree, so a named open refused outside git leaves no
+        # empty state dir behind.
+        base.mkdir(parents=True, exist_ok=True)
         kitchen_file.write_text(json.dumps(kj) + "\n")
         run_hook(source, "on-open", name, cwd=project, source=source)
 

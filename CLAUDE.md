@@ -4,7 +4,7 @@ Multi-agent orchestration over tmux. A sous chef — always Claude — runs in t
 
 ## Code style
 
-Low code, clean code, DRY — keep it small; one function rather than three. No fallback logic, no defensive complexity: this is a dev tool, so if setup is wrong, fail clearly. (One carveout: `project_slug` falls back from `remote.origin.url` to a slugified toplevel path, so local-only repos still work.) Python is managed by `uv`; install with `uv tool install --editable .`
+Low code, clean code, DRY — keep it small; one function rather than three. No fallback logic, no defensive complexity: this is a dev tool, so if setup is wrong, fail clearly. (One carveout: `project_slug` falls back from `remote.origin.url` to a slugified toplevel path — or the directory's own path outside git — so local-only repos and plain directories still work.) Python is managed by `uv`; install with `uv tool install --editable .`
 
 ## Hooks
 
