@@ -330,8 +330,8 @@ class TestCodexScreens:
     def test_trust_dialog_and_update_picker_answered(self, mock_cap, mock_tmux, mock_sleep):
         """Trust dialog then update picker: each is answered once."""
         from claude_kitchen.tmux import wait_for_prompt
-        trust = ("  Do you trust the contents of this directory?\n"
-                 "› 1. Yes, continue\n  2. No, quit\n  Press enter to continue\n")
+        trust = ("  Trust this folder? Codex can read, edit, and run files here\n"
+                 "› 1. Trust and continue\n  2. Quit\n  Press enter to continue\n")
         mock_cap.side_effect = [trust, trust, trust + "✨ Update available! 1 -> 2",
                                 ">_ OpenAI Codex (v0.154.0)"]
         assert wait_for_prompt("ck-x", "cx", "codex", timeout=5) is True

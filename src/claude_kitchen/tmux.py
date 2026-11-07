@@ -237,10 +237,10 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
     marker = _PROMPT_MARKERS[backend]
     hard_deadline = time.time() + timeout
     # Codex can show two screens before its welcome banner: an "Update
-    # available!" picker when a new version is published, and the directory
-    # trust dialog. `3` + Enter answers both — "Skip until next version" on the
-    # picker; on the two-option trust dialog the `3` is ignored and Enter takes
-    # the pre-selected "Yes, continue". Match each screen by its own text: the
+    # available!" picker when a new version is published, and the folder trust
+    # dialog ("Trust this folder?"). `3` + Enter answers both — "Skip until next
+    # version" on the picker; on the trust dialog the `3` is ignored and Enter
+    # takes its pre-selected option. Match each screen by its own text: the
     # sign-in screen also says "Press enter to continue", and there `3` selects
     # "Provide your own API key", whose field then takes the next ticket as the
     # key. Signed out, the cook gets no keys and hire fails at the stall.
@@ -257,7 +257,7 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
                 if marker in content:
                     return True
                 screen = next((s for s in ("Update available!",
-                                           "Do you trust the contents")
+                                           "Trust this folder?")
                                if s in content and s not in codex_answered),
                               None)
                 if backend == "codex" and screen:
