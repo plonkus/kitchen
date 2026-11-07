@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock, call
 import pytest
 
 from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, cmd_clock_out, _codex_rollout, _sweep_cooks, cmd_sweep, main, _agy_summary
-from claude_kitchen.state import update_status, write_status
+from claude_kitchen.state import channel_socket, update_status, write_status
 from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION, PromptBlocked
 
 
@@ -102,7 +102,7 @@ class TestHook:
 
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        assert call_args[0][0] == tmp_path / "kitchen.sock"
+        assert call_args[0][0] == channel_socket(tmp_path)
         assert call_args[0][1]["cook"] == "eng"
         assert call_args[0][1]["summary"] == "all tests pass"
 
@@ -205,7 +205,7 @@ class TestHook:
 
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        assert call_args[0][0] == tmp_path / "kitchen.sock"
+        assert call_args[0][0] == channel_socket(tmp_path)
         assert call_args[0][1]["cook"] == "codex-eng"
         assert call_args[0][1]["summary"] == "captured codex summary"
 

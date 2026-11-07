@@ -16,7 +16,7 @@ from claude_kitchen.tmux import (
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, namespaced, wiki_dir, notes_dir, channel_servers, atomic_write_json,
+    project_slug, namespaced, wiki_dir, notes_dir, channel_servers, channel_socket, atomic_write_json,
     MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
@@ -585,12 +585,12 @@ def _ticket_sous(kitchen: str, message: str):
     has no window to paste into. `cook` carries the sender's kitchen, which is
     where the receiver sends its answer. No status write: a sous has no cook
     record."""
-    from claude_kitchen.channel import deliver_to_socket, SOCK_NAME
+    from claude_kitchen.channel import deliver_to_socket
     sender = os.environ.get("AGENT_KITCHEN")
     if not sender:
         sys.exit("`kitchen ticket sous` must run from a sous: AGENT_KITCHEN is "
                  "unset, so the receiver would have no kitchen to answer.")
-    sock = state_dir(kitchen) / SOCK_NAME
+    sock = channel_socket(state_dir(kitchen))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         deliver_to_socket(sock, {"cook": sender, "summary": message, "ts": ts})
@@ -834,8 +834,8 @@ def cmd_hook(args):
     if ctx:
         push["ctx"] = ctx
 
-    from claude_kitchen.channel import send_to_socket, SOCK_NAME
-    send_to_socket(base / SOCK_NAME, push)
+    from claude_kitchen.channel import send_to_socket
+    send_to_socket(channel_socket(base), push)
 
 
 def _agy_summary(payload: dict) -> str:
@@ -893,8 +893,8 @@ def cmd_hook_agy(args):
     # (written "gemini" at hire) across this completion transition.
     update_status(base, name, agent=name, kitchen=kitchen, status="idle",
                   ts=ts, summary=summary, session_id=payload.get("conversationId", ""))
-    from claude_kitchen.channel import send_to_socket, SOCK_NAME
-    send_to_socket(base / SOCK_NAME, {"cook": name, "summary": summary, "ts": ts})
+    from claude_kitchen.channel import send_to_socket
+    send_to_socket(channel_socket(base), {"cook": name, "summary": summary, "ts": ts})
 
 
 def _claude_tokens_from_transcript(transcript_path):
@@ -1250,7 +1250,8 @@ def cmd_close(args):
         _archive_codex_thread(base, cook_file.stem)
 
     # Clean up mcp config, socket, pid, and stale cook state
-    for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
+    channel_socket(base).unlink(missing_ok=True)
+    for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "sous.pid"):
         (base / f).unlink(missing_ok=True)
     for sub in ("cooks", "notes", "codex-home"):
         d = base / sub

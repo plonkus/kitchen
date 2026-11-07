@@ -357,7 +357,7 @@ class TestChannelCapabilityAdvertisement:
         with pytest.raises(SystemExit):
             asyncio.run(ch.run_server("whatever"))
         assert claimed == [], "the socket was claimed by a server that cannot deliver"
-        assert not (tmp_path / ch.SOCK_NAME).exists()
+        assert not (tmp_path / "kitchen.sock").exists()
 
 
 def _CAP_MAPS(caps):
