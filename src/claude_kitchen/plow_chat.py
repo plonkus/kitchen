@@ -1,7 +1,7 @@
 """plow-chat channel server — bridges a Plow chat line to the sous.
 
 Holds the Plow chat API socket for the line's agent credential, pushes each
-member's text into the sous as a `<channel source="plow-chat">` tag, and gives
+member's text and attachments into the sous as a `<channel source="plow-chat">` tag, and gives
 the sous `reply` and `send_file` tools. No allowlist: Plow shows the credential only the chats
 the line's account owns, so every chat and every member it delivers is served.
 """
@@ -136,14 +136,33 @@ class Bridge:
         self.burst.append(message)
         self.due = asyncio.get_running_loop().time() + BURST_SECONDS
 
+    async def fetch(self, attachment: dict) -> Path:
+        """Save an inbound attachment under files/, named by its uid."""
+        r = await self.client.get(attachment["url"])
+        r.raise_for_status()
+        file = self.cursor.parent / "files" / (attachment["uid"] + Path(attachment["filename"]).suffix)
+        file.parent.mkdir(mode=0o700, exist_ok=True)
+        await asyncio.to_thread(file.write_bytes, r.content)
+        return file
+
     async def flush(self):
-        """Hand a member's burst to the sous as one text; our own sends,
-        Plow's system notes and text-less messages (tapbacks, bare
-        attachments) are only recorded."""
+        """Hand a member's burst to the sous as one text, its attachments
+        saved locally and their paths in `file`; our own sends, Plow's system
+        notes and messages with neither text nor files (tapbacks) are only
+        recorded. An attachment that can't be fetched is named in the text
+        rather than holding up the burst."""
         first = self.burst[0]
-        body = "\n\n".join(m["body"] for m in self.burst if m["body"].strip())
-        if body and first["sender"]["type"] == "member":
-            await self.deliver(body, {"from": first["sender"]["display_name"], "chat": first["chat_uid"]})
+        if first["sender"]["type"] == "member":
+            texts = [m["body"] for m in self.burst if m["body"].strip()]
+            files = []
+            for attachment in (a for m in self.burst for a in m["attachments"]):
+                try:
+                    files.append(str(await self.fetch(attachment)))
+                except httpx.HTTPError as e:
+                    texts.append(f"(attachment {attachment['filename']} couldn't be fetched: {type(e).__name__})")
+            if texts or files:
+                meta = {"from": first["sender"]["display_name"], "chat": first["chat_uid"]} | ({"file": " ".join(files)} if files else {})
+                await self.deliver("\n\n".join(texts), meta)
         uids = self.taken[first["chat_uid"]]
         uids += [m["uid"] for m in self.burst]  # after delivery, so a crash mid-send can't suppress it
         del uids[:-2 * PAGE]

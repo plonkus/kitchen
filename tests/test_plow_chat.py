@@ -90,7 +90,7 @@ def test_reply_echo_and_blank_texts_never_reach_the_sous():
     async def scenario(fake, bridge, delivered):
         await bridge.reply(HOME, "on it")
         assert fake.sent == [(HOME, "on it")]
-        await fake.inbound(HOME, SAM, "")  # a tapback or bare attachment
+        await fake.inbound(HOME, SAM, "")  # a tapback
         await asyncio.sleep(0.2)
         await fake.inbound(HOME, SAM, "marker")
         await eventually(lambda: delivered)
@@ -174,6 +174,30 @@ def test_one_speakers_back_to_back_texts_reach_the_sous_as_one(live, tmp_path):
         for handle, body in texts:
             fake.add(HOME, handle, body)
     run_bridge(burst, fake, cursor)
+
+
+PHOTO = b"\xff\xd8\xff fake jpeg"
+
+
+@pytest.mark.parametrize("texts, files, content, saved", [
+    (["The spacing sucks. See screenshot"], [("IMG_5570.jpeg", PHOTO)], "The spacing sucks. See screenshot", [PHOTO]),
+    ([""], [("IMG_5571.jpeg", PHOTO)], "", [PHOTO]),
+    (["two shots", ""], [("a.jpeg", PHOTO), ("b.png", b"png")], "two shots", [PHOTO, b"png"]),
+    (["see this"], [("gone.jpeg", None)], "see this\n\n(attachment gone.jpeg couldn't be fetched: HTTPStatusError)", []),
+], ids=["captioned-photo", "bare-photo", "burst-of-two", "unfetchable"])
+def test_a_members_attachments_reach_the_sous_as_local_files(texts, files, content, saved):
+    async def scenario(fake, bridge, delivered):
+        for i, text in enumerate(texts):
+            await fake.inbound(HOME, SAM, text, files=files[i:i + 1] if len(texts) > 1 else files)
+        await eventually(lambda: delivered)
+        await asyncio.sleep(0.2)
+        [(got, meta)] = delivered
+        assert (got, meta["from"]) == (content, "Sam")
+        paths = [Path(p) for p in meta["file"].split()] if saved else []
+        assert "file" in meta if saved else "file" not in meta
+        assert [p.read_bytes() for p in paths] == saved
+        assert all(p.parent.stat().st_mode & 0o777 == 0o700 for p in paths)
+    run_bridge(scenario)
 
 
 def test_reads_the_credential_file_plow_agents_mint_writes(tmp_path):
