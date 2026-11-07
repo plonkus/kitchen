@@ -146,15 +146,15 @@ The editable install makes changes to this checkout—including prompt customiza
 kitchen setup
 ```
 
-`kitchen setup` verifies:
+`kitchen setup` installs and verifies:
 
-1. Claude `Stop` and `UserPromptSubmit` hook configuration.
+1. Claude `Stop` and `UserPromptSubmit` hooks: it appends a `kitchen hook` entry to `~/.claude/settings.json` for each event that lacks one, after a `settings.json.bak-kitchen-<time>` backup, and leaves every other setting alone.
 2. The `mcp` Python SDK.
 3. The superpowers plugin.
 4. Claude Code version 2.1.80 or newer.
 5. That no legacy kitchen uses the reserved name `projects`.
 
-The statusline check is advisory. Hook installation is **not** automatic: when hook configuration is missing, setup prints the exact JSON to add. Re-run the command until the blocking checks are green.
+The statusline check is advisory. Re-run the command until the blocking checks are green.
 
 ## Quick start
 
@@ -210,7 +210,7 @@ The sous runs these commands under the hood. You can also use them directly from
 | `kitchen clock-out <cook>` | Hard-kill a cook and remove its managed state. |
 | `kitchen sweep` | Remove state files for cook windows that no longer exist. |
 | `kitchen close [kitchen]` | Shut down the kitchen and remove managed per-kitchen state. |
-| `kitchen setup` | Check hooks, dependencies, and environment readiness. |
+| `kitchen setup` | Install hooks; check dependencies and environment readiness. |
 
 ### Hire options
 
@@ -277,7 +277,7 @@ The sous's own Stop hook does not notify its own socket, preventing an echo loop
 
 ## Texting the sous (plow-chat)
 
-A kitchen whose state dir holds `plow-chat/plow-credentials` also loads the `plow-chat` channel when `kitchen open` starts its sous. Texts to that Plow line arrive as `<channel source="plow-chat" from="<name>" chat="<chat uid>">`, and the sous answers with its `reply` tool, or sends up to four local files as one message with `send_file`. There is no allowlist: Plow delivers only chats the line's account owns, meaning the owner's 1:1 and any iMessage group the owner was in when its first text arrived. Every member of those chats speaks with head-chef authority. Anyone who has both numbers can start such a group, so the owner should treat every group with the line as trusted.
+A kitchen whose state dir holds `plow-chat/plow-credentials` also loads the `plow-chat` channel when `kitchen open` starts its sous. Texts to that Plow line arrive as `<channel source="plow-chat" from="<name>" chat="<chat uid>">`; photos and files sent with them are saved under `plow-chat/files/` and their space-separated paths added as a `file` attribute. The sous answers with its `reply` tool, or sends up to four local files as one message with `send_file`. There is no allowlist: Plow delivers only chats the line's account owns, meaning the owner's 1:1 and any iMessage group the owner was in when its first text arrived. Every member of those chats speaks with head-chef authority. Anyone who has both numbers can start such a group, so the owner should treat every group with the line as trusted.
 
 **Setup**, using [`plow-agents`](https://github.com/plow-pbc/plow-agents#quickstart) and the kitchen name `kitchen open` prints (a kitchen `boss` opened in a `widget` repo is `widget-boss`):
 
@@ -303,7 +303,6 @@ With an editable install, reopen the kitchen or re-hire a cook after changing a 
 ## Troubleshooting
 
 - **`server:kitchen · no MCP server configured` at sous startup:** this is a known harmless startup race; the server connects shortly afterward.
-- **Setup says hooks are missing:** copy the exact Claude JSON that `kitchen setup` prints, then rerun it.
 - **Superpowers is missing:** install it from Claude Code with `/plugin install superpowers@claude-plugins-official` (the `superpowers-marketplace` install also works).
 - **Channel authentication fails:** run `claude /login` and select a claude.ai account. Console/API-key authentication does not expose channels.
 - **Claude Code is too old:** upgrade to version 2.1.80 or newer.

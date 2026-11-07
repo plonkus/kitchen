@@ -1,4 +1,5 @@
 """State management for claude-kitchen."""
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,20 @@ def wiki_dir(slug: str) -> Path:
     return state_root() / "projects" / slug / "wiki"
 
 
+# A unix socket path must fit sun_path: 104 bytes on macOS, NUL included.
+SOCKET_PATH_MAX = 103
+
+
+def channel_socket(base: Path) -> Path:
+    """The kitchen's channel socket: `<base>/kitchen.sock`, or, when that path
+    is too long to bind, one under `<state root>/sockets/` named by a hash of
+    the kitchen's name. Every binder and sender goes through here."""
+    path = base / "kitchen.sock"
+    if len(str(path).encode()) <= SOCKET_PATH_MAX:
+        return path
+    return state_root() / "sockets" / f"{hashlib.sha1(base.name.encode()).hexdigest()[:16]}.sock"
+
+
 def notes_dir(kitchen: str) -> Path:
     return state_dir(kitchen) / "notes"
 
@@ -58,7 +73,7 @@ def channel_flags(kitchen: str) -> list[str]:
     return [f"server:{name}" for name in channel_servers(kitchen)]
 
 
-def atomic_write_json(path: Path, data: dict):
+def atomic_write_json(path: Path, data: dict, mode: int = 0o600):
     """Atomic JSON write via temp-then-os.replace. Concurrent writers
     never share a temp filename and never replace each other's in-flight
     file. Readers see either the previous or the new full file — never
@@ -71,7 +86,8 @@ def atomic_write_json(path: Path, data: dict):
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(data) + "\n")
+            os.fchmod(f.fileno(), mode)
+            f.write(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, path)
     except BaseException:
         try:

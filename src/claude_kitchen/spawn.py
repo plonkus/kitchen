@@ -223,8 +223,10 @@ def spawn_window(kitchen: str, name: str, cwd: str, backend: str, status_dir: st
 
 
 def _new_window(kitchen: str, name: str, cwd: str, cmd: str) -> bool:
-    return _launched(tmux("new-window", "-t", target(), "-n", name, "-c", cwd, cmd,
-                          kitchen=kitchen))
+    # -d: a new window must not become current, or every attached client is
+    # pulled off the window it is on.
+    return _launched(tmux("new-window", "-d", "-t", target(), "-n", name, "-c", cwd,
+                          cmd, kitchen=kitchen))
 
 
 def _launched(result) -> bool:

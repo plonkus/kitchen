@@ -118,12 +118,7 @@ seeded with **only `auth.json`** + a minimal `config.toml` granting trust to cwd
 ## STEP-1 de-risk results (all held)
 
 1. **notify under fresh seeded `CODEX_HOME`** → ✅ a turn fired `kitchen hook-codex`, writing the cook's status JSON to the sous status dir.
-2. **trust prompt** → `--dangerously-bypass-approvals-and-sandbox` does NOT suppress codex's workspace-trust prompt under a fresh home, and a `-c projects."<cwd>".trust_level` override did NOT gate it either. The working fix (and what `_seed_codex_home` writes) is a persisted `config.toml`:
-   ```toml
-   [projects."/path/to/your/repo"]
-   trust_level = "trusted"
-   ```
-   With it pre-seeded, codex booted straight to the prompt — no trust dialog.
+2. **trust prompt** → `--dangerously-bypass-approvals-and-sandbox` does NOT suppress codex's folder-trust prompt under a fresh home, and a `-c projects."<cwd>".trust_level` override did NOT gate it either. `_seed_codex_home` used to pre-seed a `config.toml` trust grant for the cook's cwd; it no longer does. The fresh home now shows the trust dialog, and `wait_for_prompt` answers it with Enter, as it does for every codex cook. Checked live on codex 0.166 with a home holding only `auth.json`: the dialog's pre-selected "1. Trust and continue" took Enter and the cook reached its chat prompt.
 3. **auth sufficiency** → ✅ `auth.json` alone authenticates; no dependence on `version.json`/`installation_id`/token-cache.
 
 ## End-to-end (real code paths: `_seed_codex_home` + `build_shell_cmd`)

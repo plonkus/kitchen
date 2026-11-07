@@ -11,7 +11,6 @@ from mcp.server.stdio import stdio_server
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage, JSONRPCNotification
 
-SOCK_NAME = "kitchen.sock"
 
 # One message is one line on the socket, and a line past the reader's limit
 # fails inside handle_connection after the sender has already succeeded, so the
@@ -172,11 +171,11 @@ def _claim_socket(sock_path: Path, _max_probes: int = 8):
 
 async def run_server(kitchen: str):
     """Run the MCP channel server with a unix socket listener."""
-    from claude_kitchen.state import state_dir
+    from claude_kitchen.state import state_dir, channel_socket
 
     base = state_dir(kitchen)
-    base.mkdir(parents=True, exist_ok=True)
-    sock_path = base / SOCK_NAME
+    sock_path = channel_socket(base)
+    sock_path.parent.mkdir(parents=True, exist_ok=True)
 
     server = Server("kitchen")
     init_options = server.create_initialization_options(

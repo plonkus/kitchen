@@ -71,12 +71,7 @@ The moving parts:
 
 ## Downstream in detail: typing into a TUI, reliably
 
-Sending text to an interactive TUI is the genuinely fiddly part. `tmux send-keys` alone loses races: long pastes render placeholder stubs while bytes are still streaming, Codex sometimes swallows the first Enter after a paste, and pressing Enter blind into a half-rendered composer submits garbage. Kitchen's `send_keys` (in `tmux.py`) hardens this into a verified pipeline:
-
-1. **Bracketed paste from a named tmux buffer** — newlines stay newlines instead of triggering submit; named buffers keep concurrent sends to different cooks from clobbering each other.
-2. **Settle-poll** — wait until the pane shows evidence the paste landed (a `[Pasted N lines]` stub or the payload's first line) *and* stops repainting for ~150 ms.
-3. **Verified submit** — capture the cursor column of the *empty* composer before pasting; after Enter, the cursor snapping back to that column is positive proof the input was accepted. Retry Enter (never re-paste) up to 8 times.
-4. **Fail loudly** — if the paste never settles or never submits, raise. No silent lost tickets.
+Sending text to an interactive TUI is the genuinely fiddly part. `tmux send-keys` alone loses races: long pastes render placeholder stubs while bytes are still streaming, Codex sometimes swallows the first Enter after a paste, and pressing Enter blind into a half-rendered composer submits garbage. Kitchen's `send_keys` (in `tmux.py`) pastes from a named buffer, waits for proof the paste landed and came to rest, submits only on positive evidence the input was accepted, and raises rather than lose a ticket; the comments in `send_keys` explain each phase.
 
 Two more pane-reading primitives make orchestration possible:
 
@@ -94,7 +89,7 @@ The cook abstraction is deliberately thin. A backend is just five facts:
 | **Ready marker** | `Claude Code v` banner | `OpenAI Codex (v` banner | `? for shortcuts` footer |
 | **Busy marker** | spinner glyph + `…` | `esc to interrupt` | `esc to cancel` |
 | **Completion hook** | `Stop` hook in `~/.claude/settings.json` → `kitchen hook` | `notify = ["kitchen","hook-codex"]` (forced per-launch via `-c`) | agy stop hook → `kitchen hook-agy` |
-| **Effort mapping** | `low/medium/high/max` | same, `max` → `xhigh` | n/a |
+| **Effort mapping** | `low/medium/high/xhigh/max`, `ultra` → `max` | passed through unchanged | n/a |
 
 To add a new backend you supply exactly that row: a launch command, two pane markers, a way to deliver the role prompt, and some hook/callback the CLI fires on turn completion that can run `kitchen hook-<backend>`. Everything else (spawn, ticket, peek, brigade, channel) is backend-agnostic.
 
@@ -125,7 +120,7 @@ Cook status JSON doubles as the data source for `kitchen brigade` (fleet status)
 
 The whole system is ~2,500 lines of Python across five files. The minimal recipe:
 
-1. **A tmux layer** — spawn windows running agent CLIs with env vars baked into the shell command; `capture-pane` to read screens; the verified paste-and-submit loop above to write to them. This is where the real engineering lives.
+1. **A tmux layer** — spawn windows running agent CLIs with env vars baked into the shell command; `capture-pane` to read screens; `send_keys`, above, to write to them. This is where the real engineering lives.
 2. **A completion callback per backend** — any "turn ended" hook the CLI offers, invoking a small script with the agent's name in its environment.
 3. **A message bus back to the orchestrator** — kitchen uses a unix socket + Claude Code's MCP channel notifications, which land messages *in the orchestrator's context* mid-session. (Fallback if you can't use channels: have the orchestrator poll the status files.)
 4. **An orchestrator prompt** — a system-prompt appendix that teaches the manager agent the CLI verbs (`hire`, `ticket`, `peek`, `brigade`, `clock-out`) and one iron rule: *delegate everything; your context is for coordination, not content.*

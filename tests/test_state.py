@@ -247,6 +247,44 @@ class TestWikiAndNotesDirs:
         assert d == tmp_path / ".claude-kitchen" / "risotto" / "notes"
 
 
+class TestChannelSocket:
+    def test_a_short_kitchen_keeps_its_socket_in_its_state_dir(self, monkeypatch):
+        from claude_kitchen.state import channel_socket
+        monkeypatch.setenv("HOME", "/Users/me")
+        assert channel_socket(state_dir("risotto")) == Path("/Users/me/.claude-kitchen/risotto/kitchen.sock")
+
+    def test_a_deep_kitchen_name_still_gets_a_socket_that_binds(self, monkeypatch):
+        """A kitchen named after a deep folder must still bind its channel and
+        hear a hook, end to end on a real unix socket."""
+        import shutil, socket, tempfile, threading
+        from claude_kitchen.channel import deliver_to_socket
+        from claude_kitchen.state import channel_socket
+        home = tempfile.mkdtemp(dir="/tmp")  # a home as short as a real one
+        monkeypatch.setenv("HOME", home)
+        deep = "private-tmp-claude-501--users-plucas-plow-pbc-kitchen-2c10b406-scratchpad-{}-marketing"
+        a, b = channel_socket(state_dir(deep.format("a"))), channel_socket(state_dir(deep.format("b")))
+        assert a != b and len(str(a).encode()) <= 103
+        assert channel_socket(state_dir(deep.format("a"))) == a
+        a.parent.mkdir(parents=True)
+        received = []
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                srv.bind(str(a))
+                srv.listen(1)
+
+                def accept():
+                    conn, _ = srv.accept()
+                    with conn, conn.makefile() as lines:
+                        received.append(json.loads(lines.readline()))
+                listener = threading.Thread(target=accept)
+                listener.start()
+                deliver_to_socket(a, {"cook": "eng", "summary": "done"})
+                listener.join(timeout=2)
+        finally:
+            shutil.rmtree(home)
+        assert received == [{"cook": "eng", "summary": "done"}]
+
+
 @pytest.mark.parametrize("configured, flags", [
     (False, ["server:kitchen"]),
     (True, ["server:kitchen", "server:plow-chat"]),

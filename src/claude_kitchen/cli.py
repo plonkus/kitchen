@@ -11,12 +11,12 @@ from pathlib import Path
 
 from claude_kitchen.tmux import (
     list_kitchens, list_windows, has_session, target,
-    capture_pane, send_keys, tmux, wait_for_prompt, pane_busy, attach_cmd,
+    capture_pane, send_keys, tmux, wait_for_prompt, PromptBlocked, kill_server, pane_busy, attach_cmd,
     PROBE_TIMEOUT, SESSION,
 )
 from claude_kitchen.state import (
     state_dir, write_status, read_status, update_status,
-    project_slug, namespaced, wiki_dir, notes_dir, channel_servers,
+    project_slug, namespaced, wiki_dir, notes_dir, channel_servers, channel_socket, atomic_write_json,
     MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME,
 )
 from claude_kitchen.models import max_context_for
@@ -353,8 +353,7 @@ def cmd_open(args):
         )
 
     # Before ANY mutation. Everything below this line writes: kitchen.json, the
-    # MCP config, the tmux session — and on the has_session branch _sweep_cooks,
-    # which deletes cook records. A duplicate open must be a no-op, not a
+    # MCP config, the tmux session. A duplicate open must be a no-op, not a
     # half-applied one that aborts at the end.
     check_sous_pid(base)
 
@@ -406,19 +405,9 @@ def cmd_open(args):
     _seed(wiki_dir(slug), _WIKI_TEMPLATES)
     _seed(notes_dir(name), _NOTES_TEMPLATES)
 
-    if has_session(name):
-        # Sweep ONLY when the session was already up on this kitchen's own
-        # socket — there the window list is authoritative about which cooks are
-        # still alive. When we have to CREATE the session, every cook record
-        # looks orphaned by construction, and that is exactly the case where the
-        # cooks may still be running: on a suspended kitchen the records are the
-        # memory `suspend` exists to keep, and after the socket move a kitchen's
-        # cooks can be alive on a different server this tmux can't even see.
-        # Deleting their state there destroys the sous's only record of what
-        # they were doing. Orphan files are inert (brigade and the statusline
-        # count live windows, not files); `kitchen sweep` clears them on demand.
-        _sweep_cooks(base, name)
-    else:
+    # No automatic sweep: cook records outlive their windows on a suspended
+    # kitchen, and only the head chef knows they're done (`kitchen sweep`).
+    if not has_session(name):
         tmux("new-session", "-d", "-s", SESSION, "-n", "_placeholder", kitchen=name)
     mcp_config = {"mcpServers": channel_servers(name)}
     (base / MCP_CONFIG_NAME).write_text(json.dumps(mcp_config, indent=2) + "\n")
@@ -440,25 +429,17 @@ def cmd_open(args):
                resume_session_id=sous_session_id, model=args.model)
 
 
-def _seed_codex_home(base: Path, name: str, cwd: str) -> Path:
-    """Fresh, isolated CODEX_HOME for a clean-room codex cook. Seeded with ONLY
+def _seed_codex_home(base: Path, name: str) -> Path:
+    """Fresh, isolated CODEX_HOME for a clean-room codex cook, seeded with ONLY
     auth.json (auth survives — mirrors the Claude "keep auth, drop everything
-    else" stance) plus a minimal config.toml granting trust to cwd. The trust
-    grant is load-bearing: codex's workspace-trust prompt is suppressed by
-    NEITHER --dangerously-bypass-approvals-and-sandbox NOR a -c override, only
-    by the persisted projects.<cwd>.trust_level (verified empirically) — without
-    it the cook hangs on the trust dialog and wait_for_prompt times out. notify
-    rides the command line, so cook→sous reporting is unaffected."""
+    else" stance). Its folder-trust dialog is answered by wait_for_prompt, as
+    for any codex cook. notify rides the command line, so cook→sous reporting
+    is unaffected."""
     home = base / "codex-home" / name
     if home.exists():
         shutil.rmtree(home)  # re-hire under the same name must start fresh
     home.mkdir(parents=True)
     shutil.copyfile(Path.home() / ".codex" / "auth.json", home / "auth.json")
-    # Escape cwd for a TOML basic string (backslash + double-quote) so a path
-    # with those chars stays valid TOML — otherwise codex can't parse the trust
-    # grant and falls back to the (blocking) trust prompt.
-    key = cwd.replace("\\", "\\\\").replace('"', '\\"')
-    (home / "config.toml").write_text(f'[projects."{key}"]\ntrust_level = "trusted"\n')
     return home
 
 
@@ -538,7 +519,7 @@ def cmd_hire(args):
 
     # Clean-room codex cooks get a fresh, isolated CODEX_HOME (no memory,
     # AGENTS.md, plugin registry, or user config). Claude/gemini: None.
-    codex_home = str(_seed_codex_home(base, name, cwd)) if clean_room and backend == "codex" else None
+    codex_home = str(_seed_codex_home(base, name)) if clean_room and backend == "codex" else None
 
     write_status(base, name, {"status": "booting", "agent": name, "backend": backend})
 
@@ -563,11 +544,15 @@ def cmd_hire(args):
     # Keep this barrier: the sous will call `kitchen ticket <cook>` immediately
     # after hire returns. Without it, the first ticket lands in a booting pane
     # and is lost. Also required for the codex send_keys role delivery below.
-    if not wait_for_prompt(kitchen, name, backend):
+    try:
+        failure = None if wait_for_prompt(kitchen, name, backend) else "didn't show prompt within timeout"
+    except PromptBlocked as e:
+        failure = str(e)
+    if failure:
         update_status(base, name, status="failed")
         if codex_home:
             shutil.rmtree(codex_home, ignore_errors=True)
-        sys.exit(f"{name} didn't show prompt within timeout.")
+        sys.exit(f"{name}: {failure}.")
 
     # Name the codex thread `[<kitchen>/<cook>]` so it is identifiable in the
     # ChatGPT app and `codex resume`. /rename before the first turn creates the
@@ -592,12 +577,12 @@ def _ticket_sous(kitchen: str, message: str):
     has no window to paste into. `cook` carries the sender's kitchen, which is
     where the receiver sends its answer. No status write: a sous has no cook
     record."""
-    from claude_kitchen.channel import deliver_to_socket, SOCK_NAME
+    from claude_kitchen.channel import deliver_to_socket
     sender = os.environ.get("AGENT_KITCHEN")
     if not sender:
         sys.exit("`kitchen ticket sous` must run from a sous: AGENT_KITCHEN is "
                  "unset, so the receiver would have no kitchen to answer.")
-    sock = state_dir(kitchen) / SOCK_NAME
+    sock = channel_socket(state_dir(kitchen))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         deliver_to_socket(sock, {"cook": sender, "summary": message, "ts": ts})
@@ -620,13 +605,11 @@ def cmd_ticket(args):
     backend = (read_status(base, name) or {}).get("backend")
     send_keys(kitchen, name, message, backend=backend)
 
-    # Mark cook as working. Codex has no UserPromptSubmit-equivalent hook
-    # event (Codex `notify` only fires on completion), so for Codex cooks
-    # this is the only "cook started working" signal. For Claude cooks the
-    # hook also writes status="working" — both writes are idempotent and
-    # whichever lands first closes the race. update_status preserves
-    # durable fields like `tokens` and `backend`.
-    update_status(base, name, status="working")
+    # Claude's UserPromptSubmit hook owns its start state; a write here could
+    # land after a fast turn's Stop and leave it "working". Codex and Gemini
+    # only report completion, so this is their start signal.
+    if backend != "claude":
+        update_status(base, name, status="working")
     print(f"Ticket fired to {name}. Heard!")
 
 
@@ -765,11 +748,10 @@ def cmd_hook(args):
         return
 
     if not codex:
-        # Claude branch dispatches by event type. UserPromptSubmit is the
-        # canonical "cook started working" trigger — closes the cmd_ticket
-        # race where status="working" was only written after send_keys
-        # returned. Must NOT read last_assistant_message (not present on
-        # this event) and must NOT call send_to_socket (not a completion).
+        # Claude branch dispatches by event type. UserPromptSubmit is the one
+        # "cook started working" write for Claude. Must NOT read
+        # last_assistant_message (not present on this event) and must NOT
+        # call send_to_socket (not a completion).
         # update_status (not write_status) preserves durable fields like
         # `tokens` and `backend` across this non-completion transition.
         if event == "UserPromptSubmit":
@@ -844,8 +826,8 @@ def cmd_hook(args):
     if ctx:
         push["ctx"] = ctx
 
-    from claude_kitchen.channel import send_to_socket, SOCK_NAME
-    send_to_socket(base / SOCK_NAME, push)
+    from claude_kitchen.channel import send_to_socket
+    send_to_socket(channel_socket(base), push)
 
 
 def _agy_summary(payload: dict) -> str:
@@ -903,8 +885,8 @@ def cmd_hook_agy(args):
     # (written "gemini" at hire) across this completion transition.
     update_status(base, name, agent=name, kitchen=kitchen, status="idle",
                   ts=ts, summary=summary, session_id=payload.get("conversationId", ""))
-    from claude_kitchen.channel import send_to_socket, SOCK_NAME
-    send_to_socket(base / SOCK_NAME, {"cook": name, "summary": summary, "ts": ts})
+    from claude_kitchen.channel import send_to_socket
+    send_to_socket(channel_socket(base), {"cook": name, "summary": summary, "ts": ts})
 
 
 def _claude_tokens_from_transcript(transcript_path):
@@ -1034,31 +1016,39 @@ def _ctx_for_channel(tokens):
     return f"{pct}% ({inp_k}k/{mx_k}k)"
 
 
+def _install_claude_hooks(settings: Path) -> list[str]:
+    """Append a `kitchen hook` entry to each Claude hook event that lacks one,
+    leaving every other key and hook untouched. Backs the file up and keeps its
+    mode before writing. Returns the events it added."""
+    cmd = {"type": "command", "command": "kitchen hook"}
+    entries = {"Stop": {"hooks": [cmd]}, "UserPromptSubmit": {"matcher": "", "hooks": [cmd]}}
+    raw = settings.read_text() if settings.exists() else None
+    data = json.loads(raw) if raw else {}
+    hooks = data.setdefault("hooks", {})
+    added = [ev for ev in entries if not any(
+        h.get("command") == cmd["command"] for e in hooks.get(ev, []) for h in e.get("hooks", []))]
+    if not added:
+        return added
+    for ev in added:
+        hooks.setdefault(ev, []).append(entries[ev])
+    mode = 0o600
+    if raw is not None:
+        mode = settings.stat().st_mode & 0o777
+        backup = settings.with_name(f"{settings.name}.bak-kitchen-{datetime.now():%Y%m%d-%H%M%S}")
+        atomic_write_json(backup, json.loads(raw), mode=mode)
+    atomic_write_json(settings, data, mode=mode)
+    return added
+
+
 def cmd_setup(args):
-    """Check hook installation and environment. Print what's needed."""
+    """Install kitchen's Claude hooks, check the environment, print what's needed."""
     all_good = True
-    claude_hook_cmd = "kitchen hook"
     codex_hook_cmd = "kitchen"
 
     # --- Claude Code hooks ---
     claude_settings = Path.home() / ".claude" / "settings.json"
-    if claude_settings.exists() and claude_hook_cmd in claude_settings.read_text():
-        print("✅ Claude hooks installed")
-    else:
-        all_good = False
-        stop_entry = json.dumps(
-            {"hooks": [{"type": "command", "command": claude_hook_cmd}]},
-            indent=2,
-        )
-        prompt_entry = json.dumps(
-            {"matcher": "", "hooks": [{"type": "command", "command": claude_hook_cmd}]},
-            indent=2,
-        )
-        print(f"❌ Claude hooks not found in {claude_settings}")
-        print(f"   Add to the \"hooks\" key in {claude_settings}:")
-        print(f'   "Stop": [{stop_entry}],')
-        print(f'   "UserPromptSubmit": [{prompt_entry}]')
-        print()
+    added = _install_claude_hooks(claude_settings)
+    print(f"✅ Claude hooks {'added (' + ', '.join(added) + ') to ' + str(claude_settings) if added else 'installed'}")
 
     # --- mcp SDK ---
     try:
@@ -1220,7 +1210,7 @@ def cmd_suspend(args):
     kitchen = resolve_kitchen(args.kitchen)
     if not has_session(kitchen):
         sys.exit(f"Kitchen \"{kitchen}\" has no running tmux server — already suspended.")
-    tmux("kill-server", kitchen=kitchen)
+    kill_server(kitchen)
     print(f"Kitchen \"{kitchen}\" suspended. Cooks are gone; notes and cook records are untouched.")
     print(f"   kitchen open --resume {kitchen}    # bring the sous back")
     print(f"   {attach_cmd(kitchen)}    # once it is back up")
@@ -1247,12 +1237,13 @@ def cmd_close(args):
             print(f"Warning: bad kitchen.json: {e}", file=sys.stderr)
         kitchen_file.unlink(missing_ok=True)
 
-    tmux("kill-server", kitchen=kitchen)
+    kill_server(kitchen)
     for cook_file in sorted((base / "cooks").glob("*.json")):
         _archive_codex_thread(base, cook_file.stem)
 
     # Clean up mcp config, socket, pid, and stale cook state
-    for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "kitchen.sock", "sous.pid"):
+    channel_socket(base).unlink(missing_ok=True)
+    for f in (MCP_CONFIG_NAME, LEGACY_MCP_CONFIG_NAME, "sous.pid"):
         (base / f).unlink(missing_ok=True)
     for sub in ("cooks", "notes", "codex-home"):
         d = base / sub
@@ -1320,7 +1311,7 @@ def main():
 
     sub.add_parser("hook-agy", help="Antigravity/gemini hook handler (called by agy hooks via stdin, not directly)")
 
-    sub.add_parser("setup", help="Check hook installation status")
+    sub.add_parser("setup", help="Install kitchen's Claude hooks and check the environment")
 
     sub.add_parser(
         "statusline-segment",

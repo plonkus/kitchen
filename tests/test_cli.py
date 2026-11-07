@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -15,8 +14,8 @@ from unittest.mock import patch, MagicMock, call
 import pytest
 
 from claude_kitchen.cli import resolve_kitchen, resolve_project, cmd_brigade, cmd_hook, cmd_open, cmd_hire, cmd_close, cmd_clock_out, _codex_rollout, _sweep_cooks, cmd_sweep, main, _agy_summary
-from claude_kitchen.state import write_status
-from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION
+from claude_kitchen.state import channel_socket, update_status, write_status
+from claude_kitchen.tmux import CK_PREFIX, PROBE_TIMEOUT, SESSION, PromptBlocked
 
 
 class TestResolveKitchen:
@@ -102,7 +101,7 @@ class TestHook:
 
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        assert call_args[0][0] == tmp_path / "kitchen.sock"
+        assert call_args[0][0] == channel_socket(tmp_path)
         assert call_args[0][1]["cook"] == "eng"
         assert call_args[0][1]["summary"] == "all tests pass"
 
@@ -205,7 +204,7 @@ class TestHook:
 
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        assert call_args[0][0] == tmp_path / "kitchen.sock"
+        assert call_args[0][0] == channel_socket(tmp_path)
         assert call_args[0][1]["cook"] == "codex-eng"
         assert call_args[0][1]["summary"] == "captured codex summary"
 
@@ -615,12 +614,12 @@ class TestStatusPreservationAcrossNonStopWriters:
     def test_cmd_ticket_preserves_tokens_and_backend(
         self, mock_rk, mock_state, mock_send, tmp_path,
     ):
-        """cmd_ticket flips status→working but must not silently clobber
-        durable fields. This is the realistic "ticket fired between turns"
-        case for a cook with prior usage."""
+        """cmd_ticket flips a Codex cook to working but must not silently
+        clobber durable fields. This is the realistic "ticket fired between
+        turns" case for a cook with prior usage."""
         mock_state.return_value = tmp_path
         write_status(tmp_path, "eng", {
-            "status": "idle", "agent": "eng", "backend": "claude",
+            "status": "idle", "agent": "eng", "backend": "codex",
             "tokens": {"input": 174027, "max": 1_000_000},
             "summary": "earlier",
         })
@@ -634,8 +633,24 @@ class TestStatusPreservationAcrossNonStopWriters:
 
         data = json.loads((tmp_path / "cooks" / "eng.json").read_text())
         assert data["status"] == "working"
-        assert data["backend"] == "claude"
+        assert data["backend"] == "codex"
         assert data["tokens"] == {"input": 174027, "max": 1_000_000}
+
+    @patch("claude_kitchen.cli.state_dir")
+    @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
+    def test_a_claude_turn_that_finishes_during_the_send_stays_idle(self, mock_rk, mock_state, tmp_path):
+        # Its hooks write working then idle while send_keys is still returning.
+        mock_state.return_value = tmp_path
+        write_status(tmp_path, "eng", {"status": "idle", "agent": "eng", "backend": "claude"})
+
+        def turn_runs(*_a, **_k):
+            update_status(tmp_path, "eng", status="working")
+            update_status(tmp_path, "eng", status="idle", summary="done")
+
+        from claude_kitchen.cli import cmd_ticket
+        with patch("claude_kitchen.cli.send_keys", side_effect=turn_runs):
+            cmd_ticket(MagicMock(kitchen="risotto", cook="eng", message="quick task"))
+        assert json.loads((tmp_path / "cooks" / "eng.json").read_text())["status"] == "idle"
 
     def test_stop_with_failed_transcript_read_preserves_prior_tokens(self, monkeypatch, tmp_path):
         """Realistic 'turn N succeeded, turn N+1's transcript read fails'
@@ -963,7 +978,6 @@ class TestCmdOpenPlainFolder:
         args.project = str(folder)
         args.worktree_path = None
         args.resume = False
-        args.sub_sous = False
         return args
 
     def _open(self, folder, name, state):
@@ -1212,13 +1226,21 @@ class TestResolveKitchenProbe:
 
 
 class TestCmdHireFailures:
+    @pytest.mark.parametrize("outcome, error", [
+        (False, "didn't show prompt"),
+        (PromptBlocked("folder-trust", "/work/x"), "one-time folder-trust prompt.*cd /work/x && claude"),
+    ], ids=["timeout", "one-time-prompt"])
     @patch("claude_kitchen.cli.send_keys")
-    @patch("claude_kitchen.cli.wait_for_prompt", return_value=False)
+    @patch("claude_kitchen.cli.wait_for_prompt")
     @patch("claude_kitchen.cli.spawn_window", return_value=True)
     @patch("claude_kitchen.cli.state_dir")
     @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    def test_exits_on_hire_timeout(self, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, tmp_path):
+    def test_exits_on_a_cook_that_never_reaches_its_prompt(self, mock_rk, mock_state, mock_spawn, mock_wait, mock_send, outcome, error, tmp_path):
         mock_state.return_value = tmp_path
+        if isinstance(outcome, Exception):
+            mock_wait.side_effect = outcome
+        else:
+            mock_wait.return_value = outcome
         args = MagicMock()
         args.kitchen = "risotto"
         args.name = "eng"
@@ -1230,7 +1252,7 @@ class TestCmdHireFailures:
         args.with_skill = []
         args.model = None
         with patch("claude_kitchen.cli.resolve_project", return_value=Path("/tmp")):
-            with pytest.raises(SystemExit, match="didn't show prompt"):
+            with pytest.raises(SystemExit, match=error):
                 cmd_hire(args)
         status = json.loads((tmp_path / "cooks" / "eng.json").read_text())
         assert status["status"] == "failed"
@@ -1405,8 +1427,8 @@ class TestCmdHireCleanRoom:
         self, mock_rp, mock_rk, mock_state, mock_wait, mock_spawn, mock_send, tmp_path, monkeypatch,
     ):
         """Clean-room codex: a fresh per-cook CODEX_HOME is seeded with ONLY
-        auth.json + a cwd trust grant, forwarded to spawn_window, and the role
-        send is skipped (cook boots bare)."""
+        auth.json, forwarded to spawn_window, and the role send is skipped
+        (cook boots bare)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / ".codex").mkdir()
         (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
@@ -1423,27 +1445,10 @@ class TestCmdHireCleanRoom:
         args.model = None
         cmd_hire(args)
         home = tmp_path / "codex-home" / "eval1"
+        assert [f.name for f in home.iterdir()] == ["auth.json"]
         assert (home / "auth.json").read_text() == '{"OPENAI_API_KEY": "x"}'
-        cfg = (home / "config.toml").read_text()
-        assert 'trust_level = "trusted"' in cfg
-        assert '/eval/dir' in cfg  # trust granted to the cook's cwd
         assert mock_spawn.call_args.kwargs["codex_home"] == str(home)
         mock_send.assert_not_called()  # clean-room codex boots bare, no role
-
-    def test_seed_codex_home_escapes_tricky_path(self, tmp_path, monkeypatch):
-        """A cwd containing a double-quote, backslash, and space must yield
-        VALID TOML whose projects key round-trips to the exact cwd — otherwise
-        codex can't parse the trust grant and hits the blocking prompt."""
-        from claude_kitchen.cli import _seed_codex_home
-        monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / ".codex").mkdir()
-        (tmp_path / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "x"}')
-        base = tmp_path / "base"; base.mkdir()
-        tricky = '/tmp/we"ird\\path dir'
-        home = _seed_codex_home(base, "eval1", tricky)
-        parsed = tomllib.loads((home / "config.toml").read_text())  # raises if invalid TOML
-        assert list(parsed["projects"].keys()) == [tricky]
-        assert parsed["projects"][tricky]["trust_level"] == "trusted"
 
     @patch("claude_kitchen.cli.send_keys")
     @patch("claude_kitchen.cli.wait_for_prompt", return_value=True)
@@ -1616,13 +1621,12 @@ class TestCmdSuspend:
     disk — it is `close` minus the destruction."""
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
-    @patch("claude_kitchen.cli.tmux")
+    @patch("claude_kitchen.cli.kill_server")
     @patch("claude_kitchen.cli.resolve_kitchen", return_value="risotto")
-    def test_kills_only_that_kitchens_server(self, mock_rk, mock_tmux, mock_has, capsys):
+    def test_kills_only_that_kitchens_server(self, mock_rk, mock_kill, mock_has, capsys):
         from claude_kitchen.cli import cmd_suspend
         cmd_suspend(MagicMock(kitchen="risotto"))
-        assert mock_tmux.call_args.args == ("kill-server",)
-        assert mock_tmux.call_args.kwargs["kitchen"] == "risotto"
+        mock_kill.assert_called_once_with("risotto")
 
     @patch("claude_kitchen.cli.has_session", return_value=True)
     @patch("claude_kitchen.cli.tmux")
@@ -1670,19 +1674,12 @@ class TestOpenDoesNotSweepCooksItCannotSee:
     the case where the cooks may still be running (or where the records are the
     memory `suspend` promised to keep)."""
 
-    @patch("claude_kitchen.cli._sweep_cooks")
-    @patch("claude_kitchen.cli.has_session", return_value=False)
-    def test_no_sweep_when_the_session_had_to_be_created(self, mock_has, mock_sweep):
-        assert mock_sweep is not None
-        import inspect
-        src = inspect.getsource(cmd_open)
-        # The sweep must sit on the has_session TRUE branch.
-        assert "_sweep_cooks(base, name)" in src
-
+    @pytest.mark.parametrize("session_up", [False, True])
     def test_resume_keeps_cook_records_for_an_unreachable_session(
-            self, tmp_path, monkeypatch):
-        """End to end through cmd_open --resume: session absent on this socket,
-        so a fresh one is created — and cooks/*.json survives untouched."""
+            self, tmp_path, monkeypatch, session_up):
+        """End to end through cmd_open --resume: cooks/*.json survives untouched,
+        whether the session had to be created or a first reopen of a suspended
+        kitchen already made it (its window list still has none of the cooks)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         project = tmp_path / "proj"
         project.mkdir()
@@ -1694,7 +1691,8 @@ class TestOpenDoesNotSweepCooksItCannotSee:
         args = MagicMock(name_=None, project=str(project), resume=True,
                          worktree_path=None)
         args.name = "widget"
-        with patch("claude_kitchen.cli.has_session", return_value=False), \
+        with patch("claude_kitchen.cli.has_session", return_value=session_up), \
+             patch("claude_kitchen.cli.list_windows", return_value=["_placeholder"]), \
              patch("claude_kitchen.cli.tmux") as mock_tmux, \
              patch("claude_kitchen.cli.project_slug", return_value="widget"), \
              patch("claude_kitchen.cli.namespaced", return_value="widget"), \
@@ -1710,12 +1708,7 @@ class TestSecondOpenIsANoOp:
     NOTHING. The guard lives in spawn_sous, which is the last statement of
     cmd_open, so a duplicate open used to rewrite kitchen.json and
     kitchen-mcp.json and stand up a whole tmux server before aborting with
-    "Sous chef already running".
-
-    The hazard is the has_session TRUE branch: there the same pre-guard path
-    runs _sweep_cooks, so a duplicate open could delete the records of cooks
-    that are alive on a different tmux server — the trap that had to be
-    hand-repaired on two kitchens. An aborted command must not mutate."""
+    "Sous chef already running". An aborted command must not mutate."""
 
     @patch("claude_kitchen.spawn.os.execvp")
     def _run_second_open(self, has_session_value, mock_exec, tmp_path):
@@ -1942,6 +1935,42 @@ class TestCmdSetupExit:
         assert exc.value.code == 1
 
 
+class TestCmdSetupHooks:
+    @patch("claude_kitchen.cli.subprocess.run")
+    def test_adds_missing_hooks_without_clobbering(self, mock_run, monkeypatch, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=0, stdout="2.1.99 (claude)\n", stderr="")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        other = {"type": "command", "command": "$HOME/.claude/hooks/capture-prompt.sh"}
+        original = {
+            "model": "opus",
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "kitchen hook"}]}],
+                "UserPromptSubmit": [{"hooks": [other]}],
+            },
+        }
+        settings.write_text(json.dumps(original))
+        settings.chmod(0o640)
+        from claude_kitchen.cli import cmd_setup
+
+        for _ in range(2):
+            with pytest.raises(SystemExit):  # superpowers is absent from this HOME
+                cmd_setup(MagicMock())
+
+        data = json.loads(settings.read_text())
+        assert data["model"] == "opus"
+        assert data["hooks"]["Stop"] == original["hooks"]["Stop"]
+        assert data["hooks"]["UserPromptSubmit"] == [
+            {"hooks": [other]},
+            {"matcher": "", "hooks": [{"type": "command", "command": "kitchen hook"}]},
+        ]
+        assert settings.stat().st_mode & 0o777 == 0o640
+        backups = list(settings.parent.glob("settings.json.bak-kitchen-*"))
+        assert len(backups) == 1 and json.loads(backups[0].read_text()) == original
+        assert "Claude hooks added (UserPromptSubmit)" in capsys.readouterr().out
+
+
 class TestCmdSetupStatusline:
     """Three-way advisory: no statusLine, different statusLine (embed advice),
     kitchen segment present (green). None block setup."""
@@ -2156,8 +2185,7 @@ class TestCmdSetupSuperpowers:
         sp = tmp_path / ".claude" / "plugins" / "cache" / marketplace / "superpowers"
         sp.mkdir(parents=True)
         from claude_kitchen.cli import cmd_setup
-        with pytest.raises(SystemExit):  # hooks are missing; only superpowers matters here
-            cmd_setup(MagicMock())
+        cmd_setup(MagicMock())  # setup installs the hooks itself, so it passes
         assert f"✅ superpowers plugin installed ({sp})" in capsys.readouterr().out
 
     @patch("claude_kitchen.cli.subprocess.run")

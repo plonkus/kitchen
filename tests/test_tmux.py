@@ -1,4 +1,5 @@
 """Tests for tmux helpers. Uses mocked subprocess calls."""
+import os
 import subprocess
 from unittest.mock import patch, MagicMock
 import pytest
@@ -29,6 +30,12 @@ class TestNaming:
 
     def test_bare_noop_without_prefix(self):
         assert bare("risotto") == "risotto"
+
+    def test_deep_kitchen_name_gets_a_short_unique_socket(self):
+        deep = "tmp-claude-1000--home-odio-hacking-kitchen-d2783078-d104-scratchpad-{}-ssrepro"
+        a, b = mc(deep.format("a")), mc(deep.format("b"))
+        assert len(a) <= 64 and a.startswith("ck-tmp-claude-1000") and a != b
+        assert mc(a) == a
 
 
 def _seed_kitchens(root, *names):
@@ -179,6 +186,27 @@ class TestWaitForPrompt:
         assert wait_for_prompt("ck-x", "sous", "claude", timeout=5) is True
         mock_tmux.assert_not_called()
 
+    @pytest.mark.parametrize("screen, name", [
+        ("Claude Code v2.1.319\nAccessing workspace:\n /home/r\n ❯ No, exit\n   Yes, I trust this folder",
+         "folder-trust"),
+        ("WARNING: Claude Code running in Bypass Permissions mode\n ❯ 1. No, exit\n   2. Yes, I accept",
+         "Bypass Permissions"),
+    ])
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_one_time_modal_fails_with_its_fix(self, mock_cap, mock_tmux, mock_sleep, screen, name):
+        """A claude agent parked on a one-time modal whose default refuses must
+        fail at once with the fix, not stall out — and never answer it."""
+        from claude_kitchen.tmux import wait_for_prompt, PromptBlocked
+        mock_cap.return_value = screen
+        mock_tmux.return_value = MagicMock(stdout="/home/r x\n")
+        with pytest.raises(PromptBlocked) as e:
+            wait_for_prompt("ck-x", "eng", "claude", timeout=5)
+        assert f"one-time {name} prompt" in str(e.value)
+        assert "cd '/home/r x' && claude --dangerously-skip-permissions" in str(e.value)
+        assert not any(c.args[0] == "send-keys" for c in mock_tmux.call_args_list)
+
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")
     @patch("claude_kitchen.tmux.capture_pane")
@@ -291,10 +319,70 @@ GEMINI_BUSY = (
     "esc to cancel                                    Gemini 3.5 Flash (Medium)\n"
 )
 
+# A signed-out codex cook's first screen (codex-cli 0.154.0).
+CODEX_SIGNIN = (
+    "  Welcome to Codex, OpenAI's command-line coding agent\n"
+    "> 1. Sign in with ChatGPT\n"
+    "  2. Sign in with Device Code\n"
+    "  3. Provide your own API key\n"
+    "     Pay for what you use\n"
+    "  Press enter to continue\n"
+)
+
 
 def _tail(raw):
     """Mirror _pane_tail's filtering so marker tests can run on raw captures."""
     return [ln for ln in raw.splitlines() if ln.strip()][-40:]
+
+
+class TestCodexScreens:
+    @patch("claude_kitchen.tmux.time")
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_hire_presses_nothing_on_signin(self, mock_cap, mock_tmux, mock_time):
+        """`3` + Enter on the sign-in screen selects "Provide your own API key";
+        hire must leave a signed-out cook alone and fail at the stall."""
+        from claude_kitchen.tmux import wait_for_prompt
+        clock = [0]
+        def now():
+            clock[0] += 10
+            return clock[0]
+        mock_time.time.side_effect = now
+        mock_cap.return_value = CODEX_SIGNIN
+        assert wait_for_prompt("ck-x", "cx", "codex", timeout=1000) is False
+        mock_tmux.assert_not_called()
+
+    @patch("claude_kitchen.tmux.time.sleep", return_value=None)
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_trust_dialog_and_update_picker_answered(self, mock_cap, mock_tmux, mock_sleep):
+        """Trust dialog then update picker: each is answered once, with its
+        own keys. The trust dialog is codex 0.166's, as captured live."""
+        from claude_kitchen.tmux import wait_for_prompt
+        trust = ("  Folder access\n  /private/tmp/cxtrust\n"
+                 "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+                 "› 1. Trust and continue\n  2. Back to Agent Command Center\n"
+                 "  enter continue · esc back\n")
+        mock_cap.side_effect = [trust, trust, trust + "✨ Update available! 1 -> 2",
+                                ">_ OpenAI Codex (v0.154.0)"]
+        assert wait_for_prompt("ck-x", "cx", "codex", timeout=5) is True
+        assert [c.args for c in mock_tmux.call_args_list] == [
+            ("send-keys", "-t", "kitchen:cx", "Enter"),
+            ("send-keys", "-t", "kitchen:cx", "3", "Enter")]
+
+    @pytest.mark.parametrize("pane", [CODEX_SIGNIN, "› 1. Yes, continue\n  2. No, quit\n"])
+    @patch("claude_kitchen.tmux.tmux")
+    @patch("claude_kitchen.tmux.capture_pane")
+    def test_ticket_refused_off_the_chat_prompt(self, mock_cap, mock_tmux, pane):
+        """A ticket must never be typed into a sign-in or picker screen."""
+        from claude_kitchen.tmux import send_keys
+        mock_cap.return_value = pane
+        fake = _tmux_cursor()
+        mock_tmux.side_effect = fake
+        with pytest.raises(RuntimeError, match="not at the codex chat prompt"):
+            send_keys("ck-x", "cx", "a ticket", backend="codex")
+        assert fake.state["pasted_text"] is None
+        assert fake.state["enter"] == 0
 
 
 class TestBusyMarkerHit:
@@ -430,15 +518,15 @@ def _settle_stable():
     def cap(session, window, full=False):
         calls["n"] += 1
         if calls["n"] == 1:
-            return "idle transcript\n> "
-        return f"transcript line\n> {_SETTLE_HEAD} landed\n"  # head present, stable
+            return "idle transcript\n› "
+        return f"transcript line\n› {_SETTLE_HEAD} landed\n"  # head present, stable
 
     return cap
 
 
 def _settle_no_signal(session, window, full=False):
     """Settle-poll never sees the head → paste never positively observed."""
-    return "idle transcript, head never appears\n> "
+    return "idle transcript, head never appears\n› "
 
 
 _SPINNER_GLYPHS = "✻✽✶✳✢"
@@ -461,7 +549,7 @@ def _settle_spinner():
     def cap(session, window, full=False):
         calls["n"] += 1
         if calls["n"] == 1:
-            return "idle transcript\n> "
+            return "idle transcript\n› "
         g = _SPINNER_GLYPHS[calls["n"] % len(_SPINNER_GLYPHS)]
         return (f"{g} Infusing… ({calls['n']}s · ↓ {calls['n']}.1k tokens)\n"
                 f"> {_SETTLE_HEAD} landed\n")
@@ -542,7 +630,7 @@ class TestSendKeysVerifiedSubmit:
 
         def offscreen_pane(session, window, full=False):
             captures["n"] += 1
-            return "idle transcript\n> " if captures["n"] == 1 else visible_tail
+            return "idle transcript\n› " if captures["n"] == 1 else visible_tail
 
         assert len(text) < 1000
         assert head[:24] not in visible_tail
@@ -557,17 +645,20 @@ class TestSendKeysVerifiedSubmit:
         assert fake.state["enter"] == 1
         assert fake.state["pasted_text"] == text
 
+    @pytest.mark.parametrize("pane", [CODEX_IDLE, CODEX_BUSY])
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")
     @patch("claude_kitchen.tmux.capture_pane")
-    def test_first_enter_submits(self, mock_cap, mock_tmux, mock_sleep):
+    def test_first_enter_submits(self, mock_cap, mock_tmux, mock_sleep, pane):
+        """Idle or mid-turn, a codex cook at its composer takes the ticket."""
         from claude_kitchen.tmux import send_keys
-        mock_cap.side_effect = _settle_stable()
+        mock_cap.side_effect = [pane] + [pane + f"› {_SETTLE_HEAD}\n"] * 50
         # cursor_x: empty (pre-paste) → payload (precondition) → empty (accepted).
         fake = _tmux_cursor()
         mock_tmux.side_effect = fake
         send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         assert fake.state["enter"] == 1
+        assert fake.state["pasted_text"] == _SETTLE_HEAD
 
     @patch("claude_kitchen.tmux.time.sleep", return_value=None)
     @patch("claude_kitchen.tmux.tmux")
@@ -830,3 +921,15 @@ class TestSendKeysVerifiedSubmit:
         with pytest.raises(RuntimeError, match="did not land in the composer"):
             send_keys("ck-x", "cx", _SETTLE_HEAD, backend="codex")
         assert fake.state["enter"] == 0
+
+
+def test_kill_server_removes_the_socket():
+    """tmux leaves its socket file behind when the server dies; a kitchen's
+    teardown must not."""
+    from pathlib import Path
+    from claude_kitchen.tmux import kill_server, tmux
+    tmux("new-session", "-d", "-s", SESSION, kitchen="probe", check=True)
+    sock = Path(os.environ["TMUX_TMPDIR"]) / f"tmux-{os.getuid()}" / "ck-probe"
+    assert sock.exists()
+    kill_server("probe")
+    assert not sock.exists()

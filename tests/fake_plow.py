@@ -28,29 +28,42 @@ class FakePlow:
         self.hold = False  # answer sends as held, never delivered
         self.sockets = []
         self.flaky = set()  # chats whose next read answers 503
+        self.inbound_files = {}  # attachment uid -> bytes a member sent; absent answers 404
+        self.files_host = None  # serve attachment URLs from this host, as absolute URLs
+        self.files_auth = {}  # attachment uid -> Authorization header its download carried
         self._uids = itertools.count(1)
         self.app = Starlette(routes=[
             Route("/v1/ws/ticket", self._ticket, methods=["POST"]),
             Route("/v1/chats/{chat}/messages", self._messages, methods=["GET", "POST"]),
             Route("/v1/chats/{chat}/attachments", self._attachments, methods=["POST"]),
             Route("/provider/{uid}", self._upload, methods=["PUT"]),
+            Route("/v1/chats/{chat}/attachments/{uid}/content", self._content),
             WebSocketRoute("/v1/ws", self._ws),
         ])
 
-    def _message(self, chat, body, handle=None, late=False):
+    def _message(self, chat, body, handle=None, late=False, files=()):
         sender = {"type": "member", "display_name": NAMES.get(handle, handle), "provider_key": handle} if handle else {"type": "agent"}
-        message = {"uid": f"msg_{next(self._uids)}", "chat_uid": chat, "body": body, "sender": sender}
+        attachments = []
+        for name, data in files:  # data None: Plow lists it but can't serve it
+            uid = f"att_{next(self._uids)}"
+            if data is not None:
+                self.inbound_files[uid] = data
+            path = f"/v1/chats/{chat}/attachments/{uid}/content?sig={SIGNATURE}"
+            host = f"http://{self.files_host}:{self.port}" if self.files_host else ""
+            attachments.append({"uid": uid, "filename": name, "status": "received", "url": host + path})
+        message = {"uid": f"msg_{next(self._uids)}", "chat_uid": chat, "body": body, "sender": sender,
+                   "attachments": attachments}
         # A late text was sent before the newest one, so Plow sorts it below it.
         self.history[chat].insert(len(self.history[chat]) - late, message)
         return message
 
-    def add(self, chat, handle, body, late=False):
-        """A member's text lands while no socket hears it."""
-        return self._message(chat, body, handle, late)
+    def add(self, chat, handle, body, late=False, files=()):
+        """A member's text, with any (name, bytes) files, lands while no socket hears it."""
+        return self._message(chat, body, handle, late, files)
 
-    async def inbound(self, chat, handle, body, late=False):
+    async def inbound(self, chat, handle, body, late=False, files=()):
         """A member texts the line, and every open socket hears it."""
-        message = self.add(chat, handle, body, late)
+        message = self.add(chat, handle, body, late, files)
         await self._broadcast(message)
         return message
 
@@ -111,6 +124,13 @@ class FakePlow:
             },
         }, status_code=201)
 
+    async def _content(self, request):
+        self.files_auth[request.path_params["uid"]] = request.headers.get("authorization")
+        data = self.inbound_files.get(request.path_params["uid"])
+        if data is None or request.query_params.get("sig") != SIGNATURE:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return Response(data, media_type="image/jpeg")
+
     async def _upload(self, request):
         """The provider's signed URL: not Plow, so it must never see Plow's token."""
         attachment = self.attachments[request.path_params["uid"]]
@@ -132,7 +152,7 @@ class FakePlow:
         self.sockets.clear()
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
+            port = self.port = s.getsockname()[1]
         server = uvicorn.Server(uvicorn.Config(self.app, host="127.0.0.1", port=port, log_level="warning", ws="websockets-sansio"))
         asyncio.create_task(server.serve())
         while not server.started:

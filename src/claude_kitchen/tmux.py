@@ -1,9 +1,12 @@
 """tmux helpers for claude-kitchen."""
+import hashlib
 import itertools
 import os
 import re
+import shlex
 import subprocess
 import time
+from pathlib import Path
 from typing import Optional
 
 from claude_kitchen.state import state_root
@@ -36,10 +39,19 @@ SESSION = "kitchen"
 _buffer_counter = itertools.count()
 
 
+# A socket path (<tmpdir>/tmux-<uid>/<socket>) must fit a unix socket address,
+# 104 bytes on macOS, which a kitchen named after a deep directory overruns.
+SOCKET_MAX = 64
+
+
 def socket(kitchen: str) -> str:
-    """The tmux socket name for a kitchen: `ck-<slug>`. Idempotent, so it is
-    safe to hand it a name that already carries the prefix."""
-    return kitchen if kitchen.startswith(CK_PREFIX) else CK_PREFIX + kitchen
+    """The tmux socket name for a kitchen: `ck-<slug>`, or past SOCKET_MAX its
+    head plus a hash of the whole. Idempotent, so it is safe to hand it a name
+    that already carries the prefix."""
+    name = kitchen if kitchen.startswith(CK_PREFIX) else CK_PREFIX + kitchen
+    if len(name) > SOCKET_MAX:
+        name = f"{name[:SOCKET_MAX - 9]}-{hashlib.sha1(name.encode()).hexdigest()[:8]}"
+    return name
 
 
 # Legacy alias. The old name reads as "make session name" and every call site
@@ -109,6 +121,14 @@ def list_windows(kitchen: str, timeout: int = TIMEOUT) -> list[str]:
     ]
 
 
+def kill_server(kitchen: str):
+    """Kill a kitchen's tmux server and remove its socket, which tmux leaves
+    behind on exit."""
+    tmux("kill-server", kitchen=kitchen)
+    Path(os.environ.get("TMUX_TMPDIR", "/tmp"), f"tmux-{os.getuid()}",
+         socket(kitchen)).unlink(missing_ok=True)
+
+
 def has_session(kitchen: str, timeout: int = TIMEOUT) -> bool:
     """True if this kitchen's session is up on its own socket.
 
@@ -139,6 +159,34 @@ _PROMPT_MARKERS = {
     "codex": "OpenAI Codex (v",
     "gemini": "? for shortcuts",  # agy TUI footer, present when input is editable
 }
+
+# The codex screens wait_for_prompt answers, by their own text, and the keys
+# each takes.
+_CODEX_SCREENS = {
+    "Update available!": ("3", "Enter"),
+    "Trust this folder?": ("Enter",),
+}
+
+# Claude Code's one-time modals, keyed by an option only the live dialog shows.
+# Both default to the refusing option, and accepting one is a trust decision
+# kitchen must not make for the head chef, so wait_for_prompt stops on them.
+_CLAUDE_ONE_TIME = {
+    "Yes, I trust this folder": "folder-trust",
+    "Yes, I accept": "Bypass Permissions",
+}
+
+
+class PromptBlocked(Exception):
+    """A Claude agent is parked on a one-time modal only a human may accept.
+    `cwd` is where to accept it."""
+
+    def __init__(self, prompt: str, cwd: str):
+        self.prompt, self.cwd = prompt, cwd
+
+    def __str__(self):
+        return (f"Claude Code is waiting on its one-time {self.prompt} prompt. "
+                f"Accept it once by hand — `cd {shlex.quote(self.cwd)} && claude "
+                f"--dangerously-skip-permissions`, answer yes, then /exit — and retry")
 
 # Busy markers: a regex present in the pane tail while the agent is mid-turn,
 # gone when it's idle at the prompt. Backend-specific and confirmed empirically
@@ -236,10 +284,15 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
     """
     marker = _PROMPT_MARKERS[backend]
     hard_deadline = time.time() + timeout
-    # Codex shows an "Update available!" picker before its welcome banner when a
-    # new version is published. Dismiss it once with `3` (= "Skip until next
-    # version") + Enter so the welcome marker can appear.
-    update_dismissed = False
+    # Codex can show two screens before its welcome banner, each answered by
+    # its own keys: an "Update available!" picker when a new version is
+    # published (`3` = "Skip until next version"), and the folder trust dialog,
+    # whose pre-selected "1. Trust and continue" takes a bare Enter. Match each
+    # screen by its own text: the sign-in screen also says "Press enter to
+    # continue", and there `3` selects "Provide your own API key", whose field
+    # then takes the next ticket as the key. Signed out, the cook gets no keys
+    # and hire fails at the stall.
+    codex_answered = set()
     last = None
     last_change = time.time()
     while time.time() < hard_deadline:
@@ -249,14 +302,21 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
         try:
             content = capture_pane(kitchen, window)
             if content:
+                blocker = backend == "claude" and next(
+                    (v for k, v in _CLAUDE_ONE_TIME.items() if k in content), None)
+                if blocker:
+                    cwd = tmux("display-message", "-p", "-t", target(window),
+                               "#{pane_current_path}", kitchen=kitchen).stdout.strip()
+                    raise PromptBlocked(blocker, cwd)
                 if marker in content:
                     return True
-                if (backend == "codex" and not update_dismissed
-                        and ("Update available!" in content
-                             or "Press enter to continue" in content)):
-                    tmux("send-keys", "-t", target(window), "3", "Enter",
+                screen = next((s for s in _CODEX_SCREENS
+                               if s in content and s not in codex_answered),
+                              None)
+                if backend == "codex" and screen:
+                    tmux("send-keys", "-t", target(window), *_CODEX_SCREENS[screen],
                          kitchen=kitchen, check=True)
-                    update_dismissed = True
+                    codex_answered.add(screen)
                 if content != last:
                     last, last_change = content, time.time()
                 elif time.time() - last_change > stall_timeout:
@@ -265,6 +325,12 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
             pass
         time.sleep(1)
     return False
+
+
+# The codex chat composer row, idle or mid-turn. A numbered `› 1.` row is a
+# picker's selection cursor, not the composer; the sign-in and API-key screens
+# have no `›` row at all.
+_CODEX_COMPOSER = re.compile(r"›(?!\s*\d+\.)")
 
 
 # Verified-submit loop tuning. One Enter usually submits; the extra attempts
@@ -377,6 +443,12 @@ def send_keys(kitchen: str, window: str, text: str, backend: Optional[str] = Non
 
     buf = f"kitchen-{os.getpid()}-{next(_buffer_counter)}"
     baseline = capture_pane(kitchen, window) or ""
+    if backend == "codex" and not any(
+            _CODEX_COMPOSER.match(ln)
+            for ln in [ln for ln in baseline.splitlines() if ln.strip()][-6:]):
+        raise RuntimeError(
+            f"send_keys: {tgt} is not at the codex chat prompt (signed out, or "
+            f"a picker is open); refusing to type into it")
     tmux("load-buffer", "-b", buf, "-", kitchen=kitchen, input=text, check=True)
     tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", tgt,
          kitchen=kitchen, check=True)
