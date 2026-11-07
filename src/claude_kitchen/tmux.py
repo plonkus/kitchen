@@ -160,6 +160,13 @@ _PROMPT_MARKERS = {
     "gemini": "? for shortcuts",  # agy TUI footer, present when input is editable
 }
 
+# The codex screens wait_for_prompt answers, by their own text, and the keys
+# each takes.
+_CODEX_SCREENS = {
+    "Update available!": ("3", "Enter"),
+    "Trust this folder?": ("Enter",),
+}
+
 # Claude Code's one-time modals, keyed by an option only the live dialog shows.
 # Both default to the refusing option, and accepting one is a trust decision
 # kitchen must not make for the head chef, so wait_for_prompt stops on them.
@@ -277,14 +284,14 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
     """
     marker = _PROMPT_MARKERS[backend]
     hard_deadline = time.time() + timeout
-    # Codex can show two screens before its welcome banner: an "Update
-    # available!" picker when a new version is published, and the folder trust
-    # dialog ("Trust this folder?"). `3` + Enter answers both — "Skip until next
-    # version" on the picker; on the trust dialog the `3` is ignored and Enter
-    # takes its pre-selected option. Match each screen by its own text: the
-    # sign-in screen also says "Press enter to continue", and there `3` selects
-    # "Provide your own API key", whose field then takes the next ticket as the
-    # key. Signed out, the cook gets no keys and hire fails at the stall.
+    # Codex can show two screens before its welcome banner, each answered by
+    # its own keys: an "Update available!" picker when a new version is
+    # published (`3` = "Skip until next version"), and the folder trust dialog,
+    # whose pre-selected "1. Trust and continue" takes a bare Enter. Match each
+    # screen by its own text: the sign-in screen also says "Press enter to
+    # continue", and there `3` selects "Provide your own API key", whose field
+    # then takes the next ticket as the key. Signed out, the cook gets no keys
+    # and hire fails at the stall.
     codex_answered = set()
     last = None
     last_change = time.time()
@@ -303,12 +310,11 @@ def wait_for_prompt(kitchen: str, window: str, backend: str,
                     raise PromptBlocked(blocker, cwd)
                 if marker in content:
                     return True
-                screen = next((s for s in ("Update available!",
-                                           "Trust this folder?")
+                screen = next((s for s in _CODEX_SCREENS
                                if s in content and s not in codex_answered),
                               None)
                 if backend == "codex" and screen:
-                    tmux("send-keys", "-t", target(window), "3", "Enter",
+                    tmux("send-keys", "-t", target(window), *_CODEX_SCREENS[screen],
                          kitchen=kitchen, check=True)
                     codex_answered.add(screen)
                 if content != last:
