@@ -1,4 +1,5 @@
 """tmux helpers for claude-kitchen."""
+import hashlib
 import itertools
 import os
 import re
@@ -37,10 +38,19 @@ SESSION = "kitchen"
 _buffer_counter = itertools.count()
 
 
+# A socket path (<tmpdir>/tmux-<uid>/<socket>) must fit a unix socket address,
+# 104 bytes on macOS, which a kitchen named after a deep directory overruns.
+SOCKET_MAX = 64
+
+
 def socket(kitchen: str) -> str:
-    """The tmux socket name for a kitchen: `ck-<slug>`. Idempotent, so it is
-    safe to hand it a name that already carries the prefix."""
-    return kitchen if kitchen.startswith(CK_PREFIX) else CK_PREFIX + kitchen
+    """The tmux socket name for a kitchen: `ck-<slug>`, or past SOCKET_MAX its
+    head plus a hash of the whole. Idempotent, so it is safe to hand it a name
+    that already carries the prefix."""
+    name = kitchen if kitchen.startswith(CK_PREFIX) else CK_PREFIX + kitchen
+    if len(name) > SOCKET_MAX:
+        name = f"{name[:SOCKET_MAX - 9]}-{hashlib.sha1(name.encode()).hexdigest()[:8]}"
+    return name
 
 
 # Legacy alias. The old name reads as "make session name" and every call site

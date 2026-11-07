@@ -30,6 +30,12 @@ class TestNaming:
     def test_bare_noop_without_prefix(self):
         assert bare("risotto") == "risotto"
 
+    def test_deep_kitchen_name_gets_a_short_unique_socket(self):
+        deep = "tmp-claude-1000--home-odio-hacking-kitchen-d2783078-d104-scratchpad-{}-ssrepro"
+        a, b = mc(deep.format("a")), mc(deep.format("b"))
+        assert len(a) <= 64 and a.startswith("ck-tmp-claude-1000") and a != b
+        assert mc(a) == a
+
 
 def _seed_kitchens(root, *names):
     """Lay out state dirs the way `kitchen open` does: <root>/<name>/kitchen.json."""
