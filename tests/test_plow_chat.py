@@ -214,6 +214,29 @@ def test_an_attachment_download_carries_the_plow_token_only_to_plow(files_host, 
     run_bridge(scenario)
 
 
+@pytest.mark.parametrize("field, content, saved", [
+    ("url", "see this\n\n(attachment shot.jpeg isn't available)", False),
+    ("filename", "see this", True),
+], ids=["no-url", "no-filename"])
+def test_an_attachment_missing_a_field_never_holds_up_delivery(field, content, saved):
+    async def scenario(fake, bridge, delivered):
+        message = fake.add(HOME, SAM, "see this", files=[("shot.jpeg", PHOTO)])
+        message["attachments"][0][field] = None
+        await fake._broadcast(message)
+        await eventually(lambda: delivered)
+        got, meta = delivered[0]
+        assert got == content
+        assert ("file" in meta) == saved
+        if saved:
+            [path] = meta["file"].split()
+            assert Path(path).read_bytes() == PHOTO
+        await asyncio.sleep(0.2)
+        await fake.inbound(HOME, SAM, "marker")
+        await eventually(lambda: len(delivered) == 2)
+        assert delivered[1][0] == "marker"
+    run_bridge(scenario)
+
+
 def test_reads_the_credential_file_plow_agents_mint_writes(tmp_path):
     (tmp_path / "plow-credentials").write_text(
         f"PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN={TOKEN}\n# plow-agent-uid: 73f5\n")

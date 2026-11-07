@@ -148,7 +148,7 @@ class Bridge:
             async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as other:
                 r = await other.get(url)
         r.raise_for_status()
-        file = self.cursor.parent / "files" / (attachment["uid"] + Path(attachment["filename"]).suffix)
+        file = self.cursor.parent / "files" / (attachment["uid"] + Path(attachment["filename"] or "").suffix)
         file.parent.mkdir(mode=0o700, exist_ok=True)
         await asyncio.to_thread(file.write_bytes, r.content)
         return file
@@ -157,17 +157,21 @@ class Bridge:
         """Hand a member's burst to the sous as one text, its attachments
         saved locally and their paths in `file`; our own sends, Plow's system
         notes and messages with neither text nor files (tapbacks) are only
-        recorded. An attachment that can't be fetched is named in the text
-        rather than holding up the burst."""
+        recorded. An attachment with no URL yet, or one that can't be fetched,
+        is named in the text rather than holding up the burst."""
         first = self.burst[0]
         if first["sender"]["type"] == "member":
             texts = [m["body"] for m in self.burst if m["body"].strip()]
             files = []
             for attachment in (a for m in self.burst for a in m["attachments"]):
+                name = attachment["filename"] or attachment["uid"]
+                if not attachment["url"]:
+                    texts.append(f"(attachment {name} isn't available)")
+                    continue
                 try:
                     files.append(str(await self.fetch(attachment)))
                 except httpx.HTTPError as e:
-                    texts.append(f"(attachment {attachment['filename']} couldn't be fetched: {type(e).__name__})")
+                    texts.append(f"(attachment {name} couldn't be fetched: {type(e).__name__})")
             if texts or files:
                 meta = {"from": first["sender"]["display_name"], "chat": first["chat_uid"]} | ({"file": " ".join(files)} if files else {})
                 await self.deliver("\n\n".join(texts), meta)
