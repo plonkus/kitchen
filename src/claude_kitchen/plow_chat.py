@@ -22,7 +22,7 @@ from mcp.server.stdio import stdio_server
 from claude_kitchen.channel import CHANNEL_CAPABILITY, _refuse_if_deaf, push
 from claude_kitchen.state import atomic_write_json, plow_chat_dir
 
-CREDENTIALS = "plow-credentials"  # written mode 600 by `plow-agents mint LINE --credential-file`
+CREDENTIALS = "plow-credentials"  # written mode 600 by `latch agents new --own --credential-file`
 RECONNECT_DELAY = 5
 PAGE = 50
 # One speaker's back-to-back texts are one tag. iMessage sends a link as its
@@ -69,7 +69,7 @@ def log(msg: str):
 
 
 def read_credentials(directory: Path) -> dict:
-    """`PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, from the env file `plow-agents mint` writes."""
+    """`PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, from the env file `latch agents new --own` writes."""
     lines = (directory / CREDENTIALS).read_text().splitlines()
     return dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("#"))
 
